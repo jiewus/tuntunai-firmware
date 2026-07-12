@@ -435,6 +435,17 @@ void SetLabelTextIfChanged(lv_obj_t* label, const char* text) {
     }
 }
 
+/**
+ * @brief 统计 UTF-8 文本中的 Unicode 码点数量。
+ * @param text 需要估算可见长度的 UTF-8 字符串。
+ * @return 非续字节数量，可用于粗略估算中文和 ASCII 混排文本的滚动时长。
+ */
+size_t CountUtf8Codepoints(const std::string& text) {
+    return static_cast<size_t>(std::count_if(text.begin(), text.end(), [](unsigned char byte) {
+        return (byte & 0xC0) != 0x80;
+    }));
+}
+
 }  // namespace
 
 /**
@@ -734,6 +745,11 @@ LcdDisplay::~LcdDisplay() {
     if (preview_timer_ != nullptr) {
         esp_timer_stop(preview_timer_);
         esp_timer_delete(preview_timer_);
+    }
+
+    if (screensaver_memo_timer_ != nullptr) {
+        lv_timer_delete(screensaver_memo_timer_);
+        screensaver_memo_timer_ = nullptr;
     }
 
     if (screensaver_container_ != nullptr) {
@@ -1253,6 +1269,9 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_label_set_text(screensaver_todo_label_, "待办事项\n暂无待办");
     lv_obj_align(screensaver_todo_label_, LV_ALIGN_CENTER, -72,
                  kScreensaverBottomSectionOffsetY);
+    screensaver_memo_timer_ = lv_timer_create(
+        ScreensaverMemoTimerCallback, 8000, this);
+    lv_timer_pause(screensaver_memo_timer_);
 
     /* 网络和电量图标共用一个横向容器，在底部右半区作为整体居中显示。 */
     screensaver_status_icon_group_ = lv_obj_create(screensaver_container_);
@@ -1404,15 +1423,124 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
             lv_obj_set_style_translate_y(chat_message_label_, 0, 0);
         }
         UpdateScreensaverContent();
+        UpdateScreensaverMemo();
+        if (screensaver_memo_timer_ != nullptr && screensaver_memos_.size() > 1) {
+            lv_timer_resume(screensaver_memo_timer_);
+            lv_timer_reset(screensaver_memo_timer_);
+        }
         lv_obj_remove_flag(screensaver_container_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_invalidate(screensaver_container_);
     } else {
+        if (screensaver_memo_timer_ != nullptr) {
+            lv_timer_pause(screensaver_memo_timer_);
+        }
         lv_obj_add_flag(screensaver_container_, LV_OBJ_FLAG_HIDDEN);
         if (gif_controller_) {
             gif_controller_->Start();
         }
         UpdateSubtitleScroll();
     }
+}
+
+/**
+ * @brief 更新表盘天气的当前温度、天气描述和最低/最高温三列。
+ * @param temperature 当前摄氏温度。
+ * @param weather 中文天气描述。
+ * @param low_temperature 当天最低摄氏温度。
+ * @param high_temperature 当天最高摄氏温度。
+ * @details 方法内部获取 LVGL 锁并复制所有文本，调用结束后不再引用传入字符串。
+ */
+void LcdDisplay::SetScreensaverWeather(
+    int temperature,
+    const std::string& weather,
+    int low_temperature,
+    int high_temperature) {
+    DisplayLockGuard lock(this);
+    char temperature_text[32];
+    char range_text[64];
+    snprintf(temperature_text, sizeof(temperature_text), "%d℃", temperature);
+    snprintf(range_text, sizeof(range_text), "%d/%d", low_temperature, high_temperature);
+    SetLabelTextIfChanged(screensaver_weather_temperature_label_, temperature_text);
+    SetLabelTextIfChanged(screensaver_weather_description_label_, weather.c_str());
+    SetLabelTextIfChanged(screensaver_weather_range_label_, range_text);
+}
+
+/**
+ * @brief 替换屏保备忘录数组并立即从第一条重新展示。
+ * @param memos 后端按提醒时间排序的备忘录正文，最多采用前 5 条。
+ */
+void LcdDisplay::SetScreensaverMemos(const std::vector<std::string>& memos) {
+    DisplayLockGuard lock(this);
+    const size_t count = std::min<size_t>(memos.size(), 5);
+    screensaver_memos_.assign(memos.begin(), memos.begin() + count);
+    screensaver_memo_index_ = 0;
+    UpdateScreensaverMemo();
+    if (screensaver_memo_timer_ != nullptr) {
+        if (screensaver_active_ && screensaver_memos_.size() > 1) {
+            lv_timer_resume(screensaver_memo_timer_);
+            lv_timer_reset(screensaver_memo_timer_);
+        } else {
+            lv_timer_pause(screensaver_memo_timer_);
+        }
+    }
+}
+
+/**
+ * @brief 刷新当前备忘录文本及下一次切换周期。
+ * @details 12 个可见字符以内视为短文本并静止 8 秒；更长文本启用 LVGL 循环滚动，
+ *          按每个字符约 300 ms 估算完整阅读时间，并额外保留 3 秒后再切换下一条。
+ */
+void LcdDisplay::UpdateScreensaverMemo() {
+    if (screensaver_todo_label_ == nullptr) {
+        return;
+    }
+    if (screensaver_memos_.empty()) {
+        lv_label_set_long_mode(screensaver_todo_label_, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(screensaver_todo_label_, "待办事项\n暂无待办");
+        if (screensaver_memo_timer_ != nullptr) {
+            lv_timer_set_period(screensaver_memo_timer_, 8000);
+        }
+        return;
+    }
+
+    if (screensaver_memo_index_ >= screensaver_memos_.size()) {
+        screensaver_memo_index_ = 0;
+    }
+    const std::string& content = screensaver_memos_[screensaver_memo_index_];
+    const size_t visible_length = CountUtf8Codepoints(content);
+    if (visible_length <= 12) {
+        lv_label_set_long_mode(screensaver_todo_label_, LV_LABEL_LONG_WRAP);
+        const std::string text = "待办事项\n" + content;
+        lv_label_set_text(screensaver_todo_label_, text.c_str());
+        if (screensaver_memo_timer_ != nullptr) {
+            lv_timer_set_period(screensaver_memo_timer_, 8000);
+        }
+    } else {
+        lv_label_set_long_mode(screensaver_todo_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
+        const std::string text = "待办 " + content;
+        lv_label_set_text(screensaver_todo_label_, text.c_str());
+        const uint32_t duration_ms = static_cast<uint32_t>(
+            std::max<size_t>(8000, visible_length * 300 + 3000));
+        if (screensaver_memo_timer_ != nullptr) {
+            lv_timer_set_period(screensaver_memo_timer_, duration_ms);
+        }
+    }
+}
+
+/**
+ * @brief 在 LVGL 定时器上下文中切换到下一条备忘录。
+ * @param timer user_data 必须是仍然有效的 LcdDisplay 指针。
+ */
+void LcdDisplay::ScreensaverMemoTimerCallback(lv_timer_t* timer) {
+    auto* display = static_cast<LcdDisplay*>(lv_timer_get_user_data(timer));
+    if (display == nullptr || !display->screensaver_active_
+        || display->screensaver_memos_.empty()) {
+        return;
+    }
+    display->screensaver_memo_index_ =
+        (display->screensaver_memo_index_ + 1) % display->screensaver_memos_.size();
+    display->UpdateScreensaverMemo();
+    lv_timer_reset(timer);
 }
 
 #if CONFIG_USE_WECHAT_MESSAGE_STYLE

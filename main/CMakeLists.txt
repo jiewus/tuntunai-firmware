@@ -31,6 +31,7 @@ set(SOURCES
     "boards/common/power_save_timer.cc"
     "boards/common/press_to_talk_mcp_tool.cc"
     "boards/movecall-moji2-esp32c5/movecall_moji2_esp32c5.cc"
+    "backend/backend_service.cc"
     "mcp_server.cc"
     "system_info.cc"
     "application.cc"
@@ -51,6 +52,7 @@ set(INCLUDE_DIRS
     "display/lvgl_display/jpg"
     "protocols"
     "boards/common"
+    "backend"
 )
 
 # 唯一板型、内置字体和表情资源选择，同时传给 C++ 宏和资源构建脚本。

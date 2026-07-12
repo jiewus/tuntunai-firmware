@@ -12,9 +12,12 @@
 #include "press_to_talk_mcp_tool.h"
 #include "settings.h"
 
+#include <atomic>
+
 #include <esp_log.h>
 #include <driver/i2c_master.h>
 #include "power_save_timer.h"
+#include "backend/backend_service.h"
 
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
@@ -226,7 +229,7 @@ private:
     PowerSaveTimer* screen_off_timer_ = nullptr;
     AdcBatteryMonitor* adc_battery_monitor_ = nullptr;
     bool screensaver_enabled_ = true;
-    bool screensaver_active_ = false;
+    std::atomic<bool> screensaver_active_{false};
     bool screen_auto_off_enabled_ = false;
     bool screen_is_off_ = false;
     int screen_auto_off_timeout_ = 300;
@@ -287,10 +290,12 @@ private:
             if (display_ != nullptr && !screen_is_off_) {
                 screensaver_active_ = true;
                 display_->SetScreensaverMode(true);
+                BackendService::GetInstance().OnScreensaverChanged(true);
             }
         });
         power_save_timer_->OnExitSleepMode([this]() {
             screensaver_active_ = false;
+            BackendService::GetInstance().OnScreensaverChanged(false);
             if (display_ != nullptr) {
                 display_->SetScreensaverMode(false);
             }
@@ -553,6 +558,13 @@ public:
      */
     virtual bool IsScreensaverEnabled() const override {
         return screensaver_enabled_;
+    }
+
+    /**
+     * @return true 表示本板的金属黑表盘当前覆盖在普通对话界面之上。
+     */
+    virtual bool IsScreensaverActive() const override {
+        return screensaver_active_.load();
     }
 
     /**

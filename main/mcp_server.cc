@@ -356,6 +356,19 @@ void McpServer::AddTool(const std::string& name, const std::string& description,
 }
 
 /**
+ * @brief 注册由后台 Worker 执行的异步 MCP 工具。
+ * @param name MCP 工具的全局唯一名称。
+ * @param description 提供给大模型的用途、参数语义和确认规则。
+ * @param properties 工具输入参数定义。
+ * @param callback 接收已校验参数并负责最终调用完成回调的异步启动函数。
+ * @details 本方法只创建工具描述对象，不创建任务。具体 Worker 的队列和生命周期由业务模块管理。
+ */
+void McpServer::AddAsyncTool(const std::string& name, const std::string& description,
+                             const PropertyList& properties, AsyncMcpToolCallback callback) {
+    AddTool(new McpTool(name, description, properties, std::move(callback)));
+}
+
+/**
  * @brief 注册带 audience=user 注解的工具。
  * @param name MCP 工具的全局唯一名称。
  * @param description 提供给用户界面的工具用途说明。
@@ -378,7 +391,8 @@ void McpServer::AddUserOnlyTool(const std::string& name, const std::string& desc
 void McpServer::ParseMessage(const std::string& message) {
     cJSON* json = cJSON_Parse(message.c_str());
     if (json == nullptr) {
-        ESP_LOGE(TAG, "Failed to parse MCP message: %s", message.c_str());
+        ESP_LOGE(TAG, "Failed to parse MCP message, length=%u",
+                 static_cast<unsigned>(message.size()));
         return;
     }
     ParseMessage(json);
@@ -502,6 +516,32 @@ void McpServer::ReplyError(int id, const std::string& message) {
 }
 
 /**
+ * @brief 将异步业务结果转换为符合 MCP tools/call 的 result 对象。
+ * @param id 原始 JSON-RPC 数字请求编号。
+ * @param result 后台 Worker 返回的 UTF-8 文本和 isError 标志。
+ * @details 使用 cJSON 完成字符串转义，避免天气描述、备忘录或错误文本中的引号破坏协议结构。
+ */
+void McpServer::ReplyToolResult(int id, const McpToolResult& result) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON* content = cJSON_CreateArray();
+    cJSON* text = cJSON_CreateObject();
+    cJSON_AddStringToObject(text, "type", "text");
+    cJSON_AddStringToObject(text, "text", result.text.c_str());
+    cJSON_AddItemToArray(content, text);
+    cJSON_AddItemToObject(root, "content", content);
+    cJSON_AddBoolToObject(root, "isError", result.is_error);
+
+    char* serialized = cJSON_PrintUnformatted(root);
+    if (serialized != nullptr) {
+        ReplyResult(id, serialized);
+        cJSON_free(serialized);
+    } else {
+        ReplyError(id, "Failed to serialize asynchronous tool result");
+    }
+    cJSON_Delete(root);
+}
+
+/**
  * @brief 分页返回工具列表。
  * @param id tools/list 请求编号。
  * @param cursor 起始游标。
@@ -615,11 +655,17 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
         return;
     }
 
-    // 硬件和界面工具统一在应用主线程执行，避免跨线程访问板级资源。
+    // 硬件和界面工具统一从应用主线程启动，避免网络收包任务直接访问板级资源。
     auto& app = Application::GetInstance();
     app.Schedule([this, id, tool_iter, arguments = std::move(arguments)]() {
         try {
-            ReplyResult(id, (*tool_iter)->Call(arguments));
+            if ((*tool_iter)->is_async()) {
+                (*tool_iter)->CallAsync(arguments, [this, id](McpToolResult result) {
+                    ReplyToolResult(id, result);
+                });
+            } else {
+                ReplyResult(id, (*tool_iter)->Call(arguments));
+            }
         } catch (const std::exception& e) {
             ESP_LOGE(TAG, "tools/call: %s", e.what());
             ReplyError(id, e.what());

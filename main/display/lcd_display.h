@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <memory>
+#include <vector>
 
 #define PREVIEW_IMAGE_DURATION_MS 5000
 
@@ -54,6 +55,10 @@ protected:
     lv_obj_t* screensaver_weather_description_label_ = nullptr;
     lv_obj_t* screensaver_weather_range_label_ = nullptr;
     lv_obj_t* screensaver_todo_label_ = nullptr;
+    /**
+     * @brief 驱动多条屏保备忘录循环切换的 LVGL 定时器。
+     */
+    lv_timer_t* screensaver_memo_timer_ = nullptr;
     lv_obj_t* screensaver_status_icon_group_ = nullptr;
     lv_obj_t* screensaver_network_label_ = nullptr;
     lv_obj_t* screensaver_battery_label_ = nullptr;
@@ -62,6 +67,14 @@ protected:
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
     bool hide_subtitle_ = false;  ///< true 时不在屏幕显示对话字幕。
     bool screensaver_active_ = false;  ///< true 时金属黑表盘覆盖正常对话界面。
+    /**
+     * @brief 保存后端最近成功返回的最多 5 条备忘录正文副本。
+     */
+    std::vector<std::string> screensaver_memos_;
+    /**
+     * @brief 指向当前正在表盘左下区域展示的备忘录下标。
+     */
+    size_t screensaver_memo_index_ = 0;
 
     /**
      * @brief 注册内置浅色/深色主题及资源主题。
@@ -111,6 +124,17 @@ protected:
      *          在数据接口接入前显示占位内容。
      */
     void UpdateScreensaverContent();
+    /**
+     * @brief 根据当前下标刷新备忘录标签并计算下一条轮播等待时间。
+     * @details 短文本固定展示 8 秒；长文本使用横向滚动，并按字符数量估算滚动完成时间后
+     *          再保留 3 秒。调用者必须持有 LVGL 锁。
+     */
+    void UpdateScreensaverMemo();
+    /**
+     * @brief LVGL 定时器回调，切换到下一条缓存备忘录。
+     * @param timer user_data 指向当前 LcdDisplay 实例。
+     */
+    static void ScreensaverMemoTimerCallback(lv_timer_t* timer);
     /**
      * @brief 获取 LVGL 全局互斥锁。
      * @param timeout_ms 最大等待毫秒数。
@@ -164,6 +188,15 @@ public:
      * @param enabled true 进入屏保；false 退出屏保并恢复正常对话界面。
      */
     virtual void SetScreensaverMode(bool enabled) override;
+    /**
+     * @brief 线程安全地更新表盘天气三列。
+     */
+    virtual void SetScreensaverWeather(int temperature, const std::string& weather,
+                                       int low_temperature, int high_temperature) override;
+    /**
+     * @brief 线程安全地替换备忘录缓存，并从第一条重新开始轮播。
+     */
+    virtual void SetScreensaverMemos(const std::vector<std::string>& memos) override;
     
     /**
      * @brief 设置是否隐藏字幕。

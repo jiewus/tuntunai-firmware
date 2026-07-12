@@ -7,6 +7,8 @@
 #include <variant>
 #include <optional>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 
 #include <cJSON.h>
 
@@ -19,6 +21,41 @@
  * @brief MCP 工具允许返回的值类型；cJSON* 的所有权在序列化后由框架释放。
  */
 using ReturnValue = std::variant<bool, int, std::string, cJSON*>;
+
+class PropertyList;
+
+/**
+ * @brief 异步 MCP 工具完成后返回的标准结果。
+ *
+ * text 保存最终写入 MCP content.text 的 UTF-8 内容；当内容是业务对象时应使用
+ * 紧凑 JSON 文本。is_error 为 true 时，框架仍通过 JSON-RPC result 返回，但会设置
+ * MCP 规范要求的 isError=true，使大模型能够区分业务失败与正常工具结果。
+ */
+struct McpToolResult {
+    /**
+     * @brief 获取或设置写入 MCP content.text 的 UTF-8 文本。
+     */
+    std::string text;
+    /**
+     * @brief 获取或设置本次工具调用是否属于业务失败。
+     */
+    bool is_error = false;
+};
+
+/**
+ * @brief 异步工具执行结束时必须调用一次的完成回调。
+ * @param result 工具的结构化文本和错误标志。
+ */
+using McpToolCompletion = std::function<void(McpToolResult result)>;
+
+/**
+ * @brief 参数校验完成后启动异步工作的工具回调。
+ * @param properties 已填入默认值并完成类型、范围校验的参数列表。
+ * @param completion 工作完成后用于回复原 JSON-RPC 请求的回调。
+ */
+using AsyncMcpToolCallback = std::function<void(
+    const PropertyList& properties,
+    McpToolCompletion completion)>;
 
 /**
  * @brief MCP 输入属性支持的 JSON Schema 基础类型。
@@ -229,6 +266,7 @@ private:
     std::string description_;
     PropertyList properties_;
     std::function<ReturnValue(const PropertyList&)> callback_;
+    AsyncMcpToolCallback async_callback_;
     bool user_only_ = false;
 
 public:
@@ -248,6 +286,22 @@ public:
         callback_(callback) {}
 
     /**
+     * @brief 创建不会阻塞应用主任务的异步 MCP 工具。
+     * @param name MCP 工具唯一名称。
+     * @param description 提供给大模型的工具用途和调用约束。
+     * @param properties 输入参数 Schema。
+     * @param callback 负责把实际工作投递给后台 Worker，并在结束时调用 completion。
+     */
+    McpTool(const std::string& name,
+            const std::string& description,
+            const PropertyList& properties,
+            AsyncMcpToolCallback callback)
+        : name_(name),
+          description_(description),
+          properties_(properties),
+          async_callback_(std::move(callback)) {}
+
+    /**
      * @brief 标记工具只供用户界面使用，不暴露给模型自主选择。
      */
     void set_user_only(bool user_only) { user_only_ = user_only; }
@@ -255,6 +309,10 @@ public:
     inline const std::string& description() const { return description_; }
     inline const PropertyList& properties() const { return properties_; }
     inline bool user_only() const { return user_only_; }
+    /**
+     * @return true 表示工具通过完成回调异步返回结果。
+     */
+    inline bool is_async() const { return static_cast<bool>(async_callback_); }
 
     /**
      * @brief 生成 MCP tools/list 中的单个工具声明。
@@ -333,6 +391,19 @@ public:
         cJSON_Delete(result);
         return result_str;
     }
+
+    /**
+     * @brief 启动异步工具，并把后台结果交给调用方提供的完成回调。
+     * @param properties 已完成校验的工具参数副本。
+     * @param completion 绑定原 JSON-RPC 请求编号的回复函数。
+     * @throws std::runtime_error 当前工具不是异步工具时抛出。
+     */
+    void CallAsync(const PropertyList& properties, McpToolCompletion completion) {
+        if (!async_callback_) {
+            throw std::runtime_error("Tool is not asynchronous: " + name_);
+        }
+        async_callback_(properties, std::move(completion));
+    }
 };
 
 /**
@@ -362,6 +433,15 @@ public:
      */
     void AddTool(const std::string& name, const std::string& description, const PropertyList& properties, std::function<ReturnValue(const PropertyList&)> callback);
     /**
+     * @brief 注册由后台任务执行并通过完成回调应答的异步工具。
+     * @param name MCP 工具的全局唯一名称。
+     * @param description 提供给大模型的工具用途说明。
+     * @param properties 工具参数定义、默认值和范围约束。
+     * @param callback 参数校验后调用的异步启动函数。
+     */
+    void AddAsyncTool(const std::string& name, const std::string& description,
+                      const PropertyList& properties, AsyncMcpToolCallback callback);
+    /**
      * @brief 注册带 audience=user 注解的工具。
      */
     void AddUserOnlyTool(const std::string& name, const std::string& description, const PropertyList& properties, std::function<ReturnValue(const PropertyList&)> callback);
@@ -389,6 +469,12 @@ private:
      * @param message 可诊断错误说明。
      */
     void ReplyError(int id, const std::string& message);
+    /**
+     * @brief 将异步工具结果包装为 MCP content 数组并回复原请求。
+     * @param id 原 tools/call 请求编号。
+     * @param result 后台任务返回的文本和业务错误标志。
+     */
+    void ReplyToolResult(int id, const McpToolResult& result);
 
     /**
      * @brief 分页返回工具列表。

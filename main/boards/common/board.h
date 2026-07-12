@@ -129,6 +129,10 @@ public:
      */
     virtual bool IsScreensaverEnabled() const { return false; }
     /**
+     * @return true 表示表盘屏保当前正在屏幕上显示，而不只是配置为允许进入。
+     */
+    virtual bool IsScreensaverActive() const { return false; }
+    /**
      * @brief 设置是否允许无互动时自动关闭背光。
      * @param enabled true 开启自动熄屏；false 禁止自动熄屏。
      * @return 当前板型支持并成功应用时返回 true。

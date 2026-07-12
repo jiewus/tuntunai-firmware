@@ -11,6 +11,7 @@
 #include "websocket_protocol.h"
 #include "assets/lang_config.h"
 #include "mcp_server.h"
+#include "backend/backend_service.h"
 #include "assets.h"
 #include "settings.h"
 
@@ -148,6 +149,9 @@ void Application::Initialize() {
     auto& mcp_server = McpServer::GetInstance();
     mcp_server.AddCommonTools();
     mcp_server.AddUserOnlyTools();
+    auto& backend_service = BackendService::GetInstance();
+    backend_service.Start();
+    backend_service.RegisterMcpTools(mcp_server);
 
     // 将板级网络事件转换为界面提示和主循环事件。
     board.SetNetworkEventCallback([this](NetworkEvent event, const std::string& data) {
@@ -178,9 +182,11 @@ void Application::Initialize() {
                 msg += data;
                 display->ShowNotification(msg.c_str(), 30000);
                 xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_CONNECTED);
+                BackendService::GetInstance().OnNetworkConnected();
                 break;
             }
             case NetworkEvent::Disconnected:
+                BackendService::GetInstance().OnNetworkDisconnected();
                 xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_DISCONNECTED);
                 break;
             case NetworkEvent::WifiConfigModeEnter:
@@ -1336,6 +1342,7 @@ void Application::PlaySound(const std::string_view& sound) {
  *          使断线回调和收包回调不会与资源释放并发。
  */
 void Application::ResetProtocol() {
+    BackendService::GetInstance().OnMcpDisconnected();
     Schedule([this]() {
         // 先关闭活动音频通道，让协议层触发正常的会话结束回调。
         if (protocol_ && protocol_->IsAudioChannelOpened()) {

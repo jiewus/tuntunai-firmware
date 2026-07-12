@@ -12,6 +12,7 @@
 
 #include <string>
 #include <chrono>
+#include <vector>
 
 /**
  * @file display.h
@@ -96,6 +97,29 @@ public:
      * @details 默认实现不执行任何操作，带屏幕的具体显示类负责创建和维护屏保内容。
      */
     virtual void SetScreensaverMode(bool enabled);
+    /**
+     * @brief 更新屏保天气三列内容。
+     * @param temperature 当前温度，单位为摄氏度。
+     * @param weather 中文天气描述。
+     * @param low_temperature 当天最低温度，单位为摄氏度。
+     * @param high_temperature 当天最高温度，单位为摄氏度。
+     * @details 默认实现为空操作，只有带天气表盘的显示类需要覆盖。
+     */
+    virtual void SetScreensaverWeather(int temperature, const std::string& weather,
+                                       int low_temperature, int high_temperature) {
+        (void)temperature;
+        (void)weather;
+        (void)low_temperature;
+        (void)high_temperature;
+    }
+    /**
+     * @brief 替换屏保循环展示的备忘录数组。
+     * @param memos 已按后端优先级排序的正文数组，最多使用前 5 条。
+     * @details 默认实现为空操作，具体 LCD 实现负责复制正文并重置轮播位置。
+     */
+    virtual void SetScreensaverMemos(const std::vector<std::string>& memos) {
+        (void)memos;
+    }
     /**
      * @brief 创建基础 UI；子类覆盖时必须设置 setup_ui_called_。
      */
