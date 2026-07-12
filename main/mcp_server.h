@@ -1,0 +1,407 @@
+#ifndef MCP_SERVER_H
+#define MCP_SERVER_H
+
+#include <string>
+#include <vector>
+#include <functional>
+#include <variant>
+#include <optional>
+#include <stdexcept>
+
+#include <cJSON.h>
+
+/**
+ * @file mcp_server.h
+ * @brief 设备端 MCP JSON-RPC 工具注册、参数校验、调用和应答框架。
+ */
+
+/**
+ * @brief MCP 工具允许返回的值类型；cJSON* 的所有权在序列化后由框架释放。
+ */
+using ReturnValue = std::variant<bool, int, std::string, cJSON*>;
+
+/**
+ * @brief MCP 输入属性支持的 JSON Schema 基础类型。
+ */
+enum PropertyType {
+    kPropertyTypeBoolean,
+    kPropertyTypeInteger,
+    kPropertyTypeString
+};
+
+/**
+ * @brief 单个工具输入属性的名称、类型、默认值和整数范围约束。
+ */
+class Property {
+private:
+    std::string name_;
+    PropertyType type_;
+    std::variant<bool, int, std::string> value_;
+    bool has_default_value_;
+    std::optional<int> min_value_;  ///< 整数属性允许的最小值。
+    std::optional<int> max_value_;  ///< 整数属性允许的最大值。
+
+public:
+    /**
+     * @brief 创建必填属性。
+     * @param name JSON 字段名。
+     * @param type 字段类型。
+     */
+    Property(const std::string& name, PropertyType type)
+        : name_(name), type_(type), has_default_value_(false) {}
+
+    /**
+     * @brief 创建带默认值的可选属性。
+     * @param default_value 类型必须与 type 对应。
+     */
+    template<typename T>
+    Property(const std::string& name, PropertyType type, const T& default_value)
+        : name_(name), type_(type), has_default_value_(true) {
+        value_ = default_value;
+    }
+
+    /**
+     * @brief 创建有取值范围的必填整数属性。
+     */
+    Property(const std::string& name, PropertyType type, int min_value, int max_value)
+        : name_(name), type_(type), has_default_value_(false), min_value_(min_value), max_value_(max_value) {
+        if (type != kPropertyTypeInteger) {
+            throw std::invalid_argument("Range limits only apply to integer properties");
+        }
+    }
+
+    /**
+     * @brief 创建有默认值和范围的可选整数属性；默认值必须落在闭区间内。
+     */
+    Property(const std::string& name, PropertyType type, int default_value, int min_value, int max_value)
+        : name_(name), type_(type), has_default_value_(true), min_value_(min_value), max_value_(max_value) {
+        if (type != kPropertyTypeInteger) {
+            throw std::invalid_argument("Range limits only apply to integer properties");
+        }
+        if (default_value < min_value || default_value > max_value) {
+            throw std::invalid_argument("Default value must be within the specified range");
+        }
+        value_ = default_value;
+    }
+
+    inline const std::string& name() const { return name_; }
+    inline PropertyType type() const { return type_; }
+    inline bool has_default_value() const { return has_default_value_; }
+    inline bool has_range() const { return min_value_.has_value() && max_value_.has_value(); }
+    inline int min_value() const { return min_value_.value_or(0); }
+    inline int max_value() const { return max_value_.value_or(0); }
+
+    template<typename T>
+    /**
+     * @brief 以指定 C++ 类型读取当前值；类型不匹配时 std::variant 会抛异常。
+     */
+    inline T value() const {
+        return std::get<T>(value_);
+    }
+
+    template<typename T>
+    /**
+     * @brief 设置属性值；整数会先执行最小/最大范围校验。
+     */
+    inline void set_value(const T& value) {
+        // 只有整数属性具有数值范围；字符串和布尔属性只做 variant 类型约束。
+        if constexpr (std::is_same_v<T, int>) {
+            if (min_value_.has_value() && value < min_value_.value()) {
+                throw std::invalid_argument("Value is below minimum allowed: " + std::to_string(min_value_.value()));
+            }
+            if (max_value_.has_value() && value > max_value_.value()) {
+                throw std::invalid_argument("Value exceeds maximum allowed: " + std::to_string(max_value_.value()));
+            }
+        }
+        value_ = value;
+    }
+
+    /**
+     * @brief 生成该属性的 JSON Schema 片段。
+     */
+    std::string to_json() const {
+        cJSON *json = cJSON_CreateObject();
+        
+        if (type_ == kPropertyTypeBoolean) {
+            cJSON_AddStringToObject(json, "type", "boolean");
+            if (has_default_value_) {
+                cJSON_AddBoolToObject(json, "default", value<bool>());
+            }
+        } else if (type_ == kPropertyTypeInteger) {
+            cJSON_AddStringToObject(json, "type", "integer");
+            if (has_default_value_) {
+                cJSON_AddNumberToObject(json, "default", value<int>());
+            }
+            if (min_value_.has_value()) {
+                cJSON_AddNumberToObject(json, "minimum", min_value_.value());
+            }
+            if (max_value_.has_value()) {
+                cJSON_AddNumberToObject(json, "maximum", max_value_.value());
+            }
+        } else if (type_ == kPropertyTypeString) {
+            cJSON_AddStringToObject(json, "type", "string");
+            if (has_default_value_) {
+                cJSON_AddStringToObject(json, "default", value<std::string>().c_str());
+            }
+        }
+        
+        char *json_str = cJSON_PrintUnformatted(json);
+        std::string result(json_str);
+        cJSON_free(json_str);
+        cJSON_Delete(json);
+        
+        return result;
+    }
+};
+
+/**
+ * @brief 保持工具属性声明顺序，并提供按名称访问和 Schema 序列化。
+ */
+class PropertyList {
+private:
+    std::vector<Property> properties_;
+
+public:
+    PropertyList() = default;
+    PropertyList(const std::vector<Property>& properties) : properties_(properties) {}
+    /**
+     * @brief 追加属性定义。
+     * @param property 会复制到列表。
+     */
+    void AddProperty(const Property& property) {
+        properties_.push_back(property);
+    }
+
+    /**
+     * @brief 按名称取得属性；不存在时抛出 runtime_error。
+     */
+    const Property& operator[](const std::string& name) const {
+        for (const auto& property : properties_) {
+            if (property.name() == name) {
+                return property;
+            }
+        }
+        throw std::runtime_error("Property not found: " + name);
+    }
+
+    auto begin() { return properties_.begin(); }
+    auto end() { return properties_.end(); }
+
+    /**
+     * @return 所有没有默认值、因此必须由调用方提供的字段名。
+     */
+    std::vector<std::string> GetRequired() const {
+        std::vector<std::string> required;
+        for (auto& property : properties_) {
+            if (!property.has_default_value()) {
+                required.push_back(property.name());
+            }
+        }
+        return required;
+    }
+
+    /**
+     * @brief 生成 properties 对象的 JSON Schema 文本。
+     */
+    std::string to_json() const {
+        cJSON *json = cJSON_CreateObject();
+        
+        for (const auto& property : properties_) {
+            cJSON *prop_json = cJSON_Parse(property.to_json().c_str());
+            cJSON_AddItemToObject(json, property.name().c_str(), prop_json);
+        }
+        
+        char *json_str = cJSON_PrintUnformatted(json);
+        std::string result(json_str);
+        cJSON_free(json_str);
+        cJSON_Delete(json);
+        
+        return result;
+    }
+};
+
+/**
+ * @brief 一个可被模型或用户调用的 MCP 工具及其执行回调。
+ */
+class McpTool {
+private:
+    std::string name_;
+    std::string description_;
+    PropertyList properties_;
+    std::function<ReturnValue(const PropertyList&)> callback_;
+    bool user_only_ = false;
+
+public:
+    /**
+     * @param name MCP 工具唯一名称，通常使用 device.xxx 格式。
+     * @param description 提供给大模型的用途描述。
+     * @param properties 输入参数 Schema。
+     * @param callback 校验完成后执行的同步回调。
+     */
+    McpTool(const std::string& name, 
+            const std::string& description, 
+            const PropertyList& properties, 
+            std::function<ReturnValue(const PropertyList&)> callback)
+        : name_(name), 
+        description_(description), 
+        properties_(properties), 
+        callback_(callback) {}
+
+    /**
+     * @brief 标记工具只供用户界面使用，不暴露给模型自主选择。
+     */
+    void set_user_only(bool user_only) { user_only_ = user_only; }
+    inline const std::string& name() const { return name_; }
+    inline const std::string& description() const { return description_; }
+    inline const PropertyList& properties() const { return properties_; }
+    inline bool user_only() const { return user_only_; }
+
+    /**
+     * @brief 生成 MCP tools/list 中的单个工具声明。
+     */
+    std::string to_json() const {
+        std::vector<std::string> required = properties_.GetRequired();
+        
+        cJSON *json = cJSON_CreateObject();
+        cJSON_AddStringToObject(json, "name", name_.c_str());
+        cJSON_AddStringToObject(json, "description", description_.c_str());
+        
+        cJSON *input_schema = cJSON_CreateObject();
+        cJSON_AddStringToObject(input_schema, "type", "object");
+        
+        cJSON *properties = cJSON_Parse(properties_.to_json().c_str());
+        cJSON_AddItemToObject(input_schema, "properties", properties);
+        
+        if (!required.empty()) {
+            cJSON *required_array = cJSON_CreateArray();
+            for (const auto& property : required) {
+                cJSON_AddItemToArray(required_array, cJSON_CreateString(property.c_str()));
+            }
+            cJSON_AddItemToObject(input_schema, "required", required_array);
+        }
+        
+        cJSON_AddItemToObject(json, "inputSchema", input_schema);
+
+        // user_only 工具附带 audience=user 注解，使云端不把它加入模型工具列表。
+        if (user_only_) {
+            cJSON *annotations = cJSON_CreateObject();
+            cJSON *audience = cJSON_CreateArray();
+            cJSON_AddItemToArray(audience, cJSON_CreateString("user"));
+            cJSON_AddItemToObject(annotations, "audience", audience);
+            cJSON_AddItemToObject(json, "annotations", annotations);
+        }
+        
+        char *json_str = cJSON_PrintUnformatted(json);
+        std::string result(json_str);
+        cJSON_free(json_str);
+        cJSON_Delete(json);
+        
+        return result;
+    }
+
+    /**
+     * @brief 调用工具并把多种 C++ 返回值统一包装成 MCP content 响应。
+     */
+    std::string Call(const PropertyList& properties) {
+        ReturnValue return_value = callback_(properties);
+        // 返回结果
+        cJSON* result = cJSON_CreateObject();
+        cJSON* content = cJSON_CreateArray();
+
+        cJSON* text = cJSON_CreateObject();
+        cJSON_AddStringToObject(text, "type", "text");
+        if (std::holds_alternative<std::string>(return_value)) {
+            cJSON_AddStringToObject(text, "text", std::get<std::string>(return_value).c_str());
+        } else if (std::holds_alternative<bool>(return_value)) {
+            cJSON_AddStringToObject(text, "text", std::get<bool>(return_value) ? "true" : "false");
+        } else if (std::holds_alternative<int>(return_value)) {
+            cJSON_AddStringToObject(text, "text", std::to_string(std::get<int>(return_value)).c_str());
+        } else if (std::holds_alternative<cJSON*>(return_value)) {
+            cJSON* json = std::get<cJSON*>(return_value);
+            char* json_str = cJSON_PrintUnformatted(json);
+            cJSON_AddStringToObject(text, "text", json_str);
+            cJSON_free(json_str);
+            cJSON_Delete(json);
+        }
+        cJSON_AddItemToArray(content, text);
+        cJSON_AddItemToObject(result, "content", content);
+        cJSON_AddBoolToObject(result, "isError", false);
+
+        auto json_str = cJSON_PrintUnformatted(result);
+        std::string result_str(json_str);
+        cJSON_free(json_str);
+        cJSON_Delete(result);
+        return result_str;
+    }
+};
+
+/**
+ * @brief MCP 单例服务器，解析云端请求并通过 Application 的协议通道应答。
+ */
+class McpServer {
+public:
+    static McpServer& GetInstance() {
+        static McpServer instance;
+        return instance;
+    }
+
+    /**
+     * @brief 注册音量、亮度、设备状态等可供模型调用的通用工具。
+     */
+    void AddCommonTools();
+    /**
+     * @brief 注册仅供用户界面直接调用的工具。
+     */
+    void AddUserOnlyTools();
+    /**
+     * @brief 接管动态创建的工具指针，析构时统一释放。
+     */
+    void AddTool(McpTool* tool);
+    /**
+     * @brief 便捷注册普通工具，各参数含义同 McpTool 构造器。
+     */
+    void AddTool(const std::string& name, const std::string& description, const PropertyList& properties, std::function<ReturnValue(const PropertyList&)> callback);
+    /**
+     * @brief 注册带 audience=user 注解的工具。
+     */
+    void AddUserOnlyTool(const std::string& name, const std::string& description, const PropertyList& properties, std::function<ReturnValue(const PropertyList&)> callback);
+    /**
+     * @brief 解析已构造的 JSON-RPC 根对象；json 仅在调用期间有效。
+     */
+    void ParseMessage(const cJSON* json);
+    /**
+     * @brief 解析 JSON 文本并转发到对象版本。
+     */
+    void ParseMessage(const std::string& message);
+
+private:
+    McpServer();
+    ~McpServer();
+
+    /**
+     * @brief 回复 JSON-RPC result。
+     * @param id 请求编号。
+     * @param result 已序列化结果对象。
+     */
+    void ReplyResult(int id, const std::string& result);
+    /**
+     * @brief 回复 JSON-RPC error。
+     * @param message 可诊断错误说明。
+     */
+    void ReplyError(int id, const std::string& message);
+
+    /**
+     * @brief 分页返回工具列表。
+     * @param cursor 起始游标。
+     * @param list_user_only_tools 是否只列用户工具。
+     */
+    void GetToolsList(int id, const std::string& cursor, bool list_user_only_tools);
+    /**
+     * @brief 查找工具、解析和校验参数，再执行工具回调。
+     */
+    void DoToolCall(int id, const std::string& tool_name, const cJSON* tool_arguments);
+
+    std::vector<McpTool*> tools_;
+};
+
+#endif // MCP_SERVER_H

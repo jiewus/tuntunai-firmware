@@ -1,0 +1,80 @@
+# 本文件只保留 Moji2 ESP32-C5 实际使用的产品配置项。
+menu "Movecall Moji2 Assistant"
+
+config OTA_URL
+    string "Default OTA URL"
+    # 设备启动时向该服务查询协议参数、激活状态和新固件地址。
+    default "https://your-ota.example.com/xiaozhi/ota/"
+
+choice
+    prompt "Flash Assets"
+    # 决定 idf.py flash 是否同时写入字体、表情和 WakeNet 模型资源分区。
+    default FLASH_DEFAULT_ASSETS
+
+    config FLASH_NONE_ASSETS
+        bool "Do not flash assets"
+    config FLASH_DEFAULT_ASSETS
+        bool "Flash default Chinese assets"
+    config FLASH_CUSTOM_ASSETS
+        bool "Flash custom assets"
+endchoice
+
+config CUSTOM_ASSETS_FILE
+    string "Custom Assets File"
+    # 可使用 URL、绝对路径或相对 main/ 的路径。
+    default "assets.bin"
+    depends on FLASH_CUSTOM_ASSETS
+
+choice BOARD_TYPE
+    prompt "Board Type"
+    # 裁剪后的仓库只有一个板型，保留 choice 是为了兼容现有 CONFIG 宏。
+    default BOARD_TYPE_MOVECALL_MOJI2_ESP32C5
+
+    config BOARD_TYPE_MOVECALL_MOJI2_ESP32C5
+        bool "Movecall Moji2.0 ESP32-C5"
+        depends on IDF_TARGET_ESP32C5
+endchoice
+
+choice DISPLAY_STYLE
+    prompt "Display Style"
+    # 控制字幕区域布局，不改变 LCD 驱动和分辨率。
+    default USE_DEFAULT_MESSAGE_STYLE
+
+    config USE_DEFAULT_MESSAGE_STYLE
+        bool "Default message style"
+    config USE_WECHAT_MESSAGE_STYLE
+        bool "WeChat message style"
+endchoice
+
+choice WAKE_WORD_TYPE
+    prompt "Wake Word"
+    # ESP32-C5 不启用 AFE，仅运行 WakeNet9s 离线唤醒模型。
+    default USE_ESP_WAKE_WORD
+
+    config WAKE_WORD_DISABLED
+        bool "Disabled"
+    config USE_ESP_WAKE_WORD
+        bool "WakeNet9s without AFE"
+        depends on IDF_TARGET_ESP32C5
+endchoice
+
+config USE_AUDIO_DEBUGGER
+    bool "Enable audio debugger"
+    # 开启后会把麦克风 PCM 通过 UDP 发往下方配置的开发机地址。
+    default n
+
+config AUDIO_DEBUG_UDP_SERVER
+    string "Audio debug UDP server"
+    default "192.168.2.100:8000"
+    depends on USE_AUDIO_DEBUGGER
+
+config USE_HOTSPOT_WIFI_PROVISIONING
+    bool
+    # 本产品固定使用 SoftAP + 网页方式配置 Wi-Fi。
+    default y
+
+config RECEIVE_CUSTOM_MESSAGE
+    bool "Enable custom server messages"
+    default n
+
+endmenu
