@@ -98,15 +98,18 @@ public:
      */
     virtual void SetScreensaverMode(bool enabled);
     /**
-     * @brief 更新屏保天气三列内容。
+     * @brief 更新屏保天气位置和天气三列内容。
+     * @param location 当前天气位置名称，例如“上海市松江区”。
      * @param temperature 当前温度，单位为摄氏度。
      * @param weather 中文天气描述。
      * @param low_temperature 当天最低温度，单位为摄氏度。
      * @param high_temperature 当天最高温度，单位为摄氏度。
      * @details 默认实现为空操作，只有带天气表盘的显示类需要覆盖。
      */
-    virtual void SetScreensaverWeather(int temperature, const std::string& weather,
+    virtual void SetScreensaverWeather(const std::string& location, int temperature,
+                                       const std::string& weather,
                                        int low_temperature, int high_temperature) {
+        (void)location;
         (void)temperature;
         (void)weather;
         (void)low_temperature;

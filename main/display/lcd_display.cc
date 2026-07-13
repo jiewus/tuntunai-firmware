@@ -138,53 +138,118 @@ constexpr int kScreensaverTimeColumnGap = 10;
 
 /**
  * @brief 表盘普通辅助文字的目标视觉字号，单位为像素。
- * @details 当前主要用于底部待办事项。完整主题字体通常为 30px，代码会根据字体实际行高
- *          自动换算 LVGL 缩放比例，使最终视觉字号接近 20px，而不是直接假设字体源字号。
+ * @details 当前主要用于时间下方的备忘录正文。完整主题字体通常为 30px，代码会根据字体
+ *          实际行高自动换算 LVGL 缩放比例，使最终视觉字号接近 28px。大字号能够提升圆屏
+ *          阅读距离，同时仍为三行短备忘录保留足够垂直空间。
  */
-constexpr int kScreensaverSmallTextPixelSize = 20;
+constexpr int kScreensaverSmallTextPixelSize = 28;
+
+/**
+ * @brief 时间下方三行备忘录视口的最终可见宽度，单位为物理像素。
+ * @details 228px 根据视口底边所在位置的圆屏有效弦宽预留了左右安全余量，避免第三行
+ *          靠近屏幕两侧弧形边缘。文字标签会根据缩放比例反算逻辑宽度并在此视口内换行。
+ */
+constexpr int kScreensaverMemoWidth = 228;
+
+/**
+ * @brief 备忘录固定显示的行数。
+ * @details 三行以内保持静止，超过三行后在固定视口内向上滚动，不启用左右滚动。
+ */
+constexpr int kScreensaverMemoVisibleLines = 3;
+
+/**
+ * @brief 备忘录相邻两行之间的最终可见间距，单位为物理像素。
+ */
+constexpr int kScreensaverMemoLineSpacing = 5;
+
+/**
+ * @brief 三行备忘录裁切视口的最终可见高度，单位为物理像素。
+ * @details 三行 28px 正文和两个 5px 行间距需要 94px，额外增加 2px 用于吸收字体缩放
+ *          的向上取整误差，确保恰好三行时不会因为 1px 溢出而错误启动滚动。
+ */
+constexpr int kScreensaverMemoViewportHeight =
+    kScreensaverSmallTextPixelSize * kScreensaverMemoVisibleLines
+    + kScreensaverMemoLineSpacing * (kScreensaverMemoVisibleLines - 1) + 2;
+
+/**
+ * @brief 超长备忘录向上滚动的目标速度，单位为物理像素每秒。
+ */
+constexpr int kScreensaverMemoScrollPixelsPerSecond = 22;
+
+/**
+ * @brief 超长备忘录开始向上滚动前停留在首行位置的时间，单位为毫秒。
+ */
+constexpr int kScreensaverMemoScrollStartDelayMs = 1200;
+
+/**
+ * @brief 超长备忘录滚动到末尾后停留的时间，单位为毫秒。
+ */
+constexpr int kScreensaverMemoScrollEndDelayMs = 1800;
+
+/**
+ * @brief 天气位置名称的目标视觉字号，单位为像素。
+ * @details 位置名称单独位于天气三列上方并水平居中。使用 25px 可容纳“浙江省杭州市西湖区”
+ *          等完整省市区名称，同时与下方更醒目的天气数据形成清晰的信息层级。
+ */
+constexpr int kScreensaverLocationTextPixelSize = 25;
+
+/**
+ * @brief 天气位置名称标签的最终可见宽度，单位为物理像素。
+ * @details 220px 可以在圆屏顶部安全区内容纳常见完整省市区名称。主题字体变化时会根据
+ *          实际缩放比例反算逻辑宽度，保证最终可见宽度和水平中心保持不变。
+ */
+constexpr int kScreensaverLocationWidth = 220;
 
 /**
  * @brief 天气三列文字的目标视觉字号，单位为像素。
  * @details 当前温度、天气描述和最低/最高温度共用该字号。字体资源切换后会根据新字体的
  *          line_height 重新计算缩放比例，确保精简字体和完整中文字库显示尺寸基本一致。
  */
-constexpr int kScreensaverWeatherTextPixelSize = 25;
+constexpr int kScreensaverWeatherTextPixelSize = 29;
 
 /**
  * @brief 天气三列相邻内容之间的最终可见间距，单位为像素。
  * @details 该值描述的是缩放后的屏幕视觉间距。代码会根据天气字体的缩放比例反算 Flex
- *          容器所需的逻辑间距，因此当前温度、天气描述和温度范围之间约保持 20px 距离。
+ *          容器所需的逻辑间距，因此当前温度、天气描述和温度范围之间约保持 15px 距离。
  */
-constexpr int kScreensaverWeatherColumnGap = 20;
+constexpr int kScreensaverWeatherColumnGap = 15;
 
 /**
  * @brief 农历、公历和星期文字的目标视觉字号，单位为像素。
  * @details 日期三列共用该字号，并作为一个整体保持单行居中。增大后日期更醒目，但较长的
  *          闰月日期可能接近圆屏两侧；减小后可以获得更大的横向安全余量。
  */
-constexpr int kScreensaverDateTextPixelSize = 22;
+constexpr int kScreensaverDateTextPixelSize = 26;
 
 /**
  * @brief 日期三列相邻内容之间的最终可见间距，单位为像素。
  * @details 该值控制农历与公历、公历与星期之间的距离。与天气间距相同，代码会先根据字体
  *          缩放比例换算为 Flex 逻辑间距，再将整个日期组合水平居中。
  */
-constexpr int kScreensaverDateColumnGap = 25;
+constexpr int kScreensaverDateColumnGap = 20;
 
 /**
- * @brief 天气和日期文字在缩放前使用的同色描边宽度，单位为字体源像素。
- * @details 完整主题字体通常从 30px 缩放到 22px，因此 3px 源描边最终约为 2.2px 可见宽度。
- *          描边颜色与正文颜色一致，用于模拟粗体效果；数值过大会使相邻笔画粘连。
+ * @brief 点阵字体伪粗体每次重复绘制使用的坐标偏移量，单位为字体源像素。
+ * @details 当前 LVGL 未启用 FreeType、矢量绘制和 ThorVG，text_outline_stroke_width 对
+ *          点阵字体不会生效。因此在原文字基础上分别向右、向下和右下重复绘制 1px，形成
+ *          兼容内置字体与资源字体的实际笔画扩张效果。
  */
-constexpr int kScreensaverInfoOutlineWidth = 3;
+constexpr int kScreensaverBitmapBoldOffset = 1;
 
 /**
- * @brief 底部信息区域相对屏幕中心的 Y 轴偏移，单位为物理像素。
- * @details LV_ALIGN_CENTER 以屏幕中心 Y=180 为基准，当前值 80 表示底部区域中心位于
- *          Y=260。减小该值会让分隔线、待办、网络和电量整体上移，增大则整体下移。
- *          这些控件共享同一参数，以确保左右两侧始终保持垂直对齐。
+ * @brief 备忘录区域相对屏幕中心的 Y 轴偏移，单位为物理像素。
+ * @details LV_ALIGN_CENTER 以屏幕中心 Y=180 为基准，当前值 87 表示三行视口中心位于
+ *          Y=267，顶部约为 Y=219，恰好避开大时间；底部约为 Y=315，该位置的圆屏有效
+ *          弦宽约 238px，228px 视口可在左右各保留约 5px。减小该值会靠近时间，增大则更接近电量图标。
  */
-constexpr int kScreensaverBottomSectionOffsetY = 80;
+constexpr int kScreensaverBottomSectionOffsetY = 87;
+
+/**
+ * @brief 12 点 Wi-Fi 图标和 6 点电量图标距离圆屏上下边缘的偏移，单位为物理像素。
+ * @details 0/60 和 30 对应的 Scale 主刻度会被透明区段隐藏。设置为 0px 后，Wi-Fi 标签
+ *          顶边与屏幕顶边对齐，电量标签底边与屏幕底边对齐，让两个图标贴近圆屏边缘。
+ */
+constexpr int kScreensaverDialStatusInset = 0;
 
 /**
  * @brief 屏保全屏根容器的背景颜色，格式为 0xRRGGBB。
@@ -227,8 +292,8 @@ constexpr uint32_t kScreensaverTickColor = 0x8B9299;
 
 /**
  * @brief 表盘重点状态的统一强调颜色，格式为 0xRRGGBB。
- * @details 0xF28A3A 是暖橙色，当前用于秒数、当前秒刻度以及底部中央分隔线。集中使用同一
- *          强调色可以形成统一视觉语言，同时避免表盘出现过多互相竞争的高饱和颜色。
+ * @details 0xF28A3A 是暖橙色，当前用于秒数、当前秒刻度、断网状态、充电状态和低电量。
+ *          集中使用同一强调色可以形成统一视觉语言，同时避免表盘出现过多高饱和颜色。
  */
 constexpr uint32_t kScreensaverAccentColor = 0xF28A3A;
 
@@ -260,6 +325,69 @@ constexpr uint32_t kLunarYearInfo[] = {
     0x0e968, 0x0d520, 0x0daa0, 0x16aa6, 0x056d0, 0x04ae0, 0x0a9d4, 0x0a2d0, 0x0d150, 0x0f252,
     0x0d520,
 };
+
+/**
+ * @brief 在标签完成默认绘制后，通过三次同色偏移绘制模拟点阵粗体。
+ * @param event LVGL 传入的标签绘制或扩展绘制区域计算事件。
+ * @details 该回调直接复用标签当前字体、颜色、透明度和对齐方式，不创建额外标签或字体缓存。
+ *          原文字与右移、下移、右下三份副本叠加后，可以把点阵笔画扩张约 1px。
+ */
+void DrawBitmapBoldText(lv_event_t* event) {
+    const lv_event_code_t event_code = lv_event_get_code(event);
+    if (event_code == LV_EVENT_REFR_EXT_DRAW_SIZE) {
+        lv_event_set_ext_draw_size(event, kScreensaverBitmapBoldOffset);
+        return;
+    }
+    if (event_code != LV_EVENT_DRAW_MAIN_END) {
+        return;
+    }
+
+    lv_obj_t* label = lv_event_get_target_obj(event);
+    lv_layer_t* layer = lv_event_get_layer(event);
+    if (label == nullptr || layer == nullptr) {
+        return;
+    }
+
+    const char* text = lv_label_get_text(label);
+    if (text == nullptr || text[0] == '\0') {
+        return;
+    }
+
+    lv_draw_label_dsc_t draw_dsc;
+    lv_draw_label_dsc_init(&draw_dsc);
+    draw_dsc.base.layer = layer;
+    lv_obj_init_draw_label_dsc(label, LV_PART_MAIN, &draw_dsc);
+    draw_dsc.text = text;
+    draw_dsc.align = lv_obj_get_style_text_align(label, LV_PART_MAIN);
+    draw_dsc.outline_stroke_width = 0;
+
+    lv_area_t text_area;
+    lv_obj_get_content_coords(label, &text_area);
+    constexpr int offsets[][2] = {
+        {kScreensaverBitmapBoldOffset, 0},
+        {0, kScreensaverBitmapBoldOffset},
+        {kScreensaverBitmapBoldOffset, kScreensaverBitmapBoldOffset},
+    };
+    for (const auto& offset : offsets) {
+        lv_area_t offset_area = text_area;
+        offset_area.x1 += offset[0];
+        offset_area.x2 += offset[0];
+        offset_area.y1 += offset[1];
+        offset_area.y2 += offset[1];
+        lv_draw_label(layer, &draw_dsc, &offset_area);
+    }
+}
+
+/**
+ * @brief 为一个不滚动的屏保标签启用点阵字体伪粗体绘制。
+ * @param label 需要加粗的 LVGL Label；为空时不执行任何操作。
+ */
+void EnableBitmapTextBold(lv_obj_t* label) {
+    if (label != nullptr) {
+        lv_obj_add_event_cb(label, DrawBitmapBoldText, LV_EVENT_ALL, nullptr);
+        lv_obj_refresh_ext_draw_size(label);
+    }
+}
 
 constexpr int kLunarBaseYear = 1900;
 constexpr int kLunarMaxYear = 2100;
@@ -433,17 +561,6 @@ void SetLabelTextIfChanged(lv_obj_t* label, const char* text) {
     if (label != nullptr && text != nullptr && strcmp(lv_label_get_text(label), text) != 0) {
         lv_label_set_text(label, text);
     }
-}
-
-/**
- * @brief 统计 UTF-8 文本中的 Unicode 码点数量。
- * @param text 需要估算可见长度的 UTF-8 字符串。
- * @return 非续字节数量，可用于粗略估算中文和 ASCII 混排文本的滚动时长。
- */
-size_t CountUtf8Codepoints(const std::string& text) {
-    return static_cast<size_t>(std::count_if(text.begin(), text.end(), [](unsigned char byte) {
-        return (byte & 0xC0) != 0x80;
-    }));
 }
 
 }  // namespace
@@ -747,6 +864,9 @@ LcdDisplay::~LcdDisplay() {
         esp_timer_delete(preview_timer_);
     }
 
+    if (screensaver_todo_label_ != nullptr) {
+        lv_anim_delete(screensaver_todo_label_, nullptr);
+    }
     if (screensaver_memo_timer_ != nullptr) {
         lv_timer_delete(screensaver_memo_timer_);
         screensaver_memo_timer_ = nullptr;
@@ -882,8 +1002,8 @@ void LcdDisplay::UpdateSubtitleScroll() {
  * @brief 将主题中的完整字体应用到表盘所有小号文字标签。
  * @param font 需要使用的 LVGL 字体对象；为空时不执行任何修改。
  * @details 默认资源分区提供 30px 完整中文字库，本方法根据字体实际行高计算缩放比例，
- *          将其视觉高度保持在约 20px。这样既能显示天气、农历和待办中的中文，
- *          又不需要把体积较大的完整字体链接进应用固件分区。
+ *          将其视觉高度保持在约 28px，并同步反算标签宽度与行间距，使三行视口的物理
+ *          尺寸不随主题字体变化。
  */
 void LcdDisplay::ApplyScreensaverTextFont(const lv_font_t* font) {
     if (font == nullptr || font->line_height <= 0) {
@@ -891,6 +1011,13 @@ void LcdDisplay::ApplyScreensaverTextFont(const lv_font_t* font) {
     }
 
     const int text_scale = kScreensaverSmallTextPixelSize * 256 / font->line_height;
+    /*
+     * 标签自身会在绘制时缩放，但 LVGL 的自动换行依据缩放前的逻辑宽度计算。这里使用
+     * 向下取整，确保缩放后的最终宽度不会因不足 1px 的取整误差越过 228px 裁切视口。
+     */
+    const int todo_logical_width = kScreensaverMemoWidth * 256 / text_scale;
+    const int logical_line_spacing =
+        (kScreensaverMemoLineSpacing * 256 + text_scale - 1) / text_scale;
     lv_obj_t* labels[] = {
         screensaver_todo_label_,
     };
@@ -902,15 +1029,48 @@ void LcdDisplay::ApplyScreensaverTextFont(const lv_font_t* font) {
         lv_obj_set_style_text_font(label, font, 0);
         lv_obj_set_style_transform_scale(label, text_scale, 0);
         lv_obj_set_style_transform_pivot_x(label, LV_PCT(50), 0);
-        lv_obj_set_style_transform_pivot_y(label, LV_PCT(50), 0);
+        lv_obj_set_style_transform_pivot_y(label, 0, 0);
+        lv_obj_set_style_text_line_space(label, logical_line_spacing, 0);
     }
+    if (screensaver_memo_viewport_ != nullptr) {
+        lv_obj_set_size(screensaver_memo_viewport_, kScreensaverMemoWidth,
+                        kScreensaverMemoViewportHeight);
+        lv_obj_align(screensaver_memo_viewport_, LV_ALIGN_CENTER, 0,
+                     kScreensaverBottomSectionOffsetY);
+    }
+    if (screensaver_todo_label_ != nullptr) {
+        lv_obj_set_width(screensaver_todo_label_, todo_logical_width);
+        lv_obj_align(screensaver_todo_label_, LV_ALIGN_TOP_MID, 0, 0);
+    }
+}
+
+/**
+ * @brief 将完整主题字体应用到天气位置名称标签。
+ * @param font 需要使用的 LVGL 字体对象；为空时不执行任何修改。
+ * @details 位置名称固定使用 220px 最终可见宽度和单行裁切模式，并按照字体实际行高缩放
+ *          到约 20px。标签以屏幕中心为变换中心，完整省市区名称仍能保持视觉居中。
+ */
+void LcdDisplay::ApplyScreensaverLocationFont(const lv_font_t* font) {
+    if (font == nullptr || font->line_height <= 0 || screensaver_weather_location_label_ == nullptr) {
+        return;
+    }
+
+    const int location_scale = kScreensaverLocationTextPixelSize * 256 / font->line_height;
+    const int location_logical_width =
+        (kScreensaverLocationWidth * 256 + location_scale - 1) / location_scale;
+    lv_obj_set_width(screensaver_weather_location_label_, location_logical_width);
+    lv_obj_set_style_text_font(screensaver_weather_location_label_, font, 0);
+    lv_obj_set_style_transform_scale(screensaver_weather_location_label_, location_scale, 0);
+    lv_obj_set_style_transform_pivot_x(screensaver_weather_location_label_, LV_PCT(50), 0);
+    lv_obj_set_style_transform_pivot_y(screensaver_weather_location_label_, LV_PCT(50), 0);
+    lv_obj_align(screensaver_weather_location_label_, LV_ALIGN_CENTER, 0, -126);
 }
 
 /**
  * @brief 将完整主题字体应用到天气三列，并统一计算视觉字号和列间距。
  * @param font 需要使用的 LVGL 字体对象；为空时不执行任何修改。
- * @details 天气组整体缩放到约 22px。Flex 布局的间距发生在缩放前，因此先根据缩放比例
- *          反算逻辑间距，保证最终屏幕上相邻两列之间约为 20px。
+ * @details 天气组整体缩放到约 29px。Flex 布局的间距发生在缩放前，因此先根据缩放比例
+ *          反算逻辑间距，保证最终屏幕上相邻两列之间约为 12px。
  */
 void LcdDisplay::ApplyScreensaverWeatherFont(const lv_font_t* font) {
     if (font == nullptr || font->line_height <= 0 || screensaver_weather_group_ == nullptr) {
@@ -943,7 +1103,7 @@ void LcdDisplay::ApplyScreensaverWeatherFont(const lv_font_t* font) {
 /**
  * @brief 将完整主题字体应用到农历、公历和星期三列。
  * @param font 需要使用的 LVGL 字体对象；为空时不执行任何修改。
- * @details 日期组整体缩放到约 22px，并反算 Flex 的逻辑间距，使最终可见间距约为 25px。
+ * @details 日期组整体缩放到约 26px，并反算 Flex 的逻辑间距，使最终可见间距约为 16px。
  *          三个标签使用自动内容宽度和裁切模式，不会自动换行。
  */
 void LcdDisplay::ApplyScreensaverDateFont(const lv_font_t* font) {
@@ -974,8 +1134,9 @@ void LcdDisplay::ApplyScreensaverDateFont(const lv_font_t* font) {
 }
 
 /**
- * @brief 将 Font Awesome 图标字体应用到屏保右下角的网络和电量标签。
+ * @brief 将 Font Awesome 图标字体应用到表盘 12 点网络和 6 点电量标签。
  * @param font 普通页面状态栏正在使用的图标字体；为空时不执行任何修改。
+ * @details 字体变化后重新对齐两个标签，使标签背景继续完整覆盖对应的主刻度。
  */
 void LcdDisplay::ApplyScreensaverStatusIconFont(const lv_font_t* font) {
     if (font == nullptr) {
@@ -987,10 +1148,15 @@ void LcdDisplay::ApplyScreensaverStatusIconFont(const lv_font_t* font) {
     if (screensaver_battery_label_ != nullptr) {
         lv_obj_set_style_text_font(screensaver_battery_label_, font, 0);
     }
-    if (screensaver_status_icon_group_ != nullptr) {
-        lv_obj_update_layout(screensaver_status_icon_group_);
-        lv_obj_align(screensaver_status_icon_group_, LV_ALIGN_CENTER, 72,
-                     kScreensaverBottomSectionOffsetY);
+    if (screensaver_network_label_ != nullptr) {
+        lv_obj_update_layout(screensaver_network_label_);
+        lv_obj_align(screensaver_network_label_, LV_ALIGN_TOP_MID, 0,
+                     kScreensaverDialStatusInset);
+    }
+    if (screensaver_battery_label_ != nullptr) {
+        lv_obj_update_layout(screensaver_battery_label_);
+        lv_obj_align(screensaver_battery_label_, LV_ALIGN_BOTTOM_MID, 0,
+                     -kScreensaverDialStatusInset);
     }
 }
 
@@ -1082,6 +1248,29 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_remove_flag(screensaver_scale_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_center(screensaver_scale_);
 
+    /*
+     * 12 点对应数值 0 和 60，6 点对应数值 30。三个透明区段从 Scale 层面隐藏原主刻度，
+     * 后续创建的 Wi-Fi 与电量标签才是真正的替代内容，而不是简单覆盖在刻度上。
+     * 隐藏区段先于秒刻度区段创建，使 LVGL 的反向区段遍历始终优先采用透明样式；因此
+     * 当前秒到达 0、30 或 60 时也不会在状态图标后方重新绘制橙色刻度。
+     */
+    static lv_style_t hidden_dial_tick_style;
+    static bool hidden_dial_tick_style_initialized = false;
+    if (!hidden_dial_tick_style_initialized) {
+        lv_style_init(&hidden_dial_tick_style);
+        lv_style_set_line_opa(&hidden_dial_tick_style, LV_OPA_TRANSP);
+        hidden_dial_tick_style_initialized = true;
+    }
+    constexpr int hidden_dial_tick_values[] = {0, 30, 60};
+    for (const int tick_value : hidden_dial_tick_values) {
+        lv_scale_section_t* hidden_section = lv_scale_add_section(screensaver_scale_);
+        lv_scale_set_section_range(screensaver_scale_, hidden_section, tick_value, tick_value);
+        lv_scale_set_section_style_items(
+            screensaver_scale_, hidden_section, &hidden_dial_tick_style);
+        lv_scale_set_section_style_indicator(
+            screensaver_scale_, hidden_section, &hidden_dial_tick_style);
+    }
+
     /* 当前秒刻度使用持久化静态样式，Section 在每秒刷新时只改变范围，不重新创建对象。 */
     static lv_style_t second_minor_style;
     static lv_style_t second_major_style;
@@ -1103,9 +1292,21 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_scale_set_section_style_items(screensaver_scale_, screensaver_second_section_, &second_minor_style);
     lv_scale_set_section_style_indicator(screensaver_scale_, screensaver_second_section_, &second_major_style);
 
+    /* 当前天气位置独占一行并位于天气三列上方，固定宽度保证文本始终以圆屏中心对齐。 */
+    screensaver_weather_location_label_ = lv_label_create(screensaver_container_);
+    lv_obj_set_width(screensaver_weather_location_label_, kScreensaverLocationWidth);
+    lv_obj_set_style_text_font(screensaver_weather_location_label_, text_font, 0);
+    lv_obj_set_style_text_color(screensaver_weather_location_label_,
+                                lv_color_hex(kScreensaverSecondaryTextColor), 0);
+    lv_obj_set_style_text_opa(screensaver_weather_location_label_, LV_OPA_80, 0);
+    lv_obj_set_style_text_align(screensaver_weather_location_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(screensaver_weather_location_label_, LV_LABEL_LONG_CLIP);
+    lv_label_set_text(screensaver_weather_location_label_, "天气位置待同步");
+    lv_obj_align(screensaver_weather_location_label_, LV_ALIGN_CENTER, 0, -126);
+
     /*
      * 天气信息占据顶部同一行，并按照当前温度、天气描述、最低/最高温三列排列。
-     * 三列放在自动宽度的 Flex 容器中，保持 20px 可见间距并作为一个整体水平居中。
+     * 三列放在自动宽度的 Flex 容器中，保持 12px 可见间距并作为一个整体水平居中。
      */
     screensaver_weather_group_ = lv_obj_create(screensaver_container_);
     lv_obj_set_size(screensaver_weather_group_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
@@ -1122,12 +1323,8 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_set_size(screensaver_weather_temperature_label_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_text_font(screensaver_weather_temperature_label_, text_font, 0);
     lv_obj_set_style_text_color(screensaver_weather_temperature_label_, lv_color_white(), 0);
-    lv_obj_set_style_text_outline_stroke_color(screensaver_weather_temperature_label_,
-                                               lv_color_white(), 0);
-    lv_obj_set_style_text_outline_stroke_width(screensaver_weather_temperature_label_,
-                                               kScreensaverInfoOutlineWidth, 0);
-    lv_obj_set_style_text_outline_stroke_opa(screensaver_weather_temperature_label_, LV_OPA_COVER, 0);
     lv_obj_set_style_text_align(screensaver_weather_temperature_label_, LV_TEXT_ALIGN_CENTER, 0);
+    EnableBitmapTextBold(screensaver_weather_temperature_label_);
     lv_label_set_text(screensaver_weather_temperature_label_, "--℃");
 
     screensaver_weather_description_label_ = lv_label_create(screensaver_weather_group_);
@@ -1135,28 +1332,20 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_set_style_text_font(screensaver_weather_description_label_, text_font, 0);
     lv_obj_set_style_text_color(screensaver_weather_description_label_,
                                 lv_color_hex(kScreensaverSecondaryTextColor), 0);
-    lv_obj_set_style_text_outline_stroke_color(screensaver_weather_description_label_,
-                                               lv_color_hex(kScreensaverSecondaryTextColor), 0);
-    lv_obj_set_style_text_outline_stroke_width(screensaver_weather_description_label_,
-                                               kScreensaverInfoOutlineWidth, 0);
-    lv_obj_set_style_text_outline_stroke_opa(screensaver_weather_description_label_, LV_OPA_COVER, 0);
     lv_obj_set_style_text_align(screensaver_weather_description_label_, LV_TEXT_ALIGN_CENTER, 0);
+    EnableBitmapTextBold(screensaver_weather_description_label_);
     lv_label_set_text(screensaver_weather_description_label_, "待同步");
 
     screensaver_weather_range_label_ = lv_label_create(screensaver_weather_group_);
     lv_obj_set_size(screensaver_weather_range_label_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_text_font(screensaver_weather_range_label_, text_font, 0);
     lv_obj_set_style_text_color(screensaver_weather_range_label_, lv_color_white(), 0);
-    lv_obj_set_style_text_outline_stroke_color(screensaver_weather_range_label_,
-                                               lv_color_white(), 0);
-    lv_obj_set_style_text_outline_stroke_width(screensaver_weather_range_label_,
-                                               kScreensaverInfoOutlineWidth, 0);
-    lv_obj_set_style_text_outline_stroke_opa(screensaver_weather_range_label_, LV_OPA_COVER, 0);
     lv_obj_set_style_text_align(screensaver_weather_range_label_, LV_TEXT_ALIGN_CENTER, 0);
+    EnableBitmapTextBold(screensaver_weather_range_label_);
     lv_label_set_text(screensaver_weather_range_label_, "--/--");
 
     /*
-     * 日期三列使用一个自动宽度的横向组，最终可见间距为 25px，并由整个组统一居中。
+     * 日期三列使用一个自动宽度的横向组，最终可见间距为 16px，并由整个组统一居中。
      * 标签采用自动内容宽度和裁切模式，确保农历、公历、星期始终保持在同一行。
      */
     screensaver_date_group_ = lv_obj_create(screensaver_container_);
@@ -1175,12 +1364,9 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_set_style_text_font(screensaver_lunar_date_label_, text_font, 0);
     lv_obj_set_style_text_color(screensaver_lunar_date_label_, lv_color_white(), 0);
     lv_obj_set_style_text_opa(screensaver_lunar_date_label_, LV_OPA_80, 0);
-    lv_obj_set_style_text_outline_stroke_color(screensaver_lunar_date_label_, lv_color_white(), 0);
-    lv_obj_set_style_text_outline_stroke_width(screensaver_lunar_date_label_,
-                                               kScreensaverInfoOutlineWidth, 0);
-    lv_obj_set_style_text_outline_stroke_opa(screensaver_lunar_date_label_, LV_OPA_80, 0);
     lv_obj_set_style_text_align(screensaver_lunar_date_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(screensaver_lunar_date_label_, LV_LABEL_LONG_CLIP);
+    EnableBitmapTextBold(screensaver_lunar_date_label_);
     lv_label_set_text(screensaver_lunar_date_label_, "农历待同步");
 
     screensaver_solar_date_label_ = lv_label_create(screensaver_date_group_);
@@ -1188,12 +1374,9 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_set_style_text_font(screensaver_solar_date_label_, text_font, 0);
     lv_obj_set_style_text_color(screensaver_solar_date_label_, lv_color_white(), 0);
     lv_obj_set_style_text_opa(screensaver_solar_date_label_, LV_OPA_80, 0);
-    lv_obj_set_style_text_outline_stroke_color(screensaver_solar_date_label_, lv_color_white(), 0);
-    lv_obj_set_style_text_outline_stroke_width(screensaver_solar_date_label_,
-                                               kScreensaverInfoOutlineWidth, 0);
-    lv_obj_set_style_text_outline_stroke_opa(screensaver_solar_date_label_, LV_OPA_80, 0);
     lv_obj_set_style_text_align(screensaver_solar_date_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(screensaver_solar_date_label_, LV_LABEL_LONG_CLIP);
+    EnableBitmapTextBold(screensaver_solar_date_label_);
     lv_label_set_text(screensaver_solar_date_label_, "-- --");
 
     screensaver_weekday_label_ = lv_label_create(screensaver_date_group_);
@@ -1201,12 +1384,9 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_set_style_text_font(screensaver_weekday_label_, text_font, 0);
     lv_obj_set_style_text_color(screensaver_weekday_label_, lv_color_white(), 0);
     lv_obj_set_style_text_opa(screensaver_weekday_label_, LV_OPA_80, 0);
-    lv_obj_set_style_text_outline_stroke_color(screensaver_weekday_label_, lv_color_white(), 0);
-    lv_obj_set_style_text_outline_stroke_width(screensaver_weekday_label_,
-                                               kScreensaverInfoOutlineWidth, 0);
-    lv_obj_set_style_text_outline_stroke_opa(screensaver_weekday_label_, LV_OPA_80, 0);
     lv_obj_set_style_text_align(screensaver_weekday_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(screensaver_weekday_label_, LV_LABEL_LONG_CLIP);
+    EnableBitmapTextBold(screensaver_weekday_label_);
     lv_label_set_text(screensaver_weekday_label_, "星期--");
 
     /*
@@ -1234,78 +1414,84 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_set_size(screensaver_time_label_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_text_font(screensaver_time_label_, large_text_font, 0);
     lv_obj_set_style_text_color(screensaver_time_label_, lv_color_white(), 0);
-    lv_obj_set_style_text_outline_stroke_color(screensaver_time_label_, lv_color_white(), 0);
-    lv_obj_set_style_text_outline_stroke_width(screensaver_time_label_, 2, 0);
-    lv_obj_set_style_text_outline_stroke_opa(screensaver_time_label_, LV_OPA_COVER, 0);
     lv_obj_set_style_text_align(screensaver_time_label_, LV_TEXT_ALIGN_CENTER, 0);
+    EnableBitmapTextBold(screensaver_time_label_);
     lv_label_set_text(screensaver_time_label_, "--:--");
 
     screensaver_seconds_label_ = lv_label_create(screensaver_time_group_);
     lv_obj_set_size(screensaver_seconds_label_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_text_font(screensaver_seconds_label_, large_text_font, 0);
     lv_obj_set_style_text_color(screensaver_seconds_label_, lv_color_hex(kScreensaverAccentColor), 0);
-    lv_obj_set_style_text_outline_stroke_color(screensaver_seconds_label_,
-                                               lv_color_hex(kScreensaverAccentColor), 0);
-    lv_obj_set_style_text_outline_stroke_width(screensaver_seconds_label_, 2, 0);
-    lv_obj_set_style_text_outline_stroke_opa(screensaver_seconds_label_, LV_OPA_COVER, 0);
     lv_obj_set_style_text_align(screensaver_seconds_label_, LV_TEXT_ALIGN_CENTER, 0);
+    EnableBitmapTextBold(screensaver_seconds_label_);
     lv_label_set_text(screensaver_seconds_label_, "--");
 
-    /* 底部中间的橙色金属分隔线对应参考表盘的运动数据分区。 */
-    lv_obj_t* metric_divider = lv_obj_create(screensaver_container_);
-    lv_obj_set_size(metric_divider, 2, 54);
-    lv_obj_set_style_radius(metric_divider, 1, 0);
-    lv_obj_set_style_bg_color(metric_divider, lv_color_hex(kScreensaverAccentColor), 0);
-    lv_obj_set_style_bg_opa(metric_divider, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(metric_divider, 0, 0);
-    lv_obj_align(metric_divider, LV_ALIGN_CENTER, 0, kScreensaverBottomSectionOffsetY);
+    /*
+     * 时间下方使用固定三行高度的透明视口。父对象负责裁切超出区域的子标签，使长文本
+     * 可以通过 translate_y 向上滚动，同时任何文字都不会越过圆屏下方的安全边界。
+     */
+    screensaver_memo_viewport_ = lv_obj_create(screensaver_container_);
+    lv_obj_set_size(screensaver_memo_viewport_, kScreensaverMemoWidth,
+                    kScreensaverMemoViewportHeight);
+    lv_obj_set_style_bg_opa(screensaver_memo_viewport_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(screensaver_memo_viewport_, 0, 0);
+    lv_obj_set_style_pad_all(screensaver_memo_viewport_, 0, 0);
+    lv_obj_set_scrollbar_mode(screensaver_memo_viewport_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_remove_flag(screensaver_memo_viewport_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(screensaver_memo_viewport_, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+    lv_obj_align(screensaver_memo_viewport_, LV_ALIGN_CENTER, 0,
+                 kScreensaverBottomSectionOffsetY);
 
-    screensaver_todo_label_ = lv_label_create(screensaver_container_);
-    lv_obj_set_width(screensaver_todo_label_, 120);
+    screensaver_todo_label_ = lv_label_create(screensaver_memo_viewport_);
+    lv_obj_set_width(screensaver_todo_label_, kScreensaverMemoWidth);
     lv_obj_set_style_text_font(screensaver_todo_label_, text_font, 0);
     lv_obj_set_style_text_color(screensaver_todo_label_, lv_color_hex(0xDDE1E4), 0);
     lv_obj_set_style_text_align(screensaver_todo_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_line_space(screensaver_todo_label_, 5, 0);
-    lv_label_set_text(screensaver_todo_label_, "待办事项\n暂无待办");
-    lv_obj_align(screensaver_todo_label_, LV_ALIGN_CENTER, -72,
-                 kScreensaverBottomSectionOffsetY);
+    lv_obj_set_style_text_line_space(screensaver_todo_label_, kScreensaverMemoLineSpacing, 0);
+    lv_label_set_long_mode(screensaver_todo_label_, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(screensaver_todo_label_, "暂无待办");
+    lv_obj_align(screensaver_todo_label_, LV_ALIGN_TOP_MID, 0, 0);
     screensaver_memo_timer_ = lv_timer_create(
         ScreensaverMemoTimerCallback, 8000, this);
     lv_timer_pause(screensaver_memo_timer_);
 
-    /* 网络和电量图标共用一个横向容器，在底部右半区作为整体居中显示。 */
-    screensaver_status_icon_group_ = lv_obj_create(screensaver_container_);
-    lv_obj_set_size(screensaver_status_icon_group_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(screensaver_status_icon_group_, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(screensaver_status_icon_group_, 0, 0);
-    lv_obj_set_style_pad_all(screensaver_status_icon_group_, 0, 0);
-    lv_obj_set_style_pad_column(screensaver_status_icon_group_, 20, 0);
-    lv_obj_set_flex_flow(screensaver_status_icon_group_, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(screensaver_status_icon_group_, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(screensaver_status_icon_group_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(screensaver_status_icon_group_, LV_ALIGN_CENTER, 72,
-                 kScreensaverBottomSectionOffsetY);
-
-    screensaver_network_label_ = lv_label_create(screensaver_status_icon_group_);
+    /*
+     * Wi-Fi 图标放在已经隐藏主刻度的 12 点位置。网络连接、弱信号和断网状态继续使用
+     * Board 返回的不同 Font Awesome 图标表达，透明背景保持金属外圈连续可见。
+     */
+    screensaver_network_label_ = lv_label_create(screensaver_container_);
     lv_obj_set_size(screensaver_network_label_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_text_font(screensaver_network_label_, icon_font, 0);
     lv_obj_set_style_text_color(screensaver_network_label_, lv_color_hex(0xDDE1E4), 0);
     lv_obj_set_style_text_align(screensaver_network_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_bg_opa(screensaver_network_label_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(screensaver_network_label_, 0, 0);
     lv_label_set_text(screensaver_network_label_, FONT_AWESOME_WIFI_SLASH);
+    lv_obj_align(screensaver_network_label_, LV_ALIGN_TOP_MID, 0,
+                 kScreensaverDialStatusInset);
 
-    screensaver_battery_label_ = lv_label_create(screensaver_status_icon_group_);
+    /*
+     * 电量图标位于已经隐藏主刻度的 6 点位置，使用空、四分之一、半格、四分之三、满格和
+     * 充电闪电图标直接表达当前电池状态，不再占用时间下方的备忘录空间。
+     */
+    screensaver_battery_label_ = lv_label_create(screensaver_container_);
     lv_obj_set_size(screensaver_battery_label_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_text_font(screensaver_battery_label_, icon_font, 0);
     lv_obj_set_style_text_color(screensaver_battery_label_, lv_color_hex(0xDDE1E4), 0);
     lv_obj_set_style_text_align(screensaver_battery_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_bg_opa(screensaver_battery_label_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(screensaver_battery_label_, 0, 0);
     lv_label_set_text(screensaver_battery_label_, FONT_AWESOME_BATTERY_EMPTY);
+    lv_obj_align(screensaver_battery_label_, LV_ALIGN_BOTTOM_MID, 0,
+                 -kScreensaverDialStatusInset);
 
-    /* 使用当前主题字体，并把不同源字号统一换算为约 20px 的表盘视觉字号。 */
+    /* 使用当前主题字体，并把不同源字号换算为各信息层级对应的表盘视觉字号。 */
     ApplyScreensaverTextFont(text_font);
+    ApplyScreensaverLocationFont(text_font);
     ApplyScreensaverWeatherFont(text_font);
     ApplyScreensaverDateFont(text_font);
     ApplyScreensaverStatusIconFont(icon_font);
+    UpdateScreensaverMemo();
 
     lv_obj_add_flag(screensaver_container_, LV_OBJ_FLAG_HIDDEN);
 }
@@ -1366,7 +1552,9 @@ void LcdDisplay::UpdateScreensaverContent() {
     bool charging = false;
     bool discharging = false;
     const char* battery_icon = FONT_AWESOME_BATTERY_EMPTY;
-    if (Board::GetInstance().GetBatteryLevel(battery_level, charging, discharging)) {
+    const bool battery_available =
+        Board::GetInstance().GetBatteryLevel(battery_level, charging, discharging);
+    if (battery_available) {
         (void)discharging;
         if (charging) {
             battery_icon = FONT_AWESOME_BATTERY_BOLT;
@@ -1381,14 +1569,29 @@ void LcdDisplay::UpdateScreensaverContent() {
         }
     }
     SetLabelTextIfChanged(screensaver_battery_label_, battery_icon);
+    if (screensaver_battery_label_ != nullptr) {
+        const bool battery_needs_attention =
+            battery_available && (charging || battery_level < 20);
+        lv_obj_set_style_text_color(
+            screensaver_battery_label_,
+            lv_color_hex(battery_needs_attention ? kScreensaverAccentColor : 0xDDE1E4), 0);
+    }
 
     /*
      * Board 返回的网络图标与普通页面状态栏使用相同来源，已经综合当前连接类型、
      * 连接状态和信号强度。返回空指针时使用断网图标作为稳定回退。
      */
     const char* network_icon = Board::GetInstance().GetNetworkStateIcon();
-    SetLabelTextIfChanged(screensaver_network_label_,
-                          network_icon != nullptr ? network_icon : FONT_AWESOME_WIFI_SLASH);
+    const char* visible_network_icon =
+        network_icon != nullptr ? network_icon : FONT_AWESOME_WIFI_SLASH;
+    SetLabelTextIfChanged(screensaver_network_label_, visible_network_icon);
+    if (screensaver_network_label_ != nullptr) {
+        const bool network_disconnected =
+            strcmp(visible_network_icon, FONT_AWESOME_WIFI_SLASH) == 0;
+        lv_obj_set_style_text_color(
+            screensaver_network_label_,
+            lv_color_hex(network_disconnected ? kScreensaverAccentColor : 0xDDE1E4), 0);
+    }
 }
 
 /**
@@ -1434,6 +1637,10 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
         if (screensaver_memo_timer_ != nullptr) {
             lv_timer_pause(screensaver_memo_timer_);
         }
+        if (screensaver_todo_label_ != nullptr) {
+            lv_anim_delete(screensaver_todo_label_, nullptr);
+            lv_obj_set_style_translate_y(screensaver_todo_label_, 0, 0);
+        }
         lv_obj_add_flag(screensaver_container_, LV_OBJ_FLAG_HIDDEN);
         if (gif_controller_) {
             gif_controller_->Start();
@@ -1443,7 +1650,8 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
 }
 
 /**
- * @brief 更新表盘天气的当前温度、天气描述和最低/最高温三列。
+ * @brief 更新表盘天气位置、当前温度、天气描述和最低/最高温三列。
+ * @param location 当前天气位置名称，例如“上海市松江区”。
  * @param temperature 当前摄氏温度。
  * @param weather 中文天气描述。
  * @param low_temperature 当天最低摄氏温度。
@@ -1451,6 +1659,7 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
  * @details 方法内部获取 LVGL 锁并复制所有文本，调用结束后不再引用传入字符串。
  */
 void LcdDisplay::SetScreensaverWeather(
+    const std::string& location,
     int temperature,
     const std::string& weather,
     int low_temperature,
@@ -1460,6 +1669,7 @@ void LcdDisplay::SetScreensaverWeather(
     char range_text[64];
     snprintf(temperature_text, sizeof(temperature_text), "%d℃", temperature);
     snprintf(range_text, sizeof(range_text), "%d/%d", low_temperature, high_temperature);
+    SetLabelTextIfChanged(screensaver_weather_location_label_, location.c_str());
     SetLabelTextIfChanged(screensaver_weather_temperature_label_, temperature_text);
     SetLabelTextIfChanged(screensaver_weather_description_label_, weather.c_str());
     SetLabelTextIfChanged(screensaver_weather_range_label_, range_text);
@@ -1486,9 +1696,10 @@ void LcdDisplay::SetScreensaverMemos(const std::vector<std::string>& memos) {
 }
 
 /**
- * @brief 刷新当前备忘录文本及下一次切换周期。
- * @details 12 个可见字符以内视为短文本并静止 8 秒；更长文本启用 LVGL 循环滚动，
- *          按每个字符约 300 ms 估算完整阅读时间，并额外保留 3 秒后再切换下一条。
+ * @brief 刷新当前备忘录文本并重新计算三行视口的纵向滚动。
+ * @details 标签始终使用自动换行，不再按字符数量启用横向滚动。文本替换后立即终止上一条
+ *          备忘录的动画并从顶部重新排版，随后由 UpdateScreensaverMemoScroll 根据实际高度
+ *          决定静止居中或向上滚动。
  */
 void LcdDisplay::UpdateScreensaverMemo() {
     if (screensaver_todo_label_ == nullptr) {
@@ -1496,10 +1707,8 @@ void LcdDisplay::UpdateScreensaverMemo() {
     }
     if (screensaver_memos_.empty()) {
         lv_label_set_long_mode(screensaver_todo_label_, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(screensaver_todo_label_, "待办事项\n暂无待办");
-        if (screensaver_memo_timer_ != nullptr) {
-            lv_timer_set_period(screensaver_memo_timer_, 8000);
-        }
+        lv_label_set_text(screensaver_todo_label_, "暂无待办");
+        UpdateScreensaverMemoScroll();
         return;
     }
 
@@ -1507,24 +1716,73 @@ void LcdDisplay::UpdateScreensaverMemo() {
         screensaver_memo_index_ = 0;
     }
     const std::string& content = screensaver_memos_[screensaver_memo_index_];
-    const size_t visible_length = CountUtf8Codepoints(content);
-    if (visible_length <= 12) {
-        lv_label_set_long_mode(screensaver_todo_label_, LV_LABEL_LONG_WRAP);
-        const std::string text = "待办事项\n" + content;
-        lv_label_set_text(screensaver_todo_label_, text.c_str());
+    lv_label_set_long_mode(screensaver_todo_label_, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(screensaver_todo_label_, content.c_str());
+    UpdateScreensaverMemoScroll();
+}
+
+/**
+ * @brief 根据当前备忘录的真实排版高度配置三行视口内的纵向滚动动画。
+ * @details 方法先删除旧动画并恢复顶部位置，再把标签设置为内容自适应高度。三行以内的
+ *          文本在视口中垂直居中；超过三行时，以固定物理速度从顶部滚动到最后一行。
+ *          动画只在屏保可见时启动，轮播定时器周期会覆盖首屏停留、滚动和末屏停留时间。
+ */
+void LcdDisplay::UpdateScreensaverMemoScroll() {
+    if (screensaver_memo_viewport_ == nullptr || screensaver_todo_label_ == nullptr) {
+        return;
+    }
+
+    lv_anim_delete(screensaver_todo_label_, nullptr);
+    lv_obj_set_style_translate_y(screensaver_todo_label_, 0, 0);
+    lv_label_set_long_mode(screensaver_todo_label_, LV_LABEL_LONG_WRAP);
+    lv_obj_set_height(screensaver_todo_label_, LV_SIZE_CONTENT);
+    lv_obj_update_layout(screensaver_todo_label_);
+
+    const int text_scale =
+        lv_obj_get_style_transform_scale_y_safe(screensaver_todo_label_, LV_PART_MAIN);
+    const int logical_content_height = lv_obj_get_height(screensaver_todo_label_);
+    const int visible_content_height =
+        (logical_content_height * text_scale + 255) / 256;
+    if (visible_content_height <= kScreensaverMemoViewportHeight) {
+        const int top_offset =
+            (kScreensaverMemoViewportHeight - visible_content_height) / 2;
+        lv_obj_align(screensaver_todo_label_, LV_ALIGN_TOP_MID, 0, top_offset);
         if (screensaver_memo_timer_ != nullptr) {
             lv_timer_set_period(screensaver_memo_timer_, 8000);
         }
-    } else {
-        lv_label_set_long_mode(screensaver_todo_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
-        const std::string text = "待办 " + content;
-        lv_label_set_text(screensaver_todo_label_, text.c_str());
-        const uint32_t duration_ms = static_cast<uint32_t>(
-            std::max<size_t>(8000, visible_length * 300 + 3000));
-        if (screensaver_memo_timer_ != nullptr) {
-            lv_timer_set_period(screensaver_memo_timer_, duration_ms);
-        }
+        return;
     }
+
+    lv_obj_align(screensaver_todo_label_, LV_ALIGN_TOP_MID, 0, 0);
+    const int scroll_distance = visible_content_height - kScreensaverMemoViewportHeight;
+    const int calculated_duration =
+        scroll_distance * 1000 / kScreensaverMemoScrollPixelsPerSecond;
+    const int scroll_duration = std::min(30000, std::max(1500, calculated_duration));
+    const uint32_t display_period = static_cast<uint32_t>(
+        kScreensaverMemoScrollStartDelayMs + scroll_duration + kScreensaverMemoScrollEndDelayMs);
+    if (screensaver_memo_timer_ != nullptr) {
+        lv_timer_set_period(screensaver_memo_timer_, std::max<uint32_t>(8000, display_period));
+    }
+
+    if (!screensaver_active_) {
+        return;
+    }
+
+    lv_anim_t animation;
+    lv_anim_init(&animation);
+    lv_anim_set_var(&animation, screensaver_todo_label_);
+    lv_anim_set_exec_cb(&animation, [](void* target, int32_t value) {
+        lv_obj_set_style_translate_y(static_cast<lv_obj_t*>(target), value, 0);
+    });
+    lv_anim_set_values(&animation, 0, -scroll_distance);
+    lv_anim_set_duration(&animation, scroll_duration);
+    lv_anim_set_delay(&animation, kScreensaverMemoScrollStartDelayMs);
+    lv_anim_set_repeat_delay(&animation, kScreensaverMemoScrollEndDelayMs);
+    lv_anim_set_repeat_count(
+        &animation,
+        screensaver_memos_.size() > 1 ? 0 : LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_path_cb(&animation, lv_anim_path_linear);
+    lv_anim_start(&animation);
 }
 
 /**
@@ -2443,9 +2701,11 @@ void LcdDisplay::SetTheme(Theme* theme) {
      * 表盘标签设置了局部字体，不会自动继承屏幕字体，因此需要在此显式同步。
      */
     ApplyScreensaverTextFont(text_font);
+    ApplyScreensaverLocationFont(text_font);
     ApplyScreensaverWeatherFont(text_font);
     ApplyScreensaverDateFont(text_font);
     ApplyScreensaverStatusIconFont(icon_font);
+    UpdateScreensaverMemo();
 
     // Set background image
     if (lvgl_theme->background_image() != nullptr) {

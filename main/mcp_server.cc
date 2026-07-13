@@ -547,7 +547,7 @@ void McpServer::ReplyToolResult(int id, const McpToolResult& result) {
  * @param cursor 起始游标。
  * @param list_user_only_tools 是否把标记为 user_only 的工具包含在结果中。
  * @details 从 cursor 指定的工具开始序列化，单条响应限制为 8000 字节。达到限制时通过 nextCursor
- *          返回下一页起点；默认过滤只允许用户界面直接调用的工具，避免向大模型暴露管理能力。
+ *          返回下一页起点；默认过滤 user_only 管理工具，避免向大模型暴露重启和升级等管理能力。
  */
 void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_only_tools) {
     const int max_payload_size = 8000;
@@ -601,6 +601,14 @@ void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_o
     } else {
         json += "],\"nextCursor\":\"" + next_cursor + "\"}";
     }
+
+    ESP_LOGI(
+        TAG,
+        "tools/list: cursor=%s, with_user_tools=%d, next_cursor=%s, payload_size=%u",
+        cursor.empty() ? "<first>" : cursor.c_str(),
+        list_user_only_tools ? 1 : 0,
+        next_cursor.empty() ? "<end>" : next_cursor.c_str(),
+        static_cast<unsigned>(json.size()));
     
     ReplyResult(id, json);
 }
@@ -614,6 +622,12 @@ void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_o
  *          返回错误。实际工具回调统一调度到应用主线程，避免网络接收线程直接操作显示、Codec 或 NVS。
  */
 void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* tool_arguments) {
+    /*
+     * 只记录工具名称，不记录参数。天气位置、备忘录正文等业务参数可能包含用户隐私，
+     * 但工具名称能够明确区分云端是否真正调用了设备 MCP。
+     */
+    ESP_LOGI(TAG, "tools/call: %s", tool_name.c_str());
+
     auto tool_iter = std::find_if(tools_.begin(), tools_.end(), 
                                  [&tool_name](const McpTool* tool) { 
                                      return tool->name() == tool_name; 

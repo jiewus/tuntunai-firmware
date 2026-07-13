@@ -137,8 +137,12 @@ void Application::Initialize() {
     };
     audio_service_.SetCallbacks(callbacks);
 
-    // 状态机回调只设置事件位，所有状态副作用由主循环集中执行。
+    // 状态机回调只记录轻量状态并设置事件位，所有界面和音频副作用由主循环集中执行。
     state_machine_.AddStateChangeListener([this](DeviceState old_state, DeviceState new_state) {
+        if (new_state == kDeviceStateIdle
+            && (old_state == kDeviceStateListening || old_state == kDeviceStateSpeaking)) {
+            enter_screensaver_after_conversation_.store(true);
+        }
         xEventGroupSetBits(event_group_, MAIN_EVENT_STATE_CHANGED);
     });
 
@@ -148,10 +152,16 @@ void Application::Initialize() {
     // MCP 工具只在应用初始化时注册一次，避免重复名称和重复对象。
     auto& mcp_server = McpServer::GetInstance();
     mcp_server.AddCommonTools();
-    mcp_server.AddUserOnlyTools();
     auto& backend_service = BackendService::GetInstance();
     backend_service.Start();
+
+    /*
+     * 业务工具必须位于 user_only 管理工具之前。小智云端通过 tools/list 分页读取工具，
+     * 单页上限为 8 KB；若管理工具排在前面，天气和备忘录可能落到后续分页而无法进入
+     * 当前大模型上下文，最终错误调用云端自带的 get_weather。
+     */
     backend_service.RegisterMcpTools(mcp_server);
+    mcp_server.AddUserOnlyTools();
 
     // 将板级网络事件转换为界面提示和主循环事件。
     board.SetNetworkEventCallback([this](NetworkEvent event, const std::string& data) {
@@ -372,8 +382,9 @@ void Application::HandleNetworkDisconnectedEvent() {
 }
 
 /**
- * @brief 处理对应的应用事件。
- * @details 实现会维护 Application 的内部一致性；发生错误时记录日志，并避免向后续流程传播无效资源。
+ * @brief 完成开机激活流程并切换到可唤醒的屏保待机状态。
+ * @details 本方法运行在应用主循环中。它先进入空闲状态、保存服务端时间状态、释放 OTA 临时
+ *          对象并恢复低功耗等级，再排队播放启动成功提示音，最后在用户启用屏保时立即显示表盘。
  */
 void Application::HandleActivationDoneEvent() {
     ESP_LOGI(TAG, "Activation done");
@@ -397,6 +408,12 @@ void Application::HandleActivationDoneEvent() {
         // 播放成功提示音，表示设备已进入可唤醒状态。
         audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
     });
+
+    /*
+     * 此处代表开机版本检查、资源应用、设备激活和协议初始化均已完成。直接进入表盘可以
+     * 跳过普通待机的 30 秒等待；板级实现仍会检查用户是否已经关闭屏保功能。
+     */
+    board.EnterScreensaver();
 }
 
 /**
@@ -1037,6 +1054,7 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
  */
 void Application::HandleStateChangedEvent() {
     DeviceState new_state = state_machine_.GetState();
+    const bool enter_screensaver = enter_screensaver_after_conversation_.exchange(false);
     clock_ticks_ = 0;
 
     auto& board = Board::GetInstance();
@@ -1110,6 +1128,15 @@ void Application::HandleStateChangedEvent() {
         default:
             // 其他状态没有需要同步的音频或界面副作用。
             break;
+    }
+
+    /*
+     * 先完成空闲状态对应的字幕清理、表情恢复和唤醒词启用，再覆盖显示表盘。只有监听或
+     * 播报真正转为空闲才由本路径立即进入屏保；开机初始化完成由激活收尾路径单独处理，
+     * 升级失败、连接失败等其他空闲状态仍使用 30 秒延时。
+     */
+    if (new_state == kDeviceStateIdle && enter_screensaver) {
+        board.EnterScreensaver();
     }
 }
 

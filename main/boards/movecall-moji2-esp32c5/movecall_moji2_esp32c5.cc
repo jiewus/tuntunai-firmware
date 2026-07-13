@@ -256,6 +256,32 @@ private:
     static constexpr const char* kScreenAutoOffTimeoutKey = "scr_off_sec";
 
     /**
+     * @brief 统一切换表盘屏保的可见状态并同步后端刷新生命周期。
+     * @param active true 立即显示表盘；false 退出表盘并恢复普通对话界面。
+     * @details 方法使用原子状态过滤重复进入或退出，确保 30 秒定时器、对话结束事件和用户唤醒
+     *          同时到达时只切换一次界面，也只向 BackendService 发送一次对应状态通知。
+     */
+    void SetScreensaverActive(bool active) {
+        if (active) {
+            if (!screensaver_enabled_ || screen_is_off_ || display_ == nullptr
+                || screensaver_active_.exchange(true)) {
+                return;
+            }
+            display_->SetScreensaverMode(true);
+            BackendService::GetInstance().OnScreensaverChanged(true);
+            return;
+        }
+
+        if (!screensaver_active_.exchange(false)) {
+            return;
+        }
+        BackendService::GetInstance().OnScreensaverChanged(false);
+        if (display_ != nullptr) {
+            display_->SetScreensaverMode(false);
+        }
+    }
+
+    /**
      * @brief 创建电池 ADC 监视器并联动屏幕活动计时。
      * @details 本板使用 ADC1 通道 3 和 5.1M/5.1M 分压。充电状态发生变化时会恢复背光并
      *          重置自动熄屏计时；如果表盘屏保正在显示，则只刷新屏保中的电量状态，不退出屏保。
@@ -287,18 +313,10 @@ private:
         power_save_timer_ = new PowerSaveTimer(
             -1, screensaver_enabled_ ? kScreensaverTimeoutSeconds : -1, -1);
         power_save_timer_->OnEnterSleepMode([this]() {
-            if (display_ != nullptr && !screen_is_off_) {
-                screensaver_active_ = true;
-                display_->SetScreensaverMode(true);
-                BackendService::GetInstance().OnScreensaverChanged(true);
-            }
+            SetScreensaverActive(true);
         });
         power_save_timer_->OnExitSleepMode([this]() {
-            screensaver_active_ = false;
-            BackendService::GetInstance().OnScreensaverChanged(false);
-            if (display_ != nullptr) {
-                display_->SetScreensaverMode(false);
-            }
+            SetScreensaverActive(false);
         });
         power_save_timer_->SetEnabled(true);
 
@@ -496,9 +514,25 @@ public:
         if (power_save_timer_ != nullptr && (!screensaver_active_ || user_initiated)) {
             power_save_timer_->WakeUp();
         }
+        /*
+         * 对话结束触发的立即屏保并未等待 PowerSaveTimer 进入内部 sleep 状态，因此用户在
+         * 30 秒内再次唤醒时，WakeUp() 不会产生 OnExitSleepMode 回调，需要在这里显式退出。
+         */
+        if (user_initiated && screensaver_active_.load()) {
+            SetScreensaverActive(false);
+        }
         if (screen_off_timer_ != nullptr) {
             screen_off_timer_->WakeUp();
         }
+    }
+
+    /**
+     * @brief 在屏保配置允许时立即显示金属黑表盘。
+     * @details 本方法跳过常规 30 秒空闲等待，但不修改用户保存的屏保开关，也不改变自动熄屏
+     *          的独立计时；主要由应用层在监听或播报状态结束并回到空闲状态后调用。
+     */
+    virtual void EnterScreensaver() override {
+        SetScreensaverActive(true);
     }
 
     /**
@@ -549,6 +583,9 @@ public:
         settings.SetBool(kScreensaverEnabledKey, enabled);
         if (power_save_timer_ != nullptr) {
             power_save_timer_->SetSleepTimeout(enabled ? kScreensaverTimeoutSeconds : -1);
+        }
+        if (!enabled) {
+            SetScreensaverActive(false);
         }
         return true;
     }

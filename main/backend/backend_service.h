@@ -23,6 +23,10 @@
  */
 struct BackendWeatherData {
     /**
+     * @brief 获取或设置后端返回的当前天气位置名称，例如“上海市松江区”。
+     */
+    std::string location;
+    /**
      * @brief 获取或设置当前整数温度，单位为摄氏度。
      */
     int temperature = 0;

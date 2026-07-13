@@ -50,17 +50,27 @@ protected:
     lv_obj_t* screensaver_lunar_date_label_ = nullptr;
     lv_obj_t* screensaver_solar_date_label_ = nullptr;
     lv_obj_t* screensaver_weekday_label_ = nullptr;
+    lv_obj_t* screensaver_weather_location_label_ = nullptr;
     lv_obj_t* screensaver_weather_group_ = nullptr;
     lv_obj_t* screensaver_weather_temperature_label_ = nullptr;
     lv_obj_t* screensaver_weather_description_label_ = nullptr;
     lv_obj_t* screensaver_weather_range_label_ = nullptr;
+    /**
+     * @brief 位于时间下方、负责裁切三行备忘录正文的透明固定视口。
+     */
+    lv_obj_t* screensaver_memo_viewport_ = nullptr;
     lv_obj_t* screensaver_todo_label_ = nullptr;
     /**
      * @brief 驱动多条屏保备忘录循环切换的 LVGL 定时器。
      */
     lv_timer_t* screensaver_memo_timer_ = nullptr;
-    lv_obj_t* screensaver_status_icon_group_ = nullptr;
+    /**
+     * @brief 位于表盘 12 点位置、替代原主刻度并显示网络状态的图标标签。
+     */
     lv_obj_t* screensaver_network_label_ = nullptr;
+    /**
+     * @brief 位于表盘 6 点位置、替代原主刻度并显示分级电量或充电状态的图标标签。
+     */
     lv_obj_t* screensaver_battery_label_ = nullptr;
     lv_scale_section_t* screensaver_second_section_ = nullptr;
     esp_timer_handle_t preview_timer_ = nullptr;
@@ -72,7 +82,7 @@ protected:
      */
     std::vector<std::string> screensaver_memos_;
     /**
-     * @brief 指向当前正在表盘左下区域展示的备忘录下标。
+     * @brief 指向当前正在表盘时间下方全宽区域展示的备忘录下标。
      */
     size_t screensaver_memo_index_ = 0;
 
@@ -94,19 +104,26 @@ protected:
     /**
      * @brief 将当前主题的完整中文字库应用到表盘的小号文本标签。
      * @param font LVGL 字体对象；为空时保持现有字体不变。
-     * @details 资源字体通常为 30px，本方法会统一缩放到约 20px，既保证中文字符完整，
+     * @details 资源字体通常为 30px，本方法会统一缩放到约 28px，既保证中文字符完整，
      *          又不改变圆形表盘已经确定的视觉布局。调用者必须已经持有 LVGL 锁。
      */
     void ApplyScreensaverTextFont(const lv_font_t* font);
     /**
-     * @brief 将主题字体应用到天气三列，并保持 22px 字号与 20px 可见列间距。
+     * @brief 将主题字体应用到天气位置名称，并保持单行水平居中。
+     * @param font LVGL 字体对象；为空时保持现有字体不变。
+     * @details 位置名称使用独立缩放，避免天气三列整体缩放影响其居中位置。
+     *          调用者必须已经持有 LVGL 锁。
+     */
+    void ApplyScreensaverLocationFont(const lv_font_t* font);
+    /**
+     * @brief 将主题字体应用到天气三列，并保持 29px 字号与 12px 可见列间距。
      * @param font LVGL 字体对象；为空时保持现有字体不变。
      * @details 天气组以整体方式缩放和居中，三个子标签不单独缩放，避免列间距受文字长度影响。
      *          调用者必须已经持有 LVGL 锁。
      */
     void ApplyScreensaverWeatherFont(const lv_font_t* font);
     /**
-     * @brief 将主题字体应用到日期三列，并保持 22px 字号与 25px 可见列间距。
+     * @brief 将主题字体应用到日期三列，并保持 26px 字号与 16px 可见列间距。
      * @param font LVGL 字体对象；为空时保持现有字体不变。
      * @details 农历、公历和星期始终单行显示，并由日期组作为整体水平居中。
      *          调用者必须已经持有 LVGL 锁。
@@ -126,10 +143,15 @@ protected:
     void UpdateScreensaverContent();
     /**
      * @brief 根据当前下标刷新备忘录标签并计算下一条轮播等待时间。
-     * @details 短文本固定展示 8 秒；长文本使用横向滚动，并按字符数量估算滚动完成时间后
-     *          再保留 3 秒。调用者必须持有 LVGL 锁。
+     * @details 所有文本均自动换行，实际高度超过三行时启动纵向滚动。调用者必须持有 LVGL 锁。
      */
     void UpdateScreensaverMemo();
+    /**
+     * @brief 根据备忘录实际排版高度启动、停止或重置三行视口内的纵向滚动。
+     * @details 三行以内垂直居中静止，超过三行后从顶部滚动至最后一行。
+     *          调用者必须持有 LVGL 锁。
+     */
+    void UpdateScreensaverMemoScroll();
     /**
      * @brief LVGL 定时器回调，切换到下一条缓存备忘录。
      * @param timer user_data 指向当前 LcdDisplay 实例。
@@ -189,9 +211,10 @@ public:
      */
     virtual void SetScreensaverMode(bool enabled) override;
     /**
-     * @brief 线程安全地更新表盘天气三列。
+     * @brief 线程安全地更新表盘天气位置和天气三列。
      */
-    virtual void SetScreensaverWeather(int temperature, const std::string& weather,
+    virtual void SetScreensaverWeather(const std::string& location, int temperature,
+                                       const std::string& weather,
                                        int low_temperature, int high_temperature) override;
     /**
      * @brief 线程安全地替换备忘录缓存，并从第一条重新开始轮播。

@@ -133,6 +133,12 @@ public:
      */
     virtual bool IsScreensaverActive() const { return false; }
     /**
+     * @brief 请求立即进入当前板型提供的屏保界面。
+     * @details 该入口用于一轮语音对话结束后跳过常规空闲等待时间。板型应继续遵守用户保存的
+     *          屏保开关；屏保关闭、屏幕已经熄灭或板型不支持屏保时不得改变显示状态。
+     */
+    virtual void EnterScreensaver() {}
+    /**
      * @brief 设置是否允许无互动时自动关闭背光。
      * @param enabled true 开启自动熄屏；false 禁止自动熄屏。
      * @return 当前板型支持并成功应用时返回 true。

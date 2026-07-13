@@ -87,6 +87,65 @@ void AddOptionalTime(cJSON* root, const char* name, const std::string& value) {
     }
 }
 
+/**
+ * @brief 将字符串中的 ASCII 英文字母转换为小写，中文和其他 UTF-8 字节保持不变。
+ * @param value MCP 工具传入的位置模式或位置文本。
+ * @return 适合比较 automatic、auto、fixed 等英文关键字的字符串副本。
+ */
+std::string ToAsciiLower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
+        return character >= 'A' && character <= 'Z'
+            ? static_cast<char>(character + ('a' - 'A'))
+            : static_cast<char>(character);
+    });
+    return value;
+}
+
+/**
+ * @brief 判断天气位置工具参数是否表达了公网 IP 自动定位意图。
+ * @param mode 大模型显式提供的位置模式，推荐值为 automatic。
+ * @param location_text 大模型误用固定位置工具时可能传入的自然语言位置文本。
+ * @return 参数明确要求 automatic、auto、IP 定位或自动识别当前位置时返回 true。
+ * @details 该兼容判断用于处理大模型把“改成 IP 自动定位”错误路由到
+ *          self.weather.set_location 的情况，不会把普通省市区文本改成自动模式。
+ */
+bool IsAutomaticWeatherLocationIntent(
+    const std::string& mode,
+    const std::string& location_text) {
+    const std::string normalized_mode = ToAsciiLower(mode);
+    const std::string normalized_text = ToAsciiLower(location_text);
+    if (normalized_mode == "automatic" || normalized_mode == "auto") {
+        return true;
+    }
+
+    return normalized_text == "automatic"
+        || normalized_text == "auto"
+        || normalized_text == "ip"
+        || normalized_text.find("ip自动定位") != std::string::npos
+        || normalized_text.find("ip定位") != std::string::npos
+        || normalized_text.find("根据ip") != std::string::npos
+        || normalized_text.find("自动定位") != std::string::npos
+        || normalized_text.find("自动识别") != std::string::npos
+        || normalized_text.find("当前位置") != std::string::npos;
+}
+
+/**
+ * @brief 判断组合天气位置工具是否只要求关闭自动定位并固定当前已保存位置。
+ * @param mode 大模型显式提供的位置模式。
+ * @param location_text 用户指定的固定省市区文本；非空时应优先执行位置设置。
+ * @param selected_location_code 用户从歧义候选中确认的高德行政区编码。
+ * @return 模式为 fixed 或 manual，且没有提交新位置和候选编码时返回 true。
+ */
+bool IsFixCurrentWeatherLocationIntent(
+    const std::string& mode,
+    const std::string& location_text,
+    const std::string& selected_location_code) {
+    const std::string normalized_mode = ToAsciiLower(mode);
+    return (normalized_mode == "fixed" || normalized_mode == "manual")
+        && location_text.empty()
+        && selected_location_code.empty();
+}
+
 }  // namespace
 
 /**
@@ -646,15 +705,17 @@ void BackendService::ApplyWeatherResponse(
     const cJSON* temperature = cJSON_GetObjectItemCaseSensitive(data, "temperature");
     const cJSON* high = cJSON_GetObjectItemCaseSensitive(data, "high_temperature");
     const cJSON* low = cJSON_GetObjectItemCaseSensitive(data, "low_temperature");
+    const std::string location = GetJsonString(data, "location");
     const std::string weather = GetJsonString(data, "weather");
     if (!cJSON_IsNumber(temperature) || !cJSON_IsNumber(high)
-        || !cJSON_IsNumber(low) || weather.empty()) {
+        || !cJSON_IsNumber(low) || location.empty() || weather.empty()) {
         cJSON_Delete(root);
         ESP_LOGW(kTag, "Weather response data is incomplete");
         return;
     }
 
     BackendWeatherData snapshot;
+    snapshot.location = location;
     snapshot.temperature = temperature->valueint;
     snapshot.high_temperature = high->valueint;
     snapshot.low_temperature = low->valueint;
@@ -670,6 +731,7 @@ void BackendService::ApplyWeatherResponse(
         Application::GetInstance().Schedule([snapshot]() {
             if (Board::GetInstance().IsScreensaverActive()) {
                 Board::GetInstance().GetDisplay()->SetScreensaverWeather(
+                    snapshot.location,
                     snapshot.temperature,
                     snapshot.weather,
                     snapshot.low_temperature,
@@ -766,17 +828,63 @@ void BackendService::QueueApiCall(
  */
 void BackendService::RegisterMcpTools(McpServer& server) {
     server.AddAsyncTool(
-        "tuntun.weather.set_location",
-        "设置屏保天气位置。首次调用传 location_text；若返回 confirmed=false，必须向用户确认候选。确认后建议同时传原 location_text 和 selected_location_code，也允许只传 selected_location_code。",
+        "self.weather.set_location",
+        "配置屏保天气位置。设置省市区时传 location_text，成功后自动切换 fixed；用户要求按 IP 自动定位或自动识别当前位置时必须传 mode=automatic；用户只要求关闭自动定位时传 mode=fixed 且位置留空。若固定位置返回 confirmed=false，必须继续确认候选。",
         PropertyList({
+            Property("mode", kPropertyTypeString, std::string("")),
             Property("location_text", kPropertyTypeString, std::string("")),
             Property("selected_location_code", kPropertyTypeString, std::string(""))
         }),
         [this](const PropertyList& properties, McpToolCompletion completion) {
+            const std::string mode = properties["mode"].value<std::string>();
+            const std::string location_text = properties["location_text"].value<std::string>();
+            const std::string selected_location_code =
+                properties["selected_location_code"].value<std::string>();
+
+            if (IsAutomaticWeatherLocationIntent(mode, location_text)) {
+                cJSON* body = cJSON_CreateObject();
+                cJSON_AddStringToObject(body, "mode", "automatic");
+                ESP_LOGI(kTag, "Weather location request routed to automatic mode");
+                QueueApiCall("/api/weather/location/mode/set", SerializeAndDelete(body), true,
+                             std::move(completion));
+                return;
+            }
+
+            if (IsFixCurrentWeatherLocationIntent(mode, location_text, selected_location_code)) {
+                cJSON* body = cJSON_CreateObject();
+                cJSON_AddStringToObject(body, "mode", "fixed");
+                ESP_LOGI(kTag, "Weather location request routed to fixed mode");
+                QueueApiCall("/api/weather/location/mode/set", SerializeAndDelete(body), true,
+                             std::move(completion));
+                return;
+            }
+
             cJSON* body = cJSON_CreateObject();
-            cJSON_AddStringToObject(body, "location_text", properties["location_text"].value<std::string>().c_str());
-            cJSON_AddStringToObject(body, "selected_location_code", properties["selected_location_code"].value<std::string>().c_str());
+            cJSON_AddStringToObject(body, "location_text", location_text.c_str());
+            cJSON_AddStringToObject(body, "selected_location_code", selected_location_code.c_str());
             QueueApiCall("/api/weather/location/set", SerializeAndDelete(body), true, std::move(completion));
+        });
+
+    server.AddAsyncTool(
+        "self.weather.set_location_mode",
+        "专门切换天气位置模式。用户提到 IP 自动定位、自动识别、根据当前位置显示天气时必须调用本工具并传 automatic；关闭自动定位且不修改城市时传 fixed。",
+        PropertyList({
+            Property("mode", kPropertyTypeString)
+        }),
+        [this](const PropertyList& properties, McpToolCompletion completion) {
+            cJSON* body = cJSON_CreateObject();
+            cJSON_AddStringToObject(body, "mode", properties["mode"].value<std::string>().c_str());
+            QueueApiCall("/api/weather/location/mode/set", SerializeAndDelete(body), true,
+                         std::move(completion));
+        });
+
+    server.AddAsyncTool(
+        "self.weather.get_location",
+        "查询当前天气使用固定模式还是自动识别模式，并返回当前生效的位置和 city 或 district 定位精度。",
+        PropertyList(),
+        [this](const PropertyList& properties, McpToolCompletion completion) {
+            (void)properties;
+            QueueApiCall("/api/weather/location/get", "{}", false, std::move(completion));
         });
 
     server.AddAsyncTool(

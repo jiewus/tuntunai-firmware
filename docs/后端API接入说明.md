@@ -89,16 +89,23 @@ Accept: application/json
 请求失败时保留最近一次成功数据。响应返回较晚时会更新 RAM 缓存，但只有屏保仍然可见且
 请求世代与当前屏保一致时才更新 LVGL，因此后台响应不会切换到对话界面。
 
-屏保最多缓存并轮播 5 条备忘录。短文本展示 8 秒；长文本滚动后额外停留约 3 秒；
-后端返回新数组时从第一条重新开始。
+屏保最多缓存并轮播 5 条备忘录。每条备忘录在适配圆屏弧形边缘的固定视口中最多静态显示
+三行；超过三行时自动换行并向上滚动，不进行左右滚动。多条备忘录在当前内容完成一次纵向
+滚动后切换，单条超长备忘录循环纵向滚动；后端返回新数组时从第一条和顶部位置重新开始。
 
 ## 6. MCP 工具
 
 固件向小智云端注册以下异步工具：
 
+业务工具在公共设备工具之后、`user_only` 管理工具之前注册，确保天气工具位于 8 KB
+`tools/list` 首个分页中。串口会输出不含参数的 `tools/list` 和 `tools/call` 日志，用于确认
+云端是否真正发现并调用设备工具。
+
 | 工具 | 后端接口 | 作用 |
 |---|---|---|
-| `tuntun.weather.set_location` | `/api/weather/location/set` | 支持省、市、区县完整文本，并在歧义候选确认后设置天气位置 |
+| `self.weather.set_location` | `/api/weather/location/set` 或 `/api/weather/location/mode/set` | 兼容设置固定省市区和切换自动定位，避免大模型误选工具 |
+| `self.weather.set_location_mode` | `/api/weather/location/mode/set` | 在 `fixed` 固定位置和 `automatic` 公网 IP 自动识别之间切换 |
+| `self.weather.get_location` | `/api/weather/location/get` | 查询当前位置模式、定位精度和实际生效位置 |
 | `tuntun.memo.create` | `/api/memo/create` | 创建普通或定时备忘录 |
 | `tuntun.memo.list` | `/api/memo/list` | 按范围、状态、关键词分页查询，默认 5 条、最多 10 条 |
 | `tuntun.memo.statistics` | `/api/memo/statistics` | 查询全部、未完成、未到期、今天、明天或本周数量 |
@@ -110,6 +117,32 @@ Accept: application/json
 
 时间参数使用带时区偏移的 ISO 8601 文本，时区使用 IANA 名称。工具成功时把后端统一响应
 作为结构化 JSON 文本返回；后端业务失败时设置 MCP `isError=true`。
+
+天气位置语音示例：
+
+```text
+“把天气位置设置为上海市松江区”
+  -> self.weather.set_location(mode="fixed", location_text="上海市松江区")
+  -> 成功后使用固定位置模式
+
+“天气位置改成自动识别”
+  -> self.weather.set_location_mode(mode="automatic")
+  -> 后端根据本次设备请求的公网 IP 调用高德 IP 定位
+
+如果大模型误调用：
+  -> self.weather.set_location(location_text="IP自动定位")
+  -> 固件识别自动定位意图并改调 /api/weather/location/mode/set
+
+“以后还是固定显示松江区天气”
+  -> self.weather.set_location(location_text="上海市松江区")
+  -> 手动设置成功后自动恢复 fixed 模式
+
+“现在天气位置是哪里”
+  -> self.weather.get_location()
+```
+
+高德 IP 定位通常只能稳定识别到城市；如果高德返回区县级 `adcode`，后端会保留区县精度。
+自动刷新失败时后端继续使用上一次成功位置。固件和后端日志均不记录设备公网 IP。
 
 ## 7. 日志和安全
 
