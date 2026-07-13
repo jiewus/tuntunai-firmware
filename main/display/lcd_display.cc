@@ -145,9 +145,9 @@ constexpr int kScreensaverTimeColumnGap = 10;
 constexpr int kScreensaverSmallTextPixelSize = 28;
 
 /**
- * @brief 时间下方三行备忘录视口的最终可见宽度，单位为物理像素。
- * @details 228px 根据视口底边所在位置的圆屏有效弦宽预留了左右安全余量，避免第三行
- *          靠近屏幕两侧弧形边缘。文字标签会根据缩放比例反算逻辑宽度并在此视口内换行。
+ * @brief 时间下方三行备忘录区域的最大可见宽度，单位为物理像素。
+ * @details 该宽度同时作为文本自动换行的最终视觉宽度。实际绘制时再由三条宽度逐渐收窄
+ *          的水平裁切带限制每行两侧，使整体轮廓顺应圆屏下半部分的弧形。
  */
 constexpr int kScreensaverMemoWidth = 228;
 
@@ -156,6 +156,18 @@ constexpr int kScreensaverMemoWidth = 228;
  * @details 三行以内保持静止，超过三行后在固定视口内向上滚动，不启用左右滚动。
  */
 constexpr int kScreensaverMemoVisibleLines = 3;
+
+/**
+ * @brief 三行备忘录从上到下各自允许显示的物理宽度。
+ * @details 备忘录位于圆心下方，越靠近屏幕底部，可用圆弦宽度越小，因此依次使用
+ *          228px、208px 和 180px。三条裁切带只限制文字可见区域，不绘制背景，也不会
+ *          覆盖其外侧的表盘刻度。
+ */
+constexpr int kScreensaverMemoRowWidths[kScreensaverMemoVisibleLines] = {
+    228,
+    208,
+    180,
+};
 
 /**
  * @brief 备忘录相邻两行之间的最终可见间距，单位为物理像素。
@@ -172,19 +184,35 @@ constexpr int kScreensaverMemoViewportHeight =
     + kScreensaverMemoLineSpacing * (kScreensaverMemoVisibleLines - 1) + 2;
 
 /**
- * @brief 超长备忘录向上滚动的目标速度，单位为物理像素每秒。
+ * @brief 每条水平裁切带的高度，单位为物理像素。
+ * @details 96px 总视口被等分为三个连续区域，每个区域高 32px。裁切带之间没有空隙，
+ *          因此同一文本经过三个区域时仍保持连续，不会出现横向接缝或丢失扫描行。
  */
-constexpr int kScreensaverMemoScrollPixelsPerSecond = 22;
+constexpr int kScreensaverMemoRowHeight =
+    kScreensaverMemoViewportHeight / kScreensaverMemoVisibleLines;
+static_assert(kScreensaverMemoViewportHeight % kScreensaverMemoVisibleLines == 0,
+              "备忘录视口高度必须能够被三条裁切带整除");
+
+/**
+ * @brief 超长备忘录向上滚动的目标速度，单位为物理像素每秒。
+ * @details 直接复用普通对话字幕的速度，使两个页面的文字移动节奏保持一致。
+ */
+constexpr int kScreensaverMemoScrollPixelsPerSecond =
+    kRoundSubtitleScrollPixelsPerSecond;
 
 /**
  * @brief 超长备忘录开始向上滚动前停留在首行位置的时间，单位为毫秒。
+ * @details 直接复用普通对话字幕的起始停留时间。
  */
-constexpr int kScreensaverMemoScrollStartDelayMs = 1200;
+constexpr int kScreensaverMemoScrollStartDelayMs =
+    kRoundSubtitleScrollStartDelayMs;
 
 /**
  * @brief 超长备忘录滚动到末尾后停留的时间，单位为毫秒。
+ * @details 直接复用普通对话字幕的末尾停留时间，避免屏保滚动产生不同的顿挫感。
  */
-constexpr int kScreensaverMemoScrollEndDelayMs = 1800;
+constexpr int kScreensaverMemoScrollEndDelayMs =
+    kRoundSubtitleScrollRepeatDelayMs;
 
 /**
  * @brief 天气位置名称的目标视觉字号，单位为像素。
@@ -864,9 +892,7 @@ LcdDisplay::~LcdDisplay() {
         esp_timer_delete(preview_timer_);
     }
 
-    if (screensaver_todo_label_ != nullptr) {
-        lv_anim_delete(screensaver_todo_label_, nullptr);
-    }
+    lv_anim_delete(this, ScreensaverMemoScrollAnimationCallback);
     if (screensaver_memo_timer_ != nullptr) {
         lv_timer_delete(screensaver_memo_timer_);
         screensaver_memo_timer_ = nullptr;
@@ -1018,11 +1044,7 @@ void LcdDisplay::ApplyScreensaverTextFont(const lv_font_t* font) {
     const int todo_logical_width = kScreensaverMemoWidth * 256 / text_scale;
     const int logical_line_spacing =
         (kScreensaverMemoLineSpacing * 256 + text_scale - 1) / text_scale;
-    lv_obj_t* labels[] = {
-        screensaver_todo_label_,
-    };
-
-    for (lv_obj_t* label : labels) {
+    for (lv_obj_t* label : screensaver_memo_labels_) {
         if (label == nullptr) {
             continue;
         }
@@ -1038,9 +1060,18 @@ void LcdDisplay::ApplyScreensaverTextFont(const lv_font_t* font) {
         lv_obj_align(screensaver_memo_viewport_, LV_ALIGN_CENTER, 0,
                      kScreensaverBottomSectionOffsetY);
     }
-    if (screensaver_todo_label_ != nullptr) {
-        lv_obj_set_width(screensaver_todo_label_, todo_logical_width);
-        lv_obj_align(screensaver_todo_label_, LV_ALIGN_TOP_MID, 0, 0);
+    for (int row = 0; row < kScreensaverMemoVisibleLines; ++row) {
+        if (screensaver_memo_row_viewports_[row] != nullptr) {
+            lv_obj_set_size(screensaver_memo_row_viewports_[row],
+                            kScreensaverMemoRowWidths[row], kScreensaverMemoRowHeight);
+            lv_obj_align(screensaver_memo_row_viewports_[row], LV_ALIGN_TOP_MID, 0,
+                         row * kScreensaverMemoRowHeight);
+        }
+        if (screensaver_memo_labels_[row] != nullptr) {
+            lv_obj_set_width(screensaver_memo_labels_[row], todo_logical_width);
+            lv_obj_align(screensaver_memo_labels_[row], LV_ALIGN_TOP_MID, 0,
+                         -row * kScreensaverMemoRowHeight);
+        }
     }
 }
 
@@ -1427,8 +1458,9 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_label_set_text(screensaver_seconds_label_, "--");
 
     /*
-     * 时间下方使用固定三行高度的透明视口。父对象负责裁切超出区域的子标签，使长文本
-     * 可以通过 translate_y 向上滚动，同时任何文字都不会越过圆屏下方的安全边界。
+     * 时间下方使用固定三行高度的透明根视口。根视口内部再建立三条由宽到窄的水平裁切带，
+     * 用分段圆弦逼近圆屏下半部分的左右弧形，避免备忘录覆盖外圈刻度。每条裁切带持有一份
+     * 相同文本，三个标签同步纵向移动后，视觉上仍是一段连续滚动的完整备忘录。
      */
     screensaver_memo_viewport_ = lv_obj_create(screensaver_container_);
     lv_obj_set_size(screensaver_memo_viewport_, kScreensaverMemoWidth,
@@ -1442,15 +1474,32 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_align(screensaver_memo_viewport_, LV_ALIGN_CENTER, 0,
                  kScreensaverBottomSectionOffsetY);
 
-    screensaver_todo_label_ = lv_label_create(screensaver_memo_viewport_);
-    lv_obj_set_width(screensaver_todo_label_, kScreensaverMemoWidth);
-    lv_obj_set_style_text_font(screensaver_todo_label_, text_font, 0);
-    lv_obj_set_style_text_color(screensaver_todo_label_, lv_color_hex(0xDDE1E4), 0);
-    lv_obj_set_style_text_align(screensaver_todo_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_line_space(screensaver_todo_label_, kScreensaverMemoLineSpacing, 0);
-    lv_label_set_long_mode(screensaver_todo_label_, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(screensaver_todo_label_, "暂无待办");
-    lv_obj_align(screensaver_todo_label_, LV_ALIGN_TOP_MID, 0, 0);
+    for (int row = 0; row < kScreensaverMemoVisibleLines; ++row) {
+        lv_obj_t* row_viewport = lv_obj_create(screensaver_memo_viewport_);
+        screensaver_memo_row_viewports_[row] = row_viewport;
+        lv_obj_set_size(row_viewport, kScreensaverMemoRowWidths[row],
+                        kScreensaverMemoRowHeight);
+        lv_obj_set_style_bg_opa(row_viewport, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row_viewport, 0, 0);
+        lv_obj_set_style_pad_all(row_viewport, 0, 0);
+        lv_obj_set_scrollbar_mode(row_viewport, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_remove_flag(row_viewport, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(row_viewport, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+        lv_obj_align(row_viewport, LV_ALIGN_TOP_MID, 0,
+                     row * kScreensaverMemoRowHeight);
+
+        lv_obj_t* memo_label = lv_label_create(row_viewport);
+        screensaver_memo_labels_[row] = memo_label;
+        lv_obj_set_width(memo_label, kScreensaverMemoWidth);
+        lv_obj_set_style_text_font(memo_label, text_font, 0);
+        lv_obj_set_style_text_color(memo_label, lv_color_hex(0xDDE1E4), 0);
+        lv_obj_set_style_text_align(memo_label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_line_space(memo_label, kScreensaverMemoLineSpacing, 0);
+        lv_label_set_long_mode(memo_label, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(memo_label, "暂无待办");
+        lv_obj_align(memo_label, LV_ALIGN_TOP_MID, 0,
+                     -row * kScreensaverMemoRowHeight);
+    }
     screensaver_memo_timer_ = lv_timer_create(
         ScreensaverMemoTimerCallback, 8000, this);
     lv_timer_pause(screensaver_memo_timer_);
@@ -1637,9 +1686,11 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
         if (screensaver_memo_timer_ != nullptr) {
             lv_timer_pause(screensaver_memo_timer_);
         }
-        if (screensaver_todo_label_ != nullptr) {
-            lv_anim_delete(screensaver_todo_label_, nullptr);
-            lv_obj_set_style_translate_y(screensaver_todo_label_, 0, 0);
+        lv_anim_delete(this, ScreensaverMemoScrollAnimationCallback);
+        for (lv_obj_t* memo_label : screensaver_memo_labels_) {
+            if (memo_label != nullptr) {
+                lv_obj_set_style_translate_y(memo_label, 0, 0);
+            }
         }
         lv_obj_add_flag(screensaver_container_, LV_OBJ_FLAG_HIDDEN);
         if (gif_controller_) {
@@ -1702,58 +1753,78 @@ void LcdDisplay::SetScreensaverMemos(const std::vector<std::string>& memos) {
  *          决定静止居中或向上滚动。
  */
 void LcdDisplay::UpdateScreensaverMemo() {
-    if (screensaver_todo_label_ == nullptr) {
+    if (screensaver_memo_labels_[0] == nullptr) {
         return;
     }
+    const char* visible_text = "暂无待办";
     if (screensaver_memos_.empty()) {
-        lv_label_set_long_mode(screensaver_todo_label_, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(screensaver_todo_label_, "暂无待办");
-        UpdateScreensaverMemoScroll();
-        return;
+        screensaver_memo_index_ = 0;
+    } else {
+        if (screensaver_memo_index_ >= screensaver_memos_.size()) {
+            screensaver_memo_index_ = 0;
+        }
+        visible_text = screensaver_memos_[screensaver_memo_index_].c_str();
     }
 
-    if (screensaver_memo_index_ >= screensaver_memos_.size()) {
-        screensaver_memo_index_ = 0;
+    for (lv_obj_t* memo_label : screensaver_memo_labels_) {
+        if (memo_label != nullptr) {
+            lv_label_set_long_mode(memo_label, LV_LABEL_LONG_WRAP);
+            lv_label_set_text(memo_label, visible_text);
+        }
     }
-    const std::string& content = screensaver_memos_[screensaver_memo_index_];
-    lv_label_set_long_mode(screensaver_todo_label_, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(screensaver_todo_label_, content.c_str());
     UpdateScreensaverMemoScroll();
 }
 
 /**
  * @brief 根据当前备忘录的真实排版高度配置三行视口内的纵向滚动动画。
- * @details 方法先删除旧动画并恢复顶部位置，再把标签设置为内容自适应高度。三行以内的
- *          文本在视口中垂直居中；超过三行时，以固定物理速度从顶部滚动到最后一行。
- *          动画只在屏保可见时启动，轮播定时器周期会覆盖首屏停留、滚动和末屏停留时间。
+ * @details 方法先删除三条裁切带中的旧动画并恢复顶部位置，再把镜像标签设置为内容自适应
+ *          高度。三行以内的文本在视口中垂直居中；超过三行时，三个标签以与普通字幕相同
+ *          的节奏同步向上移动。多条备忘录在首屏停留、滚动和末屏停留完成后立即切换，
+ *          不再为了凑满固定周期而产生额外停顿。
  */
 void LcdDisplay::UpdateScreensaverMemoScroll() {
-    if (screensaver_memo_viewport_ == nullptr || screensaver_todo_label_ == nullptr) {
+    lv_obj_t* measurement_label = screensaver_memo_labels_[0];
+    if (screensaver_memo_viewport_ == nullptr || measurement_label == nullptr) {
         return;
     }
 
-    lv_anim_delete(screensaver_todo_label_, nullptr);
-    lv_obj_set_style_translate_y(screensaver_todo_label_, 0, 0);
-    lv_label_set_long_mode(screensaver_todo_label_, LV_LABEL_LONG_WRAP);
-    lv_obj_set_height(screensaver_todo_label_, LV_SIZE_CONTENT);
-    lv_obj_update_layout(screensaver_todo_label_);
+    lv_anim_delete(this, ScreensaverMemoScrollAnimationCallback);
+    for (lv_obj_t* memo_label : screensaver_memo_labels_) {
+        if (memo_label == nullptr) {
+            continue;
+        }
+        lv_obj_set_style_translate_y(memo_label, 0, 0);
+        lv_label_set_long_mode(memo_label, LV_LABEL_LONG_WRAP);
+        lv_obj_set_height(memo_label, LV_SIZE_CONTENT);
+        lv_obj_update_layout(memo_label);
+    }
 
     const int text_scale =
-        lv_obj_get_style_transform_scale_y_safe(screensaver_todo_label_, LV_PART_MAIN);
-    const int logical_content_height = lv_obj_get_height(screensaver_todo_label_);
+        lv_obj_get_style_transform_scale_y_safe(measurement_label, LV_PART_MAIN);
+    const int logical_content_height = lv_obj_get_height(measurement_label);
     const int visible_content_height =
         (logical_content_height * text_scale + 255) / 256;
     if (visible_content_height <= kScreensaverMemoViewportHeight) {
         const int top_offset =
             (kScreensaverMemoViewportHeight - visible_content_height) / 2;
-        lv_obj_align(screensaver_todo_label_, LV_ALIGN_TOP_MID, 0, top_offset);
+        for (int row = 0; row < kScreensaverMemoVisibleLines; ++row) {
+            if (screensaver_memo_labels_[row] != nullptr) {
+                lv_obj_align(screensaver_memo_labels_[row], LV_ALIGN_TOP_MID, 0,
+                             top_offset - row * kScreensaverMemoRowHeight);
+            }
+        }
         if (screensaver_memo_timer_ != nullptr) {
             lv_timer_set_period(screensaver_memo_timer_, 8000);
         }
         return;
     }
 
-    lv_obj_align(screensaver_todo_label_, LV_ALIGN_TOP_MID, 0, 0);
+    for (int row = 0; row < kScreensaverMemoVisibleLines; ++row) {
+        if (screensaver_memo_labels_[row] != nullptr) {
+            lv_obj_align(screensaver_memo_labels_[row], LV_ALIGN_TOP_MID, 0,
+                         -row * kScreensaverMemoRowHeight);
+        }
+    }
     const int scroll_distance = visible_content_height - kScreensaverMemoViewportHeight;
     const int calculated_duration =
         scroll_distance * 1000 / kScreensaverMemoScrollPixelsPerSecond;
@@ -1761,7 +1832,7 @@ void LcdDisplay::UpdateScreensaverMemoScroll() {
     const uint32_t display_period = static_cast<uint32_t>(
         kScreensaverMemoScrollStartDelayMs + scroll_duration + kScreensaverMemoScrollEndDelayMs);
     if (screensaver_memo_timer_ != nullptr) {
-        lv_timer_set_period(screensaver_memo_timer_, std::max<uint32_t>(8000, display_period));
+        lv_timer_set_period(screensaver_memo_timer_, display_period);
     }
 
     if (!screensaver_active_) {
@@ -1770,10 +1841,8 @@ void LcdDisplay::UpdateScreensaverMemoScroll() {
 
     lv_anim_t animation;
     lv_anim_init(&animation);
-    lv_anim_set_var(&animation, screensaver_todo_label_);
-    lv_anim_set_exec_cb(&animation, [](void* target, int32_t value) {
-        lv_obj_set_style_translate_y(static_cast<lv_obj_t*>(target), value, 0);
-    });
+    lv_anim_set_var(&animation, this);
+    lv_anim_set_exec_cb(&animation, ScreensaverMemoScrollAnimationCallback);
     lv_anim_set_values(&animation, 0, -scroll_distance);
     lv_anim_set_duration(&animation, scroll_duration);
     lv_anim_set_delay(&animation, kScreensaverMemoScrollStartDelayMs);
@@ -1783,6 +1852,27 @@ void LcdDisplay::UpdateScreensaverMemoScroll() {
         screensaver_memos_.size() > 1 ? 0 : LV_ANIM_REPEAT_INFINITE);
     lv_anim_set_path_cb(&animation, lv_anim_path_linear);
     lv_anim_start(&animation);
+}
+
+/**
+ * @brief 在同一动画帧内同步移动三条裁切带中的备忘录镜像标签。
+ * @param target 指向当前 LcdDisplay 实例。
+ * @param value 相对各标签初始位置的 Y 轴物理像素位移。
+ * @details 单个 LVGL 动画只计算一次时间和像素位置，本方法再把结果写入三个标签。这样
+ *          三条裁切带交界处看到的是同一份文本的同一条扫描行，滚动连续性与单标签聊天
+ *          字幕一致，同时仍保留圆屏需要的分段弧形裁切。
+ */
+void LcdDisplay::ScreensaverMemoScrollAnimationCallback(void* target, int32_t value) {
+    auto* display = static_cast<LcdDisplay*>(target);
+    if (display == nullptr) {
+        return;
+    }
+
+    for (lv_obj_t* memo_label : display->screensaver_memo_labels_) {
+        if (memo_label != nullptr) {
+            lv_obj_set_style_translate_y(memo_label, value, 0);
+        }
+    }
 }
 
 /**

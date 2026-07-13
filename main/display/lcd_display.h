@@ -56,10 +56,20 @@ protected:
     lv_obj_t* screensaver_weather_description_label_ = nullptr;
     lv_obj_t* screensaver_weather_range_label_ = nullptr;
     /**
-     * @brief 位于时间下方、负责裁切三行备忘录正文的透明固定视口。
+     * @brief 位于时间下方、容纳三条弧形安全裁切带的透明固定视口。
      */
     lv_obj_t* screensaver_memo_viewport_ = nullptr;
-    lv_obj_t* screensaver_todo_label_ = nullptr;
+    /**
+     * @brief 从上到下排列的三条透明裁切带。
+     * @details 三条裁切带宽度逐渐缩小，用分段圆弦近似圆屏下半部分的左右弧形。
+     */
+    lv_obj_t* screensaver_memo_row_viewports_[3] = {};
+    /**
+     * @brief 分别位于三条裁切带中的备忘录文本镜像。
+     * @details 三个标签始终保存相同文本并执行相同纵向位移，各裁切带只显示属于自己的
+     *          水平区域，组合后形成一段连续且顺应圆屏弧形的三行文本。
+     */
+    lv_obj_t* screensaver_memo_labels_[3] = {};
     /**
      * @brief 驱动多条屏保备忘录循环切换的 LVGL 定时器。
      */
@@ -148,10 +158,19 @@ protected:
     void UpdateScreensaverMemo();
     /**
      * @brief 根据备忘录实际排版高度启动、停止或重置三行视口内的纵向滚动。
-     * @details 三行以内垂直居中静止，超过三行后从顶部滚动至最后一行。
+     * @details 三行以内垂直居中静止，超过三行后三个镜像标签以普通字幕的节奏同步向上
+     *          滚动，并由宽度逐渐收窄的三条裁切带共同形成圆屏弧形安全边界。
      *          调用者必须持有 LVGL 锁。
      */
     void UpdateScreensaverMemoScroll();
+    /**
+     * @brief 使用同一个动画时钟同步更新三条裁切带中的备忘录纵向位移。
+     * @param target 指向拥有三个备忘录镜像标签的 LcdDisplay 实例。
+     * @param value 当前动画帧对应的 Y 轴物理像素位移。
+     * @details 三个标签不再分别创建动画，避免独立动画在时间和整数像素取整上的微小差异
+     *          造成裁切带交界处抖动。该回调由 LVGL 动画任务调用，调用期间已处于 LVGL 上下文。
+     */
+    static void ScreensaverMemoScrollAnimationCallback(void* target, int32_t value);
     /**
      * @brief LVGL 定时器回调，切换到下一条缓存备忘录。
      * @param timer user_data 指向当前 LcdDisplay 实例。
