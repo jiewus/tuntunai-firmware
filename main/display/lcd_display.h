@@ -236,6 +236,17 @@ public:
                                        const std::string& weather,
                                        int low_temperature, int high_temperature) override;
     /**
+     * @brief 线程安全地使用已格式化文本更新表盘天气区域。
+     * @param location 天气位置或当前服务状态说明。
+     * @param temperature 当前温度文本。
+     * @param weather 天气描述文本。
+     * @param temperature_range 最低和最高温度文本。
+     */
+    virtual void SetScreensaverWeatherText(const std::string& location,
+                                           const std::string& temperature,
+                                           const std::string& weather,
+                                           const std::string& temperature_range) override;
+    /**
      * @brief 线程安全地替换备忘录缓存，并从第一条重新开始轮播。
      */
     virtual void SetScreensaverMemos(const std::vector<std::string>& memos) override;

@@ -131,11 +131,6 @@ void Application::Initialize() {
     };
     callbacks.on_wake_word_detected = [this](const std::string& wake_word) {
         (void)wake_word;
-        /*
-         * 主动提醒的 HTTP Worker 可能正在等待网络分片或解码队列空间。先设置原子取消
-         * 标志，再唤醒主循环，确保提醒不会继续生产新的 Opus 包与本次唤醒争用扬声器。
-         */
-        BackendService::GetInstance().CancelActiveReminderPlayback();
         xEventGroupSetBits(event_group_, MAIN_EVENT_WAKE_WORD_DETECTED);
     };
     callbacks.on_vad_change = [this](bool speaking) {
@@ -161,10 +156,8 @@ void Application::Initialize() {
     auto& backend_service = BackendService::GetInstance();
     backend_service.Start();
 
-    /*
-     * 业务工具必须位于 user_only 管理工具之前。小智云端通过 tools/list 分页读取工具，
-     * 单页上限为 8 KB；若管理工具排在前面，天气和备忘录可能落到后续分页而无法进入
-     * 当前大模型上下文，最终错误调用云端自带的 get_weather。
+    /**
+     * 保留新版业务 MCP 工具的注册位置。API 协议完成前，该方法不会注册任何工具。
      */
     backend_service.RegisterMcpTools(mcp_server);
     mcp_server.AddUserOnlyTools();
@@ -824,7 +817,6 @@ void Application::DismissAlert() {
  */
 void Application::ToggleChatState() {
     Board::GetInstance().WakeUpScreen(true);
-    BackendService::GetInstance().CancelActiveReminderPlayback();
     xEventGroupSetBits(event_group_, MAIN_EVENT_TOGGLE_CHAT);
 }
 
@@ -835,7 +827,6 @@ void Application::ToggleChatState() {
  */
 void Application::StartListening() {
     Board::GetInstance().WakeUpScreen(true);
-    BackendService::GetInstance().CancelActiveReminderPlayback();
     xEventGroupSetBits(event_group_, MAIN_EVENT_START_LISTENING);
 }
 
@@ -854,9 +845,6 @@ void Application::StopListening() {
  *          连接动作通过 Schedule() 延迟执行，让“连接中”界面先得到刷新。
  */
 void Application::HandleToggleChatEvent() {
-    if (BackendService::GetInstance().CancelActiveReminderPlayback()) {
-        audio_service_.ResetDecoder();
-    }
     auto state = GetDeviceState();
     
     if (state == kDeviceStateActivating) {
@@ -926,9 +914,6 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
  *          音频通道并进入手动停止模式；正在播报时先打断 TTS，再切换为手动监听。
  */
 void Application::HandleStartListeningEvent() {
-    if (BackendService::GetInstance().CancelActiveReminderPlayback()) {
-        audio_service_.ResetDecoder();
-    }
     auto state = GetDeviceState();
     
     if (state == kDeviceStateActivating) {
@@ -988,13 +973,6 @@ void Application::HandleStopListeningEvent() {
  *          以便主循环先刷新“连接中”状态。
  */
 void Application::HandleWakeWordDetectedEvent() {
-    /*
-     * 取消标志在音频回调中已经抢先设置；主循环负责清空仍在解码或播放的提醒残留，
-     * 然后再建立小智音频通道，保证唤醒提示音不会被旧提醒覆盖。
-     */
-    if (BackendService::GetInstance().CancelActiveReminderPlayback()) {
-        audio_service_.ResetDecoder();
-    }
     // 唤醒词命中后先恢复背光，再进行可能耗时的云端音频通道握手。
     Board::GetInstance().WakeUpScreen(true);
 
@@ -1290,9 +1268,6 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
  * @details 这是供外部模块直接触发的兼容入口：空闲时建立会话，播报时调度打断，监听时调度关闭通道。
  */
 void Application::WakeWordInvoke(const std::string& wake_word) {
-    if (BackendService::GetInstance().CancelActiveReminderPlayback()) {
-        audio_service_.ResetDecoder();
-    }
     // 兼容入口同样属于明确的用户唤醒，必须允许退出当前屏保。
     Board::GetInstance().WakeUpScreen(true);
 

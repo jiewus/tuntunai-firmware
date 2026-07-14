@@ -116,6 +116,24 @@ public:
         (void)high_temperature;
     }
     /**
+     * @brief 使用已经格式化的文本更新屏保天气区域。
+     * @param location 天气位置或天气服务状态说明。
+     * @param temperature 当前温度文本，例如“21℃”或占位文本“--℃”。
+     * @param weather 天气描述文本，例如“晴”或占位文本“--”。
+     * @param temperature_range 最低和最高温度文本，例如“18/26”或“--/--”。
+     * @details 该接口用于无法提供有效数值的加载、停用和开发中状态。默认实现为空操作，
+     *          具体 LCD 显示类负责复制文本并安全更新 LVGL 控件。
+     */
+    virtual void SetScreensaverWeatherText(const std::string& location,
+                                           const std::string& temperature,
+                                           const std::string& weather,
+                                           const std::string& temperature_range) {
+        (void)location;
+        (void)temperature;
+        (void)weather;
+        (void)temperature_range;
+    }
+    /**
      * @brief 替换屏保循环展示的备忘录数组。
      * @param memos 已按后端优先级排序的正文数组，最多使用前 5 条。
      * @details 默认实现为空操作，具体 LCD 实现负责复制正文并重置轮播位置。

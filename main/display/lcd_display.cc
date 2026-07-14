@@ -1715,15 +1715,32 @@ void LcdDisplay::SetScreensaverWeather(
     const std::string& weather,
     int low_temperature,
     int high_temperature) {
-    DisplayLockGuard lock(this);
     char temperature_text[32];
     char range_text[64];
     snprintf(temperature_text, sizeof(temperature_text), "%d℃", temperature);
     snprintf(range_text, sizeof(range_text), "%d/%d", low_temperature, high_temperature);
+    SetScreensaverWeatherText(location, temperature_text, weather, range_text);
+}
+
+/**
+ * @brief 使用已经格式化的文本更新表盘天气位置和三列内容。
+ * @param location 天气位置或当前天气服务状态说明。
+ * @param temperature 当前温度文本，例如“21℃”或“--℃”。
+ * @param weather 中文天气描述或占位文本。
+ * @param temperature_range 最低和最高温度文本，例如“18/26”或“--/--”。
+ * @details 方法内部获取 LVGL 锁并复制全部文本，适用于后端尚未接入、请求加载中或
+ *          返回值无效等无法构造整数温度的界面状态。
+ */
+void LcdDisplay::SetScreensaverWeatherText(
+    const std::string& location,
+    const std::string& temperature,
+    const std::string& weather,
+    const std::string& temperature_range) {
+    DisplayLockGuard lock(this);
     SetLabelTextIfChanged(screensaver_weather_location_label_, location.c_str());
-    SetLabelTextIfChanged(screensaver_weather_temperature_label_, temperature_text);
+    SetLabelTextIfChanged(screensaver_weather_temperature_label_, temperature.c_str());
     SetLabelTextIfChanged(screensaver_weather_description_label_, weather.c_str());
-    SetLabelTextIfChanged(screensaver_weather_range_label_, range_text);
+    SetLabelTextIfChanged(screensaver_weather_range_label_, temperature_range.c_str());
 }
 
 /**

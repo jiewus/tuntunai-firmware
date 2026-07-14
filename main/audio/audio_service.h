@@ -5,7 +5,6 @@
 #include <deque>
 #include <condition_variable>
 #include <chrono>
-#include <atomic>
 #include <mutex>
 
 #include <freertos/FreeRTOS.h>
@@ -191,23 +190,6 @@ public:
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
 
     /**
-     * @brief 可被原子取消信号打断地将 Opus 包加入有界解码队列。
-     * @param packet 数据包所有权；成功入队后由音频服务持有。
-     * @param cancelled 外部生命周期内始终有效的取消标志。
-     * @return 成功入队时返回 true；服务停止或取消标志置位时返回 false。
-     * @details 本接口供主动提醒 HTTP 流使用。队列满时每 50 ms 重新检查取消状态，
-     *          防止唤醒词必须等待整段音频下载或播放完成。
-     */
-    bool PushPacketToDecodeQueueInterruptible(
-        std::unique_ptr<AudioStreamPacket> packet,
-        const std::atomic<bool>& cancelled);
-
-    /**
-     * @brief 为外部 Ogg/Opus 流启用 Codec 输出并清除旧下行音频。
-     * @details 主动提醒开始前调用，避免上一轮提示音或云端 TTS 残留与提醒混播。
-     */
-    void PrepareStreamPlayback();
-    /**
      * @brief 取出最早的上行 Opus 包。
      * @return 队列为空时返回 nullptr。
      */
@@ -218,16 +200,6 @@ public:
      */
     void PlaySound(const std::string_view& sound);
 
-    /**
-     * @brief 播放可由外部原子标志立即取消的内嵌 Ogg/Opus 提示音。
-     * @param sound 完整内嵌 Ogg 文件数据视图。
-     * @param cancelled 主动提醒生命周期内保持有效的取消标志。
-     * @return Ogg 已完整解封装且所有 Opus 包成功入队时返回 true。
-     * @details 仅用于主动提醒降级提示音；普通系统音仍使用 PlaySound()。
-     */
-    bool PlaySoundInterruptible(
-        const std::string_view& sound,
-        const std::atomic<bool>& cancelled);
     /**
      * @brief 从 Codec 读取并按需重采样到指定参数。
      * @param data 输出 PCM。

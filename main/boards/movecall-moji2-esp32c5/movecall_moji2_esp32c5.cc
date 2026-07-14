@@ -256,10 +256,11 @@ private:
     static constexpr const char* kScreenAutoOffTimeoutKey = "scr_off_sec";
 
     /**
-     * @brief 统一切换表盘屏保的可见状态并同步后端刷新生命周期。
+     * @brief 统一切换表盘屏保的可见状态并同步后端占位内容生命周期。
      * @param active true 立即显示表盘；false 退出表盘并恢复普通对话界面。
      * @details 方法使用原子状态过滤重复进入或退出，确保 30 秒定时器、对话结束事件和用户唤醒
      *          同时到达时只切换一次界面，也只向 BackendService 发送一次对应状态通知。
+     *          新版 API 完成前，进入通知只会写入天气和备忘录占位文本，不会访问网络。
      */
     void SetScreensaverActive(bool active) {
         if (active) {
