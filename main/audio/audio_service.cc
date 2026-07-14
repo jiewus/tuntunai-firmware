@@ -583,6 +583,47 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
 }
 
 /**
+ * @brief 在固定间隔检查取消标志的同时等待解码队列空间。
+ * @param packet 待入队的单个 Opus 包。
+ * @param cancelled 唤醒词或用户交互设置的原子取消标志。
+ * @return 成功转移数据包所有权时返回 true，取消或服务停止时返回 false。
+ */
+bool AudioService::PushPacketToDecodeQueueInterruptible(
+    std::unique_ptr<AudioStreamPacket> packet,
+    const std::atomic<bool>& cancelled) {
+    if (packet == nullptr) {
+        return false;
+    }
+
+    std::unique_lock<std::mutex> lock(audio_queue_mutex_);
+    while (audio_decode_queue_.size() >= MAX_DECODE_PACKETS_IN_QUEUE
+           && !cancelled.load() && !service_stopped_) {
+        audio_queue_cv_.wait_for(lock, std::chrono::milliseconds(50));
+    }
+    if (cancelled.load() || service_stopped_) {
+        return false;
+    }
+
+    audio_decode_queue_.push_back(std::move(packet));
+    audio_queue_cv_.notify_all();
+    return true;
+}
+
+/**
+ * @brief 启用扬声器输出并重置旧下行播放状态。
+ */
+void AudioService::PrepareStreamPlayback() {
+    if (!codec_->output_enabled()) {
+        esp_timer_stop(audio_power_timer_);
+        esp_timer_start_periodic(
+            audio_power_timer_,
+            AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
+        codec_->EnableOutput(true);
+    }
+    ResetDecoder();
+}
+
+/**
  * @brief 取出最早的上行 Opus 包。
  * @return 队列为空时返回 nullptr。
  * @details 返回非空指针时，音频包所有权从发送队列转移给调用者，并通知可能等待队列空间的编码任务。
@@ -728,6 +769,43 @@ void AudioService::PlaySound(const std::string_view& ogg) {
     });
     demuxer->Reset();
     demuxer->Process(buf, size);
+}
+
+/**
+ * @brief 使用可取消的解码队列入口播放主动提醒降级提示音。
+ * @param ogg 完整内嵌 Ogg 数据。
+ * @param cancelled 用户唤醒时设置的原子取消标志。
+ * @return 输入被完整消费、所有包已入队且未取消时返回 true。
+ */
+bool AudioService::PlaySoundInterruptible(
+    const std::string_view& ogg,
+    const std::atomic<bool>& cancelled) {
+    if (ogg.empty() || cancelled.load()) {
+        return false;
+    }
+    PrepareStreamPlayback();
+
+    bool delivery_ok = true;
+    auto demuxer = std::make_unique<OggDemuxer>();
+    demuxer->OnDemuxerFinished(
+        [this, &cancelled, &delivery_ok](
+            const uint8_t* data,
+            int sample_rate,
+            size_t size) {
+            if (!delivery_ok || cancelled.load()) {
+                return;
+            }
+            auto packet = std::make_unique<AudioStreamPacket>();
+            packet->sample_rate = sample_rate;
+            packet->frame_duration = 60;
+            packet->payload.assign(data, data + size);
+            delivery_ok = PushPacketToDecodeQueueInterruptible(
+                std::move(packet),
+                cancelled);
+        });
+    const auto* data = reinterpret_cast<const uint8_t*>(ogg.data());
+    const size_t consumed = demuxer->Process(data, ogg.size());
+    return delivery_ok && !cancelled.load() && consumed == ogg.size();
 }
 
 /**

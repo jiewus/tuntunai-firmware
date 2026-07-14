@@ -32,6 +32,7 @@ set(SOURCES
     "boards/common/press_to_talk_mcp_tool.cc"
     "boards/movecall-moji2-esp32c5/movecall_moji2_esp32c5.cc"
     "backend/backend_service.cc"
+    "backend/backend_mqtt_client.cc"
     "mcp_server.cc"
     "system_info.cc"
     "application.cc"

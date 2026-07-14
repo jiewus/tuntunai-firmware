@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <variant>
 #include <optional>
 #include <stdexcept>
@@ -75,6 +77,8 @@ private:
     PropertyType type_;
     std::variant<bool, int, std::string> value_;
     bool has_default_value_;
+    bool required_;
+    bool provided_ = false;
     std::optional<int> min_value_;  ///< 整数属性允许的最小值。
     std::optional<int> max_value_;  ///< 整数属性允许的最大值。
 
@@ -85,7 +89,7 @@ public:
      * @param type 字段类型。
      */
     Property(const std::string& name, PropertyType type)
-        : name_(name), type_(type), has_default_value_(false) {}
+        : name_(name), type_(type), has_default_value_(false), required_(true) {}
 
     /**
      * @brief 创建带默认值的可选属性。
@@ -93,7 +97,7 @@ public:
      */
     template<typename T>
     Property(const std::string& name, PropertyType type, const T& default_value)
-        : name_(name), type_(type), has_default_value_(true) {
+        : name_(name), type_(type), has_default_value_(true), required_(false) {
         value_ = default_value;
     }
 
@@ -101,7 +105,7 @@ public:
      * @brief 创建有取值范围的必填整数属性。
      */
     Property(const std::string& name, PropertyType type, int min_value, int max_value)
-        : name_(name), type_(type), has_default_value_(false), min_value_(min_value), max_value_(max_value) {
+        : name_(name), type_(type), has_default_value_(false), required_(true), min_value_(min_value), max_value_(max_value) {
         if (type != kPropertyTypeInteger) {
             throw std::invalid_argument("Range limits only apply to integer properties");
         }
@@ -111,7 +115,7 @@ public:
      * @brief 创建有默认值和范围的可选整数属性；默认值必须落在闭区间内。
      */
     Property(const std::string& name, PropertyType type, int default_value, int min_value, int max_value)
-        : name_(name), type_(type), has_default_value_(true), min_value_(min_value), max_value_(max_value) {
+        : name_(name), type_(type), has_default_value_(true), required_(false), min_value_(min_value), max_value_(max_value) {
         if (type != kPropertyTypeInteger) {
             throw std::invalid_argument("Range limits only apply to integer properties");
         }
@@ -124,9 +128,14 @@ public:
     inline const std::string& name() const { return name_; }
     inline PropertyType type() const { return type_; }
     inline bool has_default_value() const { return has_default_value_; }
+    inline bool required() const { return required_; }
+    inline bool has_value() const { return has_default_value_ || provided_; }
+    inline void set_required(bool required) { required_ = required; }
     inline bool has_range() const { return min_value_.has_value() && max_value_.has_value(); }
     inline int min_value() const { return min_value_.value_or(0); }
     inline int max_value() const { return max_value_.value_or(0); }
+    inline void set_minimum(int value) { min_value_ = value; }
+    inline void set_maximum(int value) { max_value_ = value; }
 
     template<typename T>
     /**
@@ -151,6 +160,7 @@ public:
             }
         }
         value_ = value;
+        provided_ = true;
     }
 
     /**
@@ -223,14 +233,16 @@ public:
 
     auto begin() { return properties_.begin(); }
     auto end() { return properties_.end(); }
+    auto begin() const { return properties_.begin(); }
+    auto end() const { return properties_.end(); }
 
     /**
-     * @return 所有没有默认值、因此必须由调用方提供的字段名。
+     * @return 所有被 Schema 明确标记为必填的字段名。
      */
     std::vector<std::string> GetRequired() const {
         std::vector<std::string> required;
         for (auto& property : properties_) {
-            if (!property.has_default_value()) {
+            if (property.required()) {
                 required.push_back(property.name());
             }
         }
@@ -258,6 +270,32 @@ public:
 };
 
 /**
+ * @brief 一条经过后端签发并完成固件校验的动态 MCP 工具定义。
+ */
+struct McpDynamicToolDefinition {
+    /**
+     * @brief 全局唯一工具名称。
+     */
+    std::string name;
+    /**
+     * @brief 提供给大模型的工具用途说明。
+     */
+    std::string description;
+    /**
+     * @brief 固件执行基础类型校验时使用的参数列表。
+     */
+    PropertyList properties;
+    /**
+     * @brief 后端发布的完整受限 JSON Schema，用于原样生成 tools/list。
+     */
+    std::string input_schema_json;
+    /**
+     * @brief 将调用代理到固定后端工具版本的异步回调。
+     */
+    AsyncMcpToolCallback callback;
+};
+
+/**
  * @brief 一个可被模型或用户调用的 MCP 工具及其执行回调。
  */
 class McpTool {
@@ -268,6 +306,8 @@ private:
     std::function<ReturnValue(const PropertyList&)> callback_;
     AsyncMcpToolCallback async_callback_;
     bool user_only_ = false;
+    bool dynamic_ = false;
+    std::string input_schema_json_;
 
 public:
     /**
@@ -302,6 +342,26 @@ public:
           async_callback_(std::move(callback)) {}
 
     /**
+     * @brief 创建保留后端原始输入 Schema 的动态异步工具。
+     * @param name 工具名称。
+     * @param description 工具说明。
+     * @param properties 固件基础参数校验定义。
+     * @param input_schema_json 已校验的完整 object JSON Schema。
+     * @param callback 固定版本代理执行回调。
+     */
+    McpTool(const std::string& name,
+            const std::string& description,
+            const PropertyList& properties,
+            const std::string& input_schema_json,
+            AsyncMcpToolCallback callback)
+        : name_(name),
+          description_(description),
+          properties_(properties),
+          async_callback_(std::move(callback)),
+          dynamic_(true),
+          input_schema_json_(input_schema_json) {}
+
+    /**
      * @brief 标记工具只供用户界面使用，不暴露给模型自主选择。
      */
     void set_user_only(bool user_only) { user_only_ = user_only; }
@@ -309,6 +369,7 @@ public:
     inline const std::string& description() const { return description_; }
     inline const PropertyList& properties() const { return properties_; }
     inline bool user_only() const { return user_only_; }
+    inline bool dynamic() const { return dynamic_; }
     /**
      * @return true 表示工具通过完成回调异步返回结果。
      */
@@ -324,18 +385,22 @@ public:
         cJSON_AddStringToObject(json, "name", name_.c_str());
         cJSON_AddStringToObject(json, "description", description_.c_str());
         
-        cJSON *input_schema = cJSON_CreateObject();
-        cJSON_AddStringToObject(input_schema, "type", "object");
-        
-        cJSON *properties = cJSON_Parse(properties_.to_json().c_str());
-        cJSON_AddItemToObject(input_schema, "properties", properties);
-        
-        if (!required.empty()) {
-            cJSON *required_array = cJSON_CreateArray();
-            for (const auto& property : required) {
-                cJSON_AddItemToArray(required_array, cJSON_CreateString(property.c_str()));
+        cJSON* input_schema = input_schema_json_.empty()
+            ? cJSON_CreateObject()
+            : cJSON_Parse(input_schema_json_.c_str());
+        if (input_schema_json_.empty()) {
+            cJSON_AddStringToObject(input_schema, "type", "object");
+
+            cJSON *properties = cJSON_Parse(properties_.to_json().c_str());
+            cJSON_AddItemToObject(input_schema, "properties", properties);
+
+            if (!required.empty()) {
+                cJSON *required_array = cJSON_CreateArray();
+                for (const auto& property : required) {
+                    cJSON_AddItemToArray(required_array, cJSON_CreateString(property.c_str()));
+                }
+                cJSON_AddItemToObject(input_schema, "required", required_array);
             }
-            cJSON_AddItemToObject(input_schema, "required", required_array);
         }
         
         cJSON_AddItemToObject(json, "inputSchema", input_schema);
@@ -425,7 +490,8 @@ public:
      */
     void AddUserOnlyTools();
     /**
-     * @brief 接管动态创建的工具指针，析构时统一释放。
+     * @brief 接管动态创建的工具指针并转换为共享所有权。
+     * @param tool 使用 new 创建的工具；无论名称是否重复，本方法都会负责释放。
      */
     void AddTool(McpTool* tool);
     /**
@@ -441,6 +507,13 @@ public:
      */
     void AddAsyncTool(const std::string& name, const std::string& description,
                       const PropertyList& properties, AsyncMcpToolCallback callback);
+    /**
+     * @brief 原子替换当前全部后端动态工具，保留固件内置和 user_only 工具。
+     * @param definitions 已完成名称、数量和 Schema 校验的不可变定义数组。
+     * @return 名称没有与固件静态工具冲突且替换成功时返回 true。
+     * @note 必须从 Application 主任务调用；工具读取仍由内部互斥锁保护。
+     */
+    bool ReplaceDynamicTools(std::vector<McpDynamicToolDefinition> definitions);
     /**
      * @brief 注册带 audience=user 注解的工具。
      */
@@ -487,7 +560,8 @@ private:
      */
     void DoToolCall(int id, const std::string& tool_name, const cJSON* tool_arguments);
 
-    std::vector<McpTool*> tools_;
+    std::vector<std::shared_ptr<McpTool>> tools_;
+    std::mutex tools_mutex_;
 };
 
 #endif // MCP_SERVER_H

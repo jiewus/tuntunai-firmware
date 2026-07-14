@@ -11,7 +11,9 @@
 #include <esp_log.h>
 #include <esp_app_desc.h>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <limits>
 #include <esp_pthread.h>
 
 #include "application.h"
@@ -35,9 +37,7 @@ McpServer::McpServer() {
  * @details 释放顺序与创建顺序相反，先停止异步来源，再销毁句柄和动态内存，避免回调访问失效对象。
  */
 McpServer::~McpServer() {
-    for (auto tool : tools_) {
-        delete tool;
-    }
+    std::lock_guard<std::mutex> lock(tools_mutex_);
     tools_.clear();
 }
 
@@ -328,19 +328,27 @@ void McpServer::AddUserOnlyTools() {
 }
 
 /**
- * @brief 接管动态创建的工具指针，析构时统一释放。
- * @param tool 使用 new 创建的工具对象，不得为空；注册成功后所有权转移给 McpServer。
- * @details 注册前按名称检查重复项。重复工具不会加入列表，调用者仍需保证传入对象的所有权约定。
+ * @brief 接管动态创建的工具指针并立即转换为 shared_ptr。
+ * @param tool 使用 new 创建的工具对象；传入后调用方不再持有所有权。
+ * @details 注册前按名称检查重复项。重复工具不会加入列表，其 shared_ptr 会在返回时自动释放，
+ *          避免原实现重复注册路径泄漏堆对象。
  */
 void McpServer::AddTool(McpTool* tool) {
+    if (tool == nullptr) {
+        return;
+    }
+    std::shared_ptr<McpTool> owned_tool(tool);
+    std::lock_guard<std::mutex> lock(tools_mutex_);
     // 工具名称必须唯一，防止生成重复定义和调用歧义。
-    if (std::find_if(tools_.begin(), tools_.end(), [tool](const McpTool* t) { return t->name() == tool->name(); }) != tools_.end()) {
+    if (std::find_if(tools_.begin(), tools_.end(), [&owned_tool](const auto& existing) {
+            return existing->name() == owned_tool->name();
+        }) != tools_.end()) {
         ESP_LOGW(TAG, "Tool %s already added", tool->name().c_str());
         return;
     }
 
     ESP_LOGI(TAG, "Add tool: %s%s", tool->name().c_str(), tool->user_only() ? " [user]" : "");
-    tools_.push_back(tool);
+    tools_.push_back(std::move(owned_tool));
 }
 
 /**
@@ -366,6 +374,48 @@ void McpServer::AddTool(const std::string& name, const std::string& description,
 void McpServer::AddAsyncTool(const std::string& name, const std::string& description,
                              const PropertyList& properties, AsyncMcpToolCallback callback) {
     AddTool(new McpTool(name, description, properties, std::move(callback)));
+}
+
+/**
+ * @brief 在互斥锁保护下替换全部动态工具，并保留静态工具稳定顺序。
+ * @param definitions 后端权威清单转换出的动态工具定义。
+ * @return 所有名称均不与静态工具冲突时返回 true。
+ * @details 旧动态工具由 shared_ptr 延迟释放，已经排入 Application 主任务的调用仍可安全完成。
+ */
+bool McpServer::ReplaceDynamicTools(std::vector<McpDynamicToolDefinition> definitions) {
+    std::lock_guard<std::mutex> lock(tools_mutex_);
+    for (const auto& definition : definitions) {
+        const bool conflicts = std::any_of(tools_.begin(), tools_.end(), [&definition](const auto& tool) {
+            return !tool->dynamic() && tool->name() == definition.name;
+        });
+        if (conflicts) {
+            ESP_LOGE(TAG, "Dynamic tool conflicts with built-in tool: %s", definition.name.c_str());
+            return false;
+        }
+    }
+
+    tools_.erase(
+        std::remove_if(tools_.begin(), tools_.end(), [](const auto& tool) {
+            return tool->dynamic();
+        }),
+        tools_.end());
+
+    auto insertion = std::find_if(tools_.begin(), tools_.end(), [](const auto& tool) {
+        return tool->user_only();
+    });
+    for (auto& definition : definitions) {
+        auto tool = std::make_shared<McpTool>(
+            definition.name,
+            definition.description,
+            definition.properties,
+            definition.input_schema_json,
+            std::move(definition.callback));
+        insertion = tools_.insert(insertion, std::move(tool));
+        ++insertion;
+    }
+    ESP_LOGI(TAG, "Replaced dynamic MCP tools, count=%u",
+             static_cast<unsigned>(definitions.size()));
+    return true;
 }
 
 /**
@@ -550,6 +600,7 @@ void McpServer::ReplyToolResult(int id, const McpToolResult& result) {
  *          返回下一页起点；默认过滤 user_only 管理工具，避免向大模型暴露重启和升级等管理能力。
  */
 void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_only_tools) {
+    std::lock_guard<std::mutex> lock(tools_mutex_);
     const int max_payload_size = 8000;
     std::string json = "{\"tools\":[";
     
@@ -628,28 +679,40 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
      */
     ESP_LOGI(TAG, "tools/call: %s", tool_name.c_str());
 
-    auto tool_iter = std::find_if(tools_.begin(), tools_.end(), 
-                                 [&tool_name](const McpTool* tool) { 
-                                     return tool->name() == tool_name; 
-                                 });
-    
-    if (tool_iter == tools_.end()) {
+    std::shared_ptr<McpTool> tool;
+    {
+        std::lock_guard<std::mutex> lock(tools_mutex_);
+        auto tool_iter = std::find_if(tools_.begin(), tools_.end(),
+                                      [&tool_name](const auto& candidate) {
+                                          return candidate->name() == tool_name;
+                                      });
+        if (tool_iter != tools_.end()) {
+            tool = *tool_iter;
+        }
+    }
+
+    if (!tool) {
         ESP_LOGE(TAG, "tools/call: Unknown tool: %s", tool_name.c_str());
         ReplyError(id, "Unknown tool: " + tool_name);
         return;
     }
 
-    PropertyList arguments = (*tool_iter)->properties();
+    PropertyList arguments = tool->properties();
     try {
         for (auto& argument : arguments) {
             bool found = false;
+            bool provided = false;
             if (cJSON_IsObject(tool_arguments)) {
                 auto value = cJSON_GetObjectItem(tool_arguments, argument.name().c_str());
+                provided = value != nullptr;
                 if (argument.type() == kPropertyTypeBoolean && cJSON_IsBool(value)) {
                     argument.set_value<bool>(value->valueint == 1);
                     found = true;
-                } else if (argument.type() == kPropertyTypeInteger && cJSON_IsNumber(value)) {
-                    argument.set_value<int>(value->valueint);
+                } else if (argument.type() == kPropertyTypeInteger && cJSON_IsNumber(value)
+                           && std::floor(value->valuedouble) == value->valuedouble
+                           && value->valuedouble >= std::numeric_limits<int>::min()
+                           && value->valuedouble <= std::numeric_limits<int>::max()) {
+                    argument.set_value<int>(static_cast<int>(value->valuedouble));
                     found = true;
                 } else if (argument.type() == kPropertyTypeString && cJSON_IsString(value)) {
                     argument.set_value<std::string>(value->valuestring);
@@ -657,10 +720,31 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
                 }
             }
 
-            if (!argument.has_default_value() && !found) {
+            if (provided && !found) {
+                ESP_LOGE(TAG, "tools/call: Invalid argument type: %s", argument.name().c_str());
+                ReplyError(id, "Invalid argument type: " + argument.name());
+                return;
+            }
+            if (argument.required() && !argument.has_default_value() && !found) {
                 ESP_LOGE(TAG, "tools/call: Missing valid argument: %s", argument.name().c_str());
                 ReplyError(id, "Missing valid argument: " + argument.name());
                 return;
+            }
+        }
+        if (tool->dynamic() && cJSON_IsObject(tool_arguments)) {
+            cJSON* supplied = nullptr;
+            cJSON_ArrayForEach(supplied, tool_arguments) {
+                const std::string supplied_name = supplied->string == nullptr
+                    ? std::string()
+                    : std::string(supplied->string);
+                const bool known = std::any_of(arguments.begin(), arguments.end(), [&supplied_name](const Property& property) {
+                    return property.name() == supplied_name;
+                });
+                if (!known) {
+                    ESP_LOGE(TAG, "tools/call: Unknown dynamic argument: %s", supplied_name.c_str());
+                    ReplyError(id, "Unknown argument: " + supplied_name);
+                    return;
+                }
             }
         }
     } catch (const std::exception& e) {
@@ -671,14 +755,14 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
 
     // 硬件和界面工具统一从应用主线程启动，避免网络收包任务直接访问板级资源。
     auto& app = Application::GetInstance();
-    app.Schedule([this, id, tool_iter, arguments = std::move(arguments)]() {
+    app.Schedule([this, id, tool = std::move(tool), arguments = std::move(arguments)]() {
         try {
-            if ((*tool_iter)->is_async()) {
-                (*tool_iter)->CallAsync(arguments, [this, id](McpToolResult result) {
+            if (tool->is_async()) {
+                tool->CallAsync(arguments, [this, id](McpToolResult result) {
                     ReplyToolResult(id, result);
                 });
             } else {
-                ReplyResult(id, (*tool_iter)->Call(arguments));
+                ReplyResult(id, tool->Call(arguments));
             }
         } catch (const std::exception& e) {
             ESP_LOGE(TAG, "tools/call: %s", e.what());
