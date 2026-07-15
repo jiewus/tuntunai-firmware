@@ -82,11 +82,35 @@ protected:
      * @brief 位于表盘 6 点位置、替代原主刻度并显示分级电量或充电状态的图标标签。
      */
     lv_obj_t* screensaver_battery_label_ = nullptr;
+    /**
+     * @brief 覆盖普通界面和屏保的设备绑定页面根容器。
+     */
+    lv_obj_t* binding_container_ = nullptr;
+    /**
+     * @brief 显示“设备绑定”的页面标题标签。
+     */
+    lv_obj_t* binding_title_label_ = nullptr;
+    /**
+     * @brief 承载大号绑定码并提供金属边框的固定尺寸容器。
+     */
+    lv_obj_t* binding_code_panel_ = nullptr;
+    /**
+     * @brief 显示可由用户输入网页端的短绑定码标签。
+     */
+    lv_obj_t* binding_code_label_ = nullptr;
+    /**
+     * @brief 显示绑定操作说明或流程结果的多行标签。
+     */
+    lv_obj_t* binding_message_label_ = nullptr;
     lv_scale_section_t* screensaver_second_section_ = nullptr;
     esp_timer_handle_t preview_timer_ = nullptr;
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
     bool hide_subtitle_ = false;  ///< true 时不在屏幕显示对话字幕。
     bool screensaver_active_ = false;  ///< true 时金属黑表盘覆盖正常对话界面。
+    /**
+     * @brief true 时设备绑定页面覆盖屏保和普通对话界面。
+     */
+    bool binding_active_ = false;
     /**
      * @brief 保存后端最近成功返回的最多 5 条备忘录正文副本。
      */
@@ -111,6 +135,19 @@ protected:
      * @details 控件只在 SetupUI() 中创建一次，后续通过隐藏标志切换，避免反复分配内存。
      */
     void CreateScreensaverUI();
+    /**
+     * @brief 创建圆屏设备绑定码覆盖页面。
+     * @details 页面在 SetupUI() 中只创建一次，默认隐藏。后续仅更新标签与隐藏标志，
+     *          避免绑定轮询期间重复创建 LVGL 对象和增加堆内存碎片。
+     */
+    void CreateDeviceBindingUI();
+    /**
+     * @brief 将当前主题的中文字体按绑定页面的信息层级应用到各标签。
+     * @param font LVGL 字体对象；为空时保持现有字体不变。
+     * @details 标题、六位码和说明文字分别换算为固定视觉字号，避免资源字体切换后页面
+     *          突然放大或缩小。调用者必须已经持有 LVGL 锁。
+     */
+    void ApplyDeviceBindingFont(const lv_font_t* font);
     /**
      * @brief 将当前主题的完整中文字库应用到表盘的小号文本标签。
      * @param font LVGL 字体对象；为空时保持现有字体不变。
@@ -250,6 +287,17 @@ public:
      * @brief 线程安全地替换备忘录缓存，并从第一条重新开始轮播。
      */
     virtual void SetScreensaverMemos(const std::vector<std::string>& memos) override;
+    /**
+     * @brief 线程安全地显示设备绑定码页面并更新流程说明。
+     * @param binding_code 用户需要输入网页端的短绑定码；为空时隐藏绑定码框。
+     * @param message 页面底部显示的操作说明或流程结果。
+     */
+    virtual void ShowDeviceBinding(const std::string& binding_code,
+                                   const std::string& message) override;
+    /**
+     * @brief 线程安全地隐藏设备绑定码页面并露出原有界面。
+     */
+    virtual void HideDeviceBinding() override;
     
     /**
      * @brief 设置是否隐藏字幕。

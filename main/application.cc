@@ -157,7 +157,8 @@ void Application::Initialize() {
     backend_service.Start();
 
     /**
-     * 保留新版业务 MCP 工具的注册位置。API 协议完成前，该方法不会注册任何工具。
+     * 注册囤囤管家的设备绑定工具；天气同步由 BackendService 根据屏保生命周期自动执行，
+     * 不暴露为需要大模型主动调用的 MCP 工具。
      */
     backend_service.RegisterMcpTools(mcp_server);
     mcp_server.AddUserOnlyTools();

@@ -326,6 +326,31 @@ constexpr uint32_t kScreensaverTickColor = 0x8B9299;
 constexpr uint32_t kScreensaverAccentColor = 0xF28A3A;
 
 /**
+ * @brief 绑定页面标题、绑定码和说明文字的目标视觉字号，单位为物理像素。
+ * @details 三种字号会根据当前主题字体的实际行高换算为 LVGL 缩放比例，使内置字体和
+ *          下载后的完整中文字库保持一致的视觉层级。
+ */
+constexpr int kBindingTitleTextPixelSize = 26;
+constexpr int kBindingCodeTextPixelSize = 64;
+constexpr int kBindingMessageTextPixelSize = 22;
+
+/**
+ * @brief 绑定码金属框和页面说明文字的圆屏安全尺寸，单位为物理像素。
+ * @details 绑定码框位于圆心附近，可使用较宽区域；说明文字靠近下半圆，因此使用更窄的
+ *          宽度并允许自动换行，避免字符被圆形面板边缘裁切。
+ */
+constexpr int kBindingCodePanelWidth = 258;
+constexpr int kBindingCodePanelHeight = 108;
+constexpr int kBindingMessageWidth = 250;
+
+/**
+ * @brief 绑定页面主要控件相对于圆屏边缘或圆心的垂直位置，单位为物理像素。
+ */
+constexpr int kBindingTitleOffsetY = 58;
+constexpr int kBindingCodeOffsetY = -3;
+constexpr int kBindingMessageBottomOffset = 54;
+
+/**
  * @brief 1900-2100 年农历大小月和闰月编码表。
  * @details 每项低 4 位表示闰月月份；0x10000 表示闰月为 30 天；0x8000 至 0x10
  *          依次表示正月至腊月是否为 30 天。未置位的月份为 29 天。
@@ -902,6 +927,14 @@ LcdDisplay::~LcdDisplay() {
         lv_obj_del(screensaver_container_);
         screensaver_container_ = nullptr;
     }
+    if (binding_container_ != nullptr) {
+        lv_obj_del(binding_container_);
+        binding_container_ = nullptr;
+        binding_title_label_ = nullptr;
+        binding_code_panel_ = nullptr;
+        binding_code_label_ = nullptr;
+        binding_message_label_ = nullptr;
+    }
     if (preview_image_ != nullptr) {
         lv_obj_del(preview_image_);
     }
@@ -1194,7 +1227,8 @@ void LcdDisplay::ApplyScreensaverStatusIconFont(const lv_font_t* font) {
 /**
  * @brief 创建参考运动手表风格的金属黑圆形屏保表盘。
  * @details 表盘使用两个深色圆形对象表现枪灰金属层次，使用 LVGL Scale 绘制 60 个刻度，
- *          不申请全屏 Canvas。农历由设备本地换算，天气和待办区域暂时显示占位符。
+ *          不申请全屏 Canvas。农历由设备本地换算，天气由 BackendService 按屏保生命周期
+ *          同步；待办区域在备忘录接口接入前显示占位内容。
  *          本方法只负责创建控件，调用者必须已经持有 LVGL 锁。
  */
 void LcdDisplay::CreateScreensaverUI() {
@@ -1546,9 +1580,190 @@ void LcdDisplay::CreateScreensaverUI() {
 }
 
 /**
+ * @brief 将当前主题字体应用到设备绑定页面，并保持固定的最终视觉尺寸。
+ * @param font 主题中文字库；为空或行高无效时不改变页面。
+ */
+void LcdDisplay::ApplyDeviceBindingFont(const lv_font_t* font) {
+    if (font == nullptr || font->line_height <= 0) {
+        return;
+    }
+
+    const int title_scale = kBindingTitleTextPixelSize * 256 / font->line_height;
+    const int code_scale = kBindingCodeTextPixelSize * 256 / font->line_height;
+    const int message_scale = kBindingMessageTextPixelSize * 256 / font->line_height;
+
+    if (binding_title_label_ != nullptr) {
+        lv_obj_set_style_text_font(binding_title_label_, font, 0);
+        lv_obj_set_width(binding_title_label_,
+                         kBindingMessageWidth * 256 / title_scale);
+        lv_obj_set_style_transform_scale(binding_title_label_, title_scale, 0);
+        lv_obj_set_style_transform_pivot_x(binding_title_label_, LV_PCT(50), 0);
+        lv_obj_set_style_transform_pivot_y(binding_title_label_, LV_PCT(50), 0);
+        lv_obj_align(binding_title_label_, LV_ALIGN_TOP_MID, 0,
+                     kBindingTitleOffsetY);
+    }
+    if (binding_code_label_ != nullptr) {
+        lv_obj_set_style_text_font(binding_code_label_, font, 0);
+        lv_obj_set_style_transform_scale(binding_code_label_, code_scale, 0);
+        lv_obj_set_style_transform_pivot_x(binding_code_label_, LV_PCT(50), 0);
+        lv_obj_set_style_transform_pivot_y(binding_code_label_, LV_PCT(50), 0);
+        lv_obj_center(binding_code_label_);
+    }
+    if (binding_message_label_ != nullptr) {
+        lv_obj_set_style_text_font(binding_message_label_, font, 0);
+        lv_obj_set_width(binding_message_label_,
+                         kBindingMessageWidth * 256 / message_scale);
+        lv_obj_set_style_transform_scale(binding_message_label_, message_scale, 0);
+        lv_obj_set_style_transform_pivot_x(binding_message_label_, LV_PCT(50), 0);
+        lv_obj_set_style_transform_pivot_y(binding_message_label_, LV_PCT(50), 0);
+        if (binding_code_panel_ != nullptr
+            && !lv_obj_has_flag(binding_code_panel_, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_align(binding_message_label_, LV_ALIGN_BOTTOM_MID, 0,
+                         -kBindingMessageBottomOffset);
+        } else {
+            lv_obj_align(binding_message_label_, LV_ALIGN_CENTER, 0, 16);
+        }
+    }
+}
+
+/**
+ * @brief 创建金属黑风格的圆屏设备绑定码页面。
+ * @details 绑定页是屏幕根对象的独立子对象，并在创建后位于屏保对象之后。显示时再次移动到
+ *          最前方，可确保语音会话结束触发屏保后，绑定码仍持续可见。
+ */
+void LcdDisplay::CreateDeviceBindingUI() {
+    if (binding_container_ != nullptr) {
+        return;
+    }
+
+    auto screen = lv_screen_active();
+    const lv_font_t* text_font = &font_puhui_basic_20_4;
+    if (current_theme_ != nullptr) {
+        auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
+        if (lvgl_theme->text_font() != nullptr
+            && lvgl_theme->text_font()->font() != nullptr) {
+            text_font = lvgl_theme->text_font()->font();
+        }
+    }
+
+    binding_container_ = lv_obj_create(screen);
+    lv_obj_set_size(binding_container_, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_style_radius(binding_container_, 0, 0);
+    lv_obj_set_style_bg_color(binding_container_,
+                              lv_color_hex(kScreensaverBackgroundColor), 0);
+    lv_obj_set_style_bg_opa(binding_container_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(binding_container_, 0, 0);
+    lv_obj_set_style_pad_all(binding_container_, 0, 0);
+    lv_obj_remove_flag(binding_container_, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* outer_metal = lv_obj_create(binding_container_);
+    lv_obj_set_size(outer_metal, kScreensaverDialSize, kScreensaverDialSize);
+    lv_obj_set_style_radius(outer_metal, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(outer_metal,
+                              lv_color_hex(kScreensaverOuterMetalColor), 0);
+    lv_obj_set_style_bg_opa(outer_metal, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(outer_metal,
+                                  lv_color_hex(kScreensaverMetalBorderColor), 0);
+    lv_obj_set_style_border_width(outer_metal, 2, 0);
+    lv_obj_set_style_pad_all(outer_metal, 0, 0);
+    lv_obj_remove_flag(outer_metal, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_center(outer_metal);
+
+    lv_obj_t* inner_metal = lv_obj_create(outer_metal);
+    lv_obj_set_size(inner_metal, kScreensaverScaleSize, kScreensaverScaleSize);
+    lv_obj_set_style_radius(inner_metal, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(inner_metal,
+                              lv_color_hex(kScreensaverInnerMetalColor), 0);
+    lv_obj_set_style_bg_opa(inner_metal, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(inner_metal, 0, 0);
+    lv_obj_set_style_pad_all(inner_metal, 0, 0);
+    lv_obj_remove_flag(inner_metal, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_center(inner_metal);
+
+    binding_title_label_ = lv_label_create(binding_container_);
+    lv_label_set_text(binding_title_label_, "设备绑定");
+    lv_obj_set_style_text_color(binding_title_label_, lv_color_hex(0xDDE1E4), 0);
+    lv_obj_set_style_text_align(binding_title_label_, LV_TEXT_ALIGN_CENTER, 0);
+
+    binding_code_panel_ = lv_obj_create(binding_container_);
+    lv_obj_set_size(binding_code_panel_, kBindingCodePanelWidth,
+                    kBindingCodePanelHeight);
+    lv_obj_set_style_radius(binding_code_panel_, 8, 0);
+    lv_obj_set_style_bg_color(binding_code_panel_,
+                              lv_color_hex(kScreensaverBackgroundColor), 0);
+    lv_obj_set_style_bg_opa(binding_code_panel_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(binding_code_panel_,
+                                  lv_color_hex(kScreensaverMetalBorderColor), 0);
+    lv_obj_set_style_border_width(binding_code_panel_, 2, 0);
+    lv_obj_set_style_pad_all(binding_code_panel_, 0, 0);
+    lv_obj_remove_flag(binding_code_panel_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(binding_code_panel_, LV_ALIGN_CENTER, 0, kBindingCodeOffsetY);
+
+    binding_code_label_ = lv_label_create(binding_code_panel_);
+    lv_label_set_text(binding_code_label_, "------");
+    lv_obj_set_size(binding_code_label_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_text_color(binding_code_label_,
+                                lv_color_hex(kScreensaverAccentColor), 0);
+    lv_obj_set_style_text_align(binding_code_label_, LV_TEXT_ALIGN_CENTER, 0);
+    EnableBitmapTextBold(binding_code_label_);
+
+    binding_message_label_ = lv_label_create(binding_container_);
+    lv_label_set_text(binding_message_label_, "正在获取绑定码...");
+    lv_label_set_long_mode(binding_message_label_, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(binding_message_label_,
+                                lv_color_hex(kScreensaverSecondaryTextColor), 0);
+    lv_obj_set_style_text_align(binding_message_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_line_space(binding_message_label_, 5, 0);
+
+    ApplyDeviceBindingFont(text_font);
+    lv_obj_add_flag(binding_container_, LV_OBJ_FLAG_HIDDEN);
+}
+
+/**
+ * @brief 显示设备绑定页，并根据绑定码是否存在切换页面布局。
+ * @param binding_code 用户输入网页端的短绑定码；空字符串表示加载、成功或失败状态。
+ * @param message 页面说明文字。
+ */
+void LcdDisplay::ShowDeviceBinding(const std::string& binding_code,
+                                   const std::string& message) {
+    DisplayLockGuard lock(this);
+    if (binding_container_ == nullptr || binding_code_panel_ == nullptr
+        || binding_code_label_ == nullptr || binding_message_label_ == nullptr) {
+        ESP_LOGW(TAG, "Device binding UI is not initialized");
+        return;
+    }
+
+    binding_active_ = true;
+    SetLabelTextIfChanged(binding_code_label_, binding_code.c_str());
+    SetLabelTextIfChanged(binding_message_label_, message.c_str());
+    if (binding_code.empty()) {
+        lv_obj_add_flag(binding_code_panel_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_align(binding_message_label_, LV_ALIGN_CENTER, 0, 16);
+    } else {
+        lv_obj_remove_flag(binding_code_panel_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_align(binding_message_label_, LV_ALIGN_BOTTOM_MID, 0,
+                     -kBindingMessageBottomOffset);
+    }
+    lv_obj_remove_flag(binding_container_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(binding_container_);
+    lv_obj_invalidate(binding_container_);
+}
+
+/**
+ * @brief 隐藏设备绑定页，保留页面下方原有界面的状态。
+ */
+void LcdDisplay::HideDeviceBinding() {
+    DisplayLockGuard lock(this);
+    binding_active_ = false;
+    if (binding_container_ != nullptr) {
+        lv_obj_add_flag(binding_container_, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/**
  * @brief 刷新屏保表盘中的时间、农历、公历、星期、当前秒刻度、网络和电量。
- * @details 系统时间尚未由网络校准时显示占位文本。农历由本地年份表换算，天气和待办
- *          在数据接口接入前保持占位内容。所有标签仅在内容变化时更新，降低每秒刷新负担。
+ * @details 系统时间尚未由网络校准时显示占位文本。农历由本地年份表换算，天气和待办内容
+ *          由 BackendService 独立更新。本方法仅在标签内容变化时重绘，降低每秒刷新负担。
  */
 void LcdDisplay::UpdateScreensaverContent() {
     if (!screensaver_active_ || screensaver_container_ == nullptr) {
@@ -1681,6 +1896,9 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
             lv_timer_reset(screensaver_memo_timer_);
         }
         lv_obj_remove_flag(screensaver_container_, LV_OBJ_FLAG_HIDDEN);
+        if (binding_active_ && binding_container_ != nullptr) {
+            lv_obj_move_foreground(binding_container_);
+        }
         lv_obj_invalidate(screensaver_container_);
     } else {
         if (screensaver_memo_timer_ != nullptr) {
@@ -2059,6 +2277,7 @@ void LcdDisplay::SetupUI() {
     lv_label_set_text(emoji_label_, FONT_AWESOME_MICROCHIP_AI);
 
     CreateScreensaverUI();
+    CreateDeviceBindingUI();
 }
 #if CONFIG_IDF_TARGET_ESP32P4
 #define  MAX_MESSAGES 40
@@ -2573,6 +2792,7 @@ void LcdDisplay::SetupUI() {
     lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
 
     CreateScreensaverUI();
+    CreateDeviceBindingUI();
 }
 
 /**
@@ -2812,6 +3032,7 @@ void LcdDisplay::SetTheme(Theme* theme) {
     ApplyScreensaverWeatherFont(text_font);
     ApplyScreensaverDateFont(text_font);
     ApplyScreensaverStatusIconFont(icon_font);
+    ApplyDeviceBindingFont(text_font);
     UpdateScreensaverMemo();
 
     // Set background image

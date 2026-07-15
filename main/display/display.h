@@ -142,6 +142,24 @@ public:
         (void)memos;
     }
     /**
+     * @brief 显示设备绑定码专用页面。
+     * @param binding_code 允许用户输入到网页端的短绑定码；为空时页面只显示流程状态。
+     * @param message 绑定码下方的操作说明、成功提示或失败原因。
+     * @details 默认实现为空操作。具体 LCD 实现应复制传入文本，并确保绑定页面位于普通对话
+     *          和屏保页面之上。绑定会话 Token 与设备访问 Token 严禁通过该接口显示。
+     */
+    virtual void ShowDeviceBinding(const std::string& binding_code,
+                                   const std::string& message) {
+        (void)binding_code;
+        (void)message;
+    }
+    /**
+     * @brief 隐藏设备绑定码专用页面。
+     * @details 默认实现为空操作。调用后应恢复绑定页面下方原本可见的屏保或对话页面。
+     */
+    virtual void HideDeviceBinding() {
+    }
+    /**
      * @brief 创建基础 UI；子类覆盖时必须设置 setup_ui_called_。
      */
     virtual void SetupUI() { 
