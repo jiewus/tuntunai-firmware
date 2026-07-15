@@ -15,14 +15,14 @@ class McpServer;
 
 /**
  * @file backend_service.h
- * @brief 囤囤管家业务 API 的设备绑定、屏保天气和未接入业务占位能力入口。
+ * @brief 囤囤管家业务 API 的设备绑定、屏保天气、动态 MCP 和未接入业务占位能力入口。
  */
 
 /**
  * @brief 管理固件与囤囤管家后端之间的异步业务流程。
  *
- * 当前版本实现设备绑定码申请、状态轮询、设备 Token 领取、绑定页面联动和屏保天气同步。
- * 备忘录、主动提醒和动态工具同步仍保留占位内容。
+ * 当前版本实现设备绑定码申请、状态轮询、设备 Token 领取、绑定页面联动、屏保天气同步，
+ * 以及动态 MCP 工具清单同步和代理执行。备忘录和主动提醒仍保留占位内容。
  */
 class BackendService {
 public:
@@ -88,6 +88,15 @@ private:
         bool is_error)>;
 
     /**
+     * @brief 动态 MCP 工具请求完成后的轻量结果回调。
+     * @param message 返回给小智模型的统一业务文本。
+     * @param is_error true 表示平台或第三方服务未能成功执行工具。
+     */
+    using DynamicToolCompletion = std::function<void(
+        const std::string& message,
+        bool is_error)>;
+
+    /**
      * @brief 传递给独立绑定任务的启动参数。
      */
     struct BindingTaskContext {
@@ -125,6 +134,28 @@ private:
          * @brief 保存完成后回复原始 MCP 工具调用的一次性回调。
          */
         WeatherLocationCompletion completion;
+    };
+
+    /**
+     * @brief 传递给独立动态工具执行任务的不可变调用参数。
+     */
+    struct DynamicToolTaskContext {
+        /**
+         * @brief 指向固件生命周期内唯一的后端服务实例。
+         */
+        BackendService* service = nullptr;
+        /**
+         * @brief 后端清单中包含 custom. 前缀的完整工具名称。
+         */
+        std::string tool_name;
+        /**
+         * @brief 本次调用固定使用的已发布工具版本号。
+         */
+        uint32_t tool_revision = 0;
+        /**
+         * @brief HTTP 请求结束后回复原始 MCP tools/call 的一次性回调。
+         */
+        DynamicToolCompletion completion;
     };
 
     /**
@@ -222,6 +253,64 @@ private:
         WeatherLocationCompletion& completion);
 
     /**
+     * @brief 在网络和设备凭据可用时创建单次动态 MCP 清单同步任务。
+     * @details 同一时间最多存在一个清单任务；临时网络失败不会清除最近一次成功清单。
+     */
+    void StartMcpManifestSync();
+
+    /**
+     * @brief FreeRTOS 动态 MCP 清单同步任务入口。
+     * @param context 指向当前 BackendService 单例。
+     */
+    static void McpManifestTaskEntry(void* context);
+
+    /**
+     * @brief 周期清单检查定时器回调，只创建任务，不直接执行 HTTPS 请求。
+     * @param context 指向当前 BackendService 单例。
+     */
+    static void McpManifestTimerCallback(void* context);
+
+    /**
+     * @brief 获取并严格校验当前设备的权威动态 MCP 工具清单。
+     * @details 校验成功后把工具替换操作投递到 Application 主任务，保证 MCP 工具集合切换安全。
+     */
+    void RunMcpManifestSync();
+
+    /**
+     * @brief 创建代理执行单个已发布动态 MCP 工具的独立任务。
+     * @param tool_name 后端清单中的完整工具名称。
+     * @param tool_revision 清单固定的工具版本号。
+     * @param completion 执行结束后回复小智的一次性回调。
+     */
+    void StartDynamicToolExecution(
+        const std::string& tool_name,
+        uint32_t tool_revision,
+        DynamicToolCompletion completion);
+
+    /**
+     * @brief FreeRTOS 动态工具执行任务入口。
+     * @param context 指向由 StartDynamicToolExecution 分配的 DynamicToolTaskContext。
+     */
+    static void DynamicToolTaskEntry(void* context);
+
+    /**
+     * @brief 调用平台执行接口并把 ServiceExecutionResult v1 转为 MCP 文本结果。
+     * @param tool_name 本次请求的完整工具名称。
+     * @param tool_revision 本次请求的已发布工具版本号。
+     * @param completion 执行结束后回复原始 MCP 请求的一次性回调。
+     */
+    void RunDynamicToolExecution(
+        const std::string& tool_name,
+        uint32_t tool_revision,
+        DynamicToolCompletion& completion);
+
+    /**
+     * @brief 在主任务中清空全部后端动态工具和本地清单修订状态。
+     * @details 仅在设备认证明确失效时调用；普通断网或服务器错误继续保留最近成功清单。
+     */
+    void ClearDynamicTools();
+
+    /**
      * @brief 在满足屏保、网络、凭据和缓存条件时创建单次天气同步任务。
      * @param force_refresh true 忽略本地缓存有效期，用于网络重连或刚完成设备绑定；
      *                      false 仅在缓存缺失或超过刷新周期时请求。
@@ -314,6 +403,34 @@ private:
      * @brief 绑定完成后设备访问业务 API 使用的 Bearer Token。
      */
     std::string device_access_token_;
+    /**
+     * @brief 串行保护动态清单任务、执行任务和最近成功清单修订号。
+     */
+    std::mutex dynamic_mcp_mutex_;
+    /**
+     * @brief 当前动态 MCP 清单同步任务句柄；为空表示允许创建新的同步任务。
+     */
+    TaskHandle_t mcp_manifest_task_handle_ = nullptr;
+    /**
+     * @brief 当前动态 MCP 工具执行任务句柄；第一版同一时间只执行一个自定义工具。
+     */
+    TaskHandle_t dynamic_tool_task_handle_ = nullptr;
+    /**
+     * @brief 每 30 秒触发一次清单一致性检查的 esp_timer 句柄。
+     */
+    esp_timer_handle_t mcp_manifest_timer_ = nullptr;
+    /**
+     * @brief 最近一次成功安装到设备 MCP 服务器的后端清单修订号。
+     */
+    uint32_t mcp_manifest_revision_ = 0;
+    /**
+     * @brief true 表示设备已经成功同步过清单，包括修订号为0的空清单。
+     */
+    bool mcp_manifest_loaded_ = false;
+    /**
+     * @brief true 表示最近一次动态工具执行遇到版本冲突，应在执行任务释放栈后重新同步清单。
+     */
+    bool mcp_manifest_refresh_requested_ = false;
     /**
      * @brief true 表示金属黑表盘当前可见，只有该状态允许创建天气请求。
      */

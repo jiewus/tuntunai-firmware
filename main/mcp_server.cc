@@ -174,7 +174,7 @@ void McpServer::AddUserOnlyTools() {
         [this](const PropertyList& properties) -> ReturnValue {
             auto& app = Application::GetInstance();
             app.Schedule([&app]() {
-                ESP_LOGW(TAG, "User requested reboot");
+                ESP_LOGW(TAG, "用户请求重启设备");
                 vTaskDelay(pdMS_TO_TICKS(1000));
 
                 app.Reboot();
@@ -189,13 +189,13 @@ void McpServer::AddUserOnlyTools() {
         }),
         [this](const PropertyList& properties) -> ReturnValue {
             auto url = properties["url"].value<std::string>();
-            ESP_LOGI(TAG, "User requested firmware upgrade from URL: %s", url.c_str());
+            ESP_LOGI(TAG, "用户请求从指定地址升级固件，地址=%s", url.c_str());
             
             auto& app = Application::GetInstance();
             app.Schedule([url, &app]() {
                 bool success = app.UpgradeFirmware(url);
                 if (!success) {
-                    ESP_LOGE(TAG, "Firmware upgrade failed");
+                    ESP_LOGE(TAG, "固件升级失败");
                 }
             });
             
@@ -231,7 +231,7 @@ void McpServer::AddUserOnlyTools() {
                     throw std::runtime_error("Failed to snapshot screen");
                 }
 
-                ESP_LOGI(TAG, "Upload snapshot %u bytes to %s", jpeg_data.size(), url.c_str());
+                ESP_LOGI(TAG, "正在上传屏幕截图，字节数=%u，地址=%s", jpeg_data.size(), url.c_str());
                 
                 // 构造 multipart/form-data 请求体。
                 std::string boundary = "----ESP32_SCREEN_SNAPSHOT_BOUNDARY";
@@ -267,7 +267,7 @@ void McpServer::AddUserOnlyTools() {
                 }
                 std::string result = http->ReadAll();
                 http->Close();
-                ESP_LOGI(TAG, "Snapshot screen result: %s", result.c_str());
+                ESP_LOGI(TAG, "屏幕截图上传结果=%s", result.c_str());
                 return true;
             });
         
@@ -343,11 +343,11 @@ void McpServer::AddTool(McpTool* tool) {
     if (std::find_if(tools_.begin(), tools_.end(), [&owned_tool](const auto& existing) {
             return existing->name() == owned_tool->name();
         }) != tools_.end()) {
-        ESP_LOGW(TAG, "Tool %s already added", tool->name().c_str());
+        ESP_LOGW(TAG, "工具已经添加，工具名称=%s", tool->name().c_str());
         return;
     }
 
-    ESP_LOGI(TAG, "Add tool: %s%s", tool->name().c_str(), tool->user_only() ? " [user]" : "");
+    ESP_LOGI(TAG, "添加工具，工具名称=%s%s", tool->name().c_str(), tool->user_only() ? " [仅用户]" : "");
     tools_.push_back(std::move(owned_tool));
 }
 
@@ -383,39 +383,54 @@ void McpServer::AddAsyncTool(const std::string& name, const std::string& descrip
  * @details 旧动态工具由 shared_ptr 延迟释放，已经排入 Application 主任务的调用仍可安全完成。
  */
 bool McpServer::ReplaceDynamicTools(std::vector<McpDynamicToolDefinition> definitions) {
-    std::lock_guard<std::mutex> lock(tools_mutex_);
-    for (const auto& definition : definitions) {
-        const bool conflicts = std::any_of(tools_.begin(), tools_.end(), [&definition](const auto& tool) {
-            return !tool->dynamic() && tool->name() == definition.name;
+    const auto definition_count = definitions.size();
+    {
+        std::lock_guard<std::mutex> lock(tools_mutex_);
+        for (const auto& definition : definitions) {
+            const bool conflicts = std::any_of(tools_.begin(), tools_.end(), [&definition](const auto& tool) {
+                return !tool->dynamic() && tool->name() == definition.name;
+            });
+            if (conflicts) {
+                ESP_LOGE(TAG, "动态工具与内置工具名称冲突，工具名称=%s", definition.name.c_str());
+                return false;
+            }
+        }
+
+        tools_.erase(
+            std::remove_if(tools_.begin(), tools_.end(), [](const auto& tool) {
+                return tool->dynamic();
+            }),
+            tools_.end());
+
+        auto insertion = std::find_if(tools_.begin(), tools_.end(), [](const auto& tool) {
+            return tool->user_only();
         });
-        if (conflicts) {
-            ESP_LOGE(TAG, "Dynamic tool conflicts with built-in tool: %s", definition.name.c_str());
-            return false;
+        for (auto& definition : definitions) {
+            auto tool = std::make_shared<McpTool>(
+                definition.name,
+                definition.description,
+                definition.properties,
+                definition.input_schema_json,
+                std::move(definition.callback));
+            insertion = tools_.insert(insertion, std::move(tool));
+            ++insertion;
         }
     }
-
-    tools_.erase(
-        std::remove_if(tools_.begin(), tools_.end(), [](const auto& tool) {
-            return tool->dynamic();
-        }),
-        tools_.end());
-
-    auto insertion = std::find_if(tools_.begin(), tools_.end(), [](const auto& tool) {
-        return tool->user_only();
-    });
-    for (auto& definition : definitions) {
-        auto tool = std::make_shared<McpTool>(
-            definition.name,
-            definition.description,
-            definition.properties,
-            definition.input_schema_json,
-            std::move(definition.callback));
-        insertion = tools_.insert(insertion, std::move(tool));
-        ++insertion;
-    }
-    ESP_LOGI(TAG, "Replaced dynamic MCP tools, count=%u",
-             static_cast<unsigned>(definitions.size()));
+    ESP_LOGI(TAG, "动态 MCP 工具已替换，数量=%u",
+             static_cast<unsigned>(definition_count));
+    NotifyToolsListChanged();
     return true;
+}
+
+/**
+ * @brief 发送 MCP 标准工具清单变更通知。
+ * @details Application 会把通知切换到主任务，并通过当前有效协议会话发送。没有活动会话时通知可以
+ *          安全丢弃；下一次 MCP initialize 和 tools/list 会直接读取已经替换后的最新清单。
+ */
+void McpServer::NotifyToolsListChanged() {
+    ESP_LOGI(TAG, "正在通知 MCP 客户端工具清单已变化");
+    Application::GetInstance().SendMcpMessage(
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}");
 }
 
 /**
@@ -441,7 +456,7 @@ void McpServer::AddUserOnlyTool(const std::string& name, const std::string& desc
 void McpServer::ParseMessage(const std::string& message) {
     cJSON* json = cJSON_Parse(message.c_str());
     if (json == nullptr) {
-        ESP_LOGE(TAG, "Failed to parse MCP message, length=%u",
+        ESP_LOGE(TAG, "MCP 消息解析失败，长度=%u",
                  static_cast<unsigned>(message.size()));
         return;
     }
@@ -459,14 +474,14 @@ void McpServer::ParseMessage(const cJSON* json) {
     // 只接受 MCP 当前使用的 JSON-RPC 2.0 消息。
     auto version = cJSON_GetObjectItem(json, "jsonrpc");
     if (version == nullptr || !cJSON_IsString(version) || strcmp(version->valuestring, "2.0") != 0) {
-        ESP_LOGE(TAG, "Invalid JSONRPC version: %s", version ? version->valuestring : "null");
+        ESP_LOGE(TAG, "JSON-RPC 版本无效，版本=%s", version ? version->valuestring : "空");
         return;
     }
     
     // method 决定初始化、工具列表或工具调用等后续分支。
     auto method = cJSON_GetObjectItem(json, "method");
     if (method == nullptr || !cJSON_IsString(method)) {
-        ESP_LOGE(TAG, "Missing method");
+        ESP_LOGE(TAG, "MCP 消息缺少方法名称");
         return;
     }
     
@@ -478,20 +493,20 @@ void McpServer::ParseMessage(const cJSON* json) {
     // params 可省略，但存在时必须是 JSON 对象。
     auto params = cJSON_GetObjectItem(json, "params");
     if (params != nullptr && !cJSON_IsObject(params)) {
-        ESP_LOGE(TAG, "Invalid params for method: %s", method_str.c_str());
+        ESP_LOGE(TAG, "MCP 方法参数无效，方法=%s", method_str.c_str());
         return;
     }
 
     auto id = cJSON_GetObjectItem(json, "id");
     if (id == nullptr || !cJSON_IsNumber(id)) {
-        ESP_LOGE(TAG, "Invalid id for method: %s", method_str.c_str());
+        ESP_LOGE(TAG, "MCP 方法请求编号无效，方法=%s", method_str.c_str());
         return;
     }
     auto id_int = id->valueint;
     
     if (method_str == "initialize") {
         auto app_desc = esp_app_get_description();
-        std::string message = "{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"" BOARD_NAME "\",\"version\":\"";
+        std::string message = "{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"" BOARD_NAME "\",\"version\":\"";
         message += app_desc->version;
         message += "\"}}";
         ReplyResult(id_int, message);
@@ -511,25 +526,25 @@ void McpServer::ParseMessage(const cJSON* json) {
         GetToolsList(id_int, cursor_str, list_user_only_tools);
     } else if (method_str == "tools/call") {
         if (!cJSON_IsObject(params)) {
-            ESP_LOGE(TAG, "tools/call: Missing params");
+            ESP_LOGE(TAG, "工具调用缺少参数对象");
             ReplyError(id_int, "Missing params");
             return;
         }
         auto tool_name = cJSON_GetObjectItem(params, "name");
         if (!cJSON_IsString(tool_name)) {
-            ESP_LOGE(TAG, "tools/call: Missing name");
+            ESP_LOGE(TAG, "工具调用缺少工具名称");
             ReplyError(id_int, "Missing name");
             return;
         }
         auto tool_arguments = cJSON_GetObjectItem(params, "arguments");
         if (tool_arguments != nullptr && !cJSON_IsObject(tool_arguments)) {
-            ESP_LOGE(TAG, "tools/call: Invalid arguments");
+            ESP_LOGE(TAG, "工具调用参数无效");
             ReplyError(id_int, "Invalid arguments");
             return;
         }
         DoToolCall(id_int, std::string(tool_name->valuestring), tool_arguments);
     } else {
-        ESP_LOGE(TAG, "Method not implemented: %s", method_str.c_str());
+        ESP_LOGE(TAG, "MCP 方法尚未实现，方法=%s", method_str.c_str());
         ReplyError(id_int, "Method not implemented: " + method_str);
     }
 }
@@ -642,7 +657,7 @@ void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_o
     
     if (json.back() == '[' && !tools_.empty()) {
         // 单个工具自身就超过负载上限时无法分页，直接返回可诊断错误。
-        ESP_LOGE(TAG, "tools/list: Failed to add tool %s because of payload size limit", next_cursor.c_str());
+        ESP_LOGE(TAG, "工具清单超过负载限制，无法添加工具，工具名称=%s", next_cursor.c_str());
         ReplyError(id, "Failed to add tool " + next_cursor + " because of payload size limit");
         return;
     }
@@ -655,10 +670,10 @@ void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_o
 
     ESP_LOGI(
         TAG,
-        "tools/list: cursor=%s, with_user_tools=%d, next_cursor=%s, payload_size=%u",
-        cursor.empty() ? "<first>" : cursor.c_str(),
+        "工具清单已返回，游标=%s，包含用户工具=%d，下一游标=%s，负载字节数=%u",
+        cursor.empty() ? "<首页>" : cursor.c_str(),
         list_user_only_tools ? 1 : 0,
-        next_cursor.empty() ? "<end>" : next_cursor.c_str(),
+        next_cursor.empty() ? "<末页>" : next_cursor.c_str(),
         static_cast<unsigned>(json.size()));
     
     ReplyResult(id, json);
@@ -677,7 +692,7 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
      * 只记录工具名称，不记录参数。天气位置、备忘录正文等业务参数可能包含用户隐私，
      * 但工具名称能够明确区分云端是否真正调用了设备 MCP。
      */
-    ESP_LOGI(TAG, "tools/call: %s", tool_name.c_str());
+    ESP_LOGI(TAG, "调用工具，工具名称=%s", tool_name.c_str());
 
     std::shared_ptr<McpTool> tool;
     {
@@ -692,7 +707,7 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
     }
 
     if (!tool) {
-        ESP_LOGE(TAG, "tools/call: Unknown tool: %s", tool_name.c_str());
+        ESP_LOGE(TAG, "工具不存在，工具名称=%s", tool_name.c_str());
         ReplyError(id, "Unknown tool: " + tool_name);
         return;
     }
@@ -721,12 +736,12 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
             }
 
             if (provided && !found) {
-                ESP_LOGE(TAG, "tools/call: Invalid argument type: %s", argument.name().c_str());
+                ESP_LOGE(TAG, "工具参数类型无效，参数名称=%s", argument.name().c_str());
                 ReplyError(id, "Invalid argument type: " + argument.name());
                 return;
             }
             if (argument.required() && !argument.has_default_value() && !found) {
-                ESP_LOGE(TAG, "tools/call: Missing valid argument: %s", argument.name().c_str());
+                ESP_LOGE(TAG, "工具缺少有效参数，参数名称=%s", argument.name().c_str());
                 ReplyError(id, "Missing valid argument: " + argument.name());
                 return;
             }
@@ -741,14 +756,14 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
                     return property.name() == supplied_name;
                 });
                 if (!known) {
-                    ESP_LOGE(TAG, "tools/call: Unknown dynamic argument: %s", supplied_name.c_str());
+                    ESP_LOGE(TAG, "动态工具包含未知参数，参数名称=%s", supplied_name.c_str());
                     ReplyError(id, "Unknown argument: " + supplied_name);
                     return;
                 }
             }
         }
     } catch (const std::exception& e) {
-        ESP_LOGE(TAG, "tools/call: %s", e.what());
+        ESP_LOGE(TAG, "工具调用参数处理异常，原因=%s", e.what());
         ReplyError(id, e.what());
         return;
     }
@@ -765,7 +780,7 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
                 ReplyResult(id, tool->Call(arguments));
             }
         } catch (const std::exception& e) {
-            ESP_LOGE(TAG, "tools/call: %s", e.what());
+            ESP_LOGE(TAG, "工具执行异常，原因=%s", e.what());
             ReplyError(id, e.what());
         }
     });

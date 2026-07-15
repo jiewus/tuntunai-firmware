@@ -532,6 +532,13 @@ private:
     ~McpServer();
 
     /**
+     * @brief 通知当前 MCP 客户端工具清单已经发生变化。
+     * @details 仅在动态工具实际完成替换后调用。客户端收到标准通知后应重新请求 tools/list，
+     *          从而避免继续使用会话建立时缓存的旧工具清单。
+     */
+    void NotifyToolsListChanged();
+
+    /**
      * @brief 回复 JSON-RPC result。
      * @param id 请求编号。
      * @param result 已序列化结果对象。

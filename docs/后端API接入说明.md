@@ -14,7 +14,8 @@
 | 屏保天气查询与内存缓存 | 已实现 |
 | 断网保留旧天气与重连补刷 | 已实现 |
 | 备忘录查询 | 暂时显示占位内容 |
-| 主动提醒和动态 MCP 工具同步 | 尚未接入 |
+| 动态 MCP 工具清单同步与代理执行 | 已实现 |
+| 主动提醒 | 尚未接入 |
 
 设备绑定不影响小智原有的配网、OTA、ASR、大模型、TTS 和语音协议。
 
@@ -231,7 +232,52 @@ Accept: application/json
 单次天气 Worker 使用 8KB 任务栈，完成后立即释放。HTTP 响应最多读取 4KB，位置、天气描述和
 温度在写入圆屏前均执行边界校验。
 
-## 9. 尚未接入的业务
+## 9. 动态 MCP 工具
+
+设备绑定并联网后，固件使用 `device_token` 获取当前设备的权威工具清单：
+
+```http
+GET /api/mcp-tools/manifest
+Authorization: Bearer {device_token}
+Accept: application/json
+```
+
+固件在以下时机同步清单：
+
+- 网络连接成功后立即同步。
+- 首次完成设备绑定并保存设备 Token 后立即同步。
+- 每 30 秒检查一次清单修订号。
+- 工具执行返回 HTTP `409` 版本冲突后重新同步。
+
+新 revision 成功安装或认证失效导致动态工具被清空后，设备发送 MCP 标准通知
+`notifications/tools/list_changed`。设备在 MCP `initialize` 响应中声明 `tools.listChanged=true`，
+小智云端收到通知后应重新请求 `tools/list`，避免继续使用当前会话早期缓存的旧工具清单。
+
+第一版最多安装 10 个动态工具。固件要求工具名以 `custom.` 开头、名称不超过64字节、说明不超过
+512个 UTF-8 字节、`parameters` 为空数组且 `result_schema_version` 为 `1.0`。任意工具不符合约束时，
+整份新清单都不会替换当前工具。普通断网、网关错误或 JSON 错误会保留最近一次成功清单；设备 Token
+明确返回 `401` 或 `403` 时清空动态工具，避免失效凭据继续暴露原用户能力。
+
+小智调用动态工具时，固件不接收运行时参数，并按清单固定名称和版本请求：
+
+```http
+POST /api/mcp-tools/execute
+Authorization: Bearer {device_token}
+Content-Type: application/json
+
+{
+  "tool_name": "custom.order.query",
+  "tool_revision": 1,
+  "arguments": []
+}
+```
+
+执行接口必须返回 `ServiceExecutionResult v1`。固件校验 `schema_version`、`tool_name`、数值状态和
+文本长度，只把有效 `content` 返回小智模型；`status=2` 时设置 MCP `isError=true`，失败且内容为空时
+使用设备保底错误文本。清单同步和工具执行分别运行在独立 8KB Worker 中，第一版同一时间最多执行
+一个动态工具，避免多个 HTTPS 请求同时占用 ESP32-C5 内存。
+
+## 10. 尚未接入的业务
 
 备忘录目前仍由 `BackendService::OnScreensaverChanged()` 写入 `备忘录服务开发中` 占位内容。
 后续接入备忘录和主动提醒时，应复用已经持久化的设备访问 Token，并继续通过

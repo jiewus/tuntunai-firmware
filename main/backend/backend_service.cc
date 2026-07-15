@@ -1,6 +1,6 @@
 /**
  * @file backend_service.cc
- * @brief 囤囤管家设备绑定、屏保天气同步和未接入业务的占位实现。
+ * @brief 囤囤管家设备绑定、屏保天气、动态 MCP 和未接入业务的占位实现。
  */
 
 #include "backend_service.h"
@@ -11,12 +11,16 @@
 #include <http.h>
 
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <new>
+#include <unordered_set>
 #include <utility>
 
+#include "application.h"
 #include "boards/common/board.h"
 #include "display/display.h"
 #include "mcp_server.h"
@@ -55,6 +59,12 @@ namespace
     constexpr const char *kWeatherSettingsPath = "/api/device/weather/settings";
 
     /**
+     * @brief 使用设备访问 Token 同步和执行动态 MCP 工具的固定接口路径。
+     */
+    constexpr const char *kMcpManifestPath = "/api/mcp-tools/manifest";
+    constexpr const char *kMcpExecutePath = "/api/mcp-tools/execute";
+
+    /**
      * @brief 设备型号在后端 DeviceModelEnum 中对应 Movecall Moji2 ESP32-C5 的数值。
      */
     constexpr int kDeviceModelMovecallMoji2Esp32C5 = 1;
@@ -77,6 +87,15 @@ namespace
     constexpr UBaseType_t kWeatherTaskPriority = 3;
 
     /**
+     * @brief 动态 MCP 清单检查周期和临时 Worker 的资源配置。
+     * @details 清单同步与工具执行都涉及 HTTPS 和 cJSON，因此使用独立 8KB 任务栈。第一版同时只
+     *          运行一个清单同步任务和一个动态工具执行任务，避免并发请求挤压设备可用内存。
+     */
+    constexpr int64_t kMcpManifestCheckIntervalUs = 30LL * 1000LL * 1000LL;
+    constexpr uint32_t kMcpTaskStackSize = 8192;
+    constexpr UBaseType_t kMcpTaskPriority = 3;
+
+    /**
      * @brief 天气响应和语音位置输入的固件边界，防止异常文本和温度进入任务或圆屏布局。
      * @details 圆屏位置名称限制为 96 字节；语音输入按后端 100 个 Unicode 字符的上限预留
      *          最多 300 个 UTF-8 字节。
@@ -93,7 +112,20 @@ namespace
      *          持续占用 ESP32-C5 堆内存；超过上限的响应会被当作传输失败处理。
      */
     constexpr size_t kMaxApiResponseBytes = 4096;
+    constexpr size_t kMcpManifestResponseMaxBytes = 12288;
     constexpr size_t kHttpReadChunkBytes = 512;
+
+    /**
+     * @brief 第一版动态 MCP 清单和统一执行结果的固件安全边界。
+     */
+    constexpr size_t kMaximumDynamicToolCount = 10;
+    constexpr size_t kDynamicToolNameMaxBytes = 64;
+    constexpr size_t kDynamicToolDescriptionMaxBytes = 512;
+    constexpr size_t kDynamicToolResultTextMaxBytes = 2048;
+    constexpr const char *kDynamicToolSchemaVersion = "1.0";
+    constexpr const char *kDynamicToolInputSchema =
+        "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}";
+    constexpr const char *kDynamicToolFallbackError = "服务执行失败，请稍后重试。";
 
     /**
      * @brief 后端 DeviceBindingStatusEnum 的稳定数值。
@@ -118,7 +150,7 @@ namespace
     struct HttpResponse
     {
         /**
-         * @brief true 表示请求已经收到状态码，并在 4KB 限制内完整读取响应正文。
+         * @brief true 表示请求已经收到状态码，并在调用方指定限制内完整读取响应正文。
          */
         bool transport_succeeded = false;
         /**
@@ -152,12 +184,14 @@ namespace
      * @param path 业务接口路径。
      * @param bearer_token 可选的 Bearer Token；空字符串表示不发送 Authorization。
      * @param request_body JSON 请求正文；GET 请求传空字符串。
+     * @param maximum_response_bytes 本次响应正文允许占用的最大字节数。
      * @return 传输状态、HTTP 状态码和响应正文。
      * @details 本方法不记录请求或响应正文，避免绑定会话 Token 和设备 Token 进入日志。
      */
     HttpResponse SendJsonRequest(const char *method, const char *path,
                                  const std::string &bearer_token,
-                                 std::string request_body)
+                                 std::string request_body,
+                                 size_t maximum_response_bytes = kMaxApiResponseBytes)
     {
         HttpResponse response;
         auto *network = Board::GetInstance().GetNetwork();
@@ -186,7 +220,7 @@ namespace
 
         if (!http->Open(method, BuildApiUrl(path)))
         {
-            ESP_LOGW(kTag, "Backend HTTP transport failed, path=%s, error=0x%x",
+            ESP_LOGW(kTag, "后端 HTTP 传输失败，路径=%s，错误码=0x%x",
                      path, http->GetLastError());
             return response;
         }
@@ -198,9 +232,9 @@ namespace
             return response;
         }
         const size_t declared_body_length = http->GetBodyLength();
-        if (declared_body_length > kMaxApiResponseBytes)
+        if (declared_body_length > maximum_response_bytes)
         {
-            ESP_LOGW(kTag, "Backend HTTP response is too large, path=%s, bytes=%u",
+            ESP_LOGW(kTag, "后端 HTTP 响应过大，路径=%s，字节数=%u",
                      path, static_cast<unsigned>(declared_body_length));
             http->Close();
             return response;
@@ -213,7 +247,7 @@ namespace
             const int read_size = http->Read(read_buffer.data(), read_buffer.size());
             if (read_size < 0)
             {
-                ESP_LOGW(kTag, "Backend HTTP response read failed, path=%s", path);
+                ESP_LOGW(kTag, "后端 HTTP 响应读取失败，路径=%s", path);
                 response.body.clear();
                 http->Close();
                 return response;
@@ -222,10 +256,10 @@ namespace
             {
                 break;
             }
-            if (response.body.size() + static_cast<size_t>(read_size) > kMaxApiResponseBytes)
+            if (response.body.size() + static_cast<size_t>(read_size) > maximum_response_bytes)
             {
-                ESP_LOGW(kTag, "Backend HTTP response exceeded %u bytes, path=%s",
-                         static_cast<unsigned>(kMaxApiResponseBytes), path);
+                ESP_LOGW(kTag, "后端 HTTP 响应超过限制，限制字节数=%u，路径=%s",
+                         static_cast<unsigned>(maximum_response_bytes), path);
                 response.body.clear();
                 http->Close();
                 return response;
@@ -364,6 +398,77 @@ namespace
     }
 
     /**
+     * @brief 检查 cJSON 数值是否能无损转换为 uint32_t。
+     * @param item 需要检查的 JSON 节点。
+     * @param allow_zero true 允许0；false 要求至少为1。
+     * @param value 校验成功时接收转换后的整数。
+     * @return 节点为有限非负整数且没有超过 uint32_t 上限时返回 true。
+     */
+    bool ReadUnsignedInteger(cJSON *item, bool allow_zero, uint32_t &value)
+    {
+        if (!cJSON_IsNumber(item) || !std::isfinite(item->valuedouble)
+            || std::floor(item->valuedouble) != item->valuedouble
+            || item->valuedouble < (allow_zero ? 0.0 : 1.0)
+            || item->valuedouble > static_cast<double>(std::numeric_limits<uint32_t>::max()))
+        {
+            return false;
+        }
+        value = static_cast<uint32_t>(item->valuedouble);
+        return true;
+    }
+
+    /**
+     * @brief 校验动态工具名称符合 custom. 前缀和固件允许的 ASCII 字符集。
+     * @param name 后端清单中的完整工具名称。
+     * @return 名称长度为1至64字节、以 custom. 开头且只含小写字母、数字及分隔符时返回 true。
+     */
+    bool IsValidDynamicToolName(const std::string &name)
+    {
+        constexpr const char *prefix = "custom.";
+        if (name.size() <= std::strlen(prefix) || name.size() > kDynamicToolNameMaxBytes
+            || name.compare(0, std::strlen(prefix), prefix) != 0)
+        {
+            return false;
+        }
+        for (const char character : name)
+        {
+            const bool valid = (character >= 'a' && character <= 'z')
+                || (character >= '0' && character <= '9')
+                || character == '_' || character == '-' || character == '.';
+            if (!valid)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * @brief 构建第一版动态 MCP 工具执行请求。
+     * @param tool_name 清单中的完整工具名称。
+     * @param tool_revision 清单中的固定工具版本号。
+     * @return 包含空 arguments 数组的紧凑 JSON；内存不足时返回空字符串。
+     */
+    std::string BuildDynamicToolRequestJson(
+        const std::string &tool_name,
+        uint32_t tool_revision)
+    {
+        cJSON *root = cJSON_CreateObject();
+        if (root == nullptr)
+        {
+            return {};
+        }
+        cJSON_AddStringToObject(root, "tool_name", tool_name.c_str());
+        cJSON_AddNumberToObject(root, "tool_revision", tool_revision);
+        cJSON_AddItemToObject(root, "arguments", cJSON_CreateArray());
+        char *json_text = cJSON_PrintUnformatted(root);
+        std::string result = json_text == nullptr ? std::string() : std::string(json_text);
+        cJSON_free(json_text);
+        cJSON_Delete(root);
+        return result;
+    }
+
+    /**
      * @brief 在圆屏上显示绑定流程状态，并确保用户可见背光已经恢复。
      * @param binding_code 非空时显示大号数字绑定码；空字符串表示只显示状态。
      * @param message 显示在绑定码下方的中文操作说明或结果。
@@ -455,7 +560,7 @@ void BackendService::Start()
     }
     if (timer_error != ESP_OK)
     {
-        ESP_LOGE(kTag, "Failed to start weather timer: %s",
+        ESP_LOGE(kTag, "天气定时器启动失败，原因=%s",
                  esp_err_to_name(timer_error));
         if (weather_timer_ != nullptr)
         {
@@ -463,8 +568,33 @@ void BackendService::Start()
             weather_timer_ = nullptr;
         }
     }
-    ESP_LOGI(kTag, "Tuntun backend initialized, api=%s, device_credential=%s",
-             CONFIG_TUNTUN_API_URL, device_access_token_.empty() ? "missing" : "available");
+
+    const esp_timer_create_args_t mcp_manifest_timer_args = {
+        .callback = McpManifestTimerCallback,
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "mcp_manifest",
+        .skip_unhandled_events = true,
+    };
+    timer_error = esp_timer_create(&mcp_manifest_timer_args, &mcp_manifest_timer_);
+    if (timer_error == ESP_OK)
+    {
+        timer_error = esp_timer_start_periodic(
+            mcp_manifest_timer_,
+            kMcpManifestCheckIntervalUs);
+    }
+    if (timer_error != ESP_OK)
+    {
+        ESP_LOGE(kTag, "MCP 清单定时器启动失败，原因=%s",
+                 esp_err_to_name(timer_error));
+        if (mcp_manifest_timer_ != nullptr)
+        {
+            esp_timer_delete(mcp_manifest_timer_);
+            mcp_manifest_timer_ = nullptr;
+        }
+    }
+    ESP_LOGI(kTag, "囤囤管家后端服务已初始化，接口地址=%s，设备凭据=%s",
+             CONFIG_TUNTUN_API_URL, device_access_token_.empty() ? "缺失" : "可用");
 }
 
 /**
@@ -565,6 +695,7 @@ void BackendService::OnNetworkConnected()
     {
         StartWeatherSync(false);
     }
+    StartMcpManifestSync();
 }
 
 /**
@@ -581,6 +712,469 @@ void BackendService::OnNetworkDisconnected()
  */
 void BackendService::OnMcpDisconnected()
 {
+}
+
+/**
+ * @brief 在网络和设备凭据可用时启动单次动态 MCP 清单同步。
+ */
+void BackendService::StartMcpManifestSync()
+{
+    if (!network_connected_.load())
+    {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        if (device_access_token_.empty())
+        {
+            return;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
+    if (mcp_manifest_task_handle_ != nullptr)
+    {
+        return;
+    }
+    const BaseType_t created = xTaskCreate(
+        McpManifestTaskEntry,
+        "mcp_manifest",
+        kMcpTaskStackSize,
+        this,
+        kMcpTaskPriority,
+        &mcp_manifest_task_handle_);
+    if (created != pdPASS)
+    {
+        mcp_manifest_task_handle_ = nullptr;
+        ESP_LOGE(kTag, "内存不足，无法启动 MCP 清单同步任务");
+    }
+}
+
+/**
+ * @brief FreeRTOS 动态 MCP 清单同步任务入口，确保任务标志始终释放。
+ * @param context 指向 BackendService 单例。
+ */
+void BackendService::McpManifestTaskEntry(void *context)
+{
+    auto *service = static_cast<BackendService *>(context);
+    try
+    {
+        service->RunMcpManifestSync();
+    }
+    catch (const std::exception &exception)
+    {
+        ESP_LOGE(kTag, "MCP 清单同步任务异常，原因=%s", exception.what());
+    }
+    catch (...)
+    {
+        ESP_LOGE(kTag, "MCP 清单同步任务发生未知异常");
+    }
+    {
+        std::lock_guard<std::mutex> lock(service->dynamic_mcp_mutex_);
+        service->mcp_manifest_task_handle_ = nullptr;
+    }
+    vTaskDelete(nullptr);
+}
+
+/**
+ * @brief esp_timer 周期回调，创建动态 MCP 清单同步任务。
+ * @param context 指向 BackendService 单例。
+ */
+void BackendService::McpManifestTimerCallback(void *context)
+{
+    auto *service = static_cast<BackendService *>(context);
+    service->StartMcpManifestSync();
+}
+
+/**
+ * @brief 获取、校验并安装当前设备的动态 MCP 权威清单。
+ */
+void BackendService::RunMcpManifestSync()
+{
+    if (!network_connected_.load())
+    {
+        return;
+    }
+
+    std::string access_token;
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        access_token = device_access_token_;
+    }
+    if (access_token.empty())
+    {
+        return;
+    }
+
+    const HttpResponse response = SendJsonRequest(
+        "GET",
+        kMcpManifestPath,
+        access_token,
+        "",
+        kMcpManifestResponseMaxBytes);
+    if (response.status_code == 401 || response.status_code == 403)
+    {
+        ESP_LOGW(kTag, "MCP 清单认证失败，HTTP 状态码=%d", response.status_code);
+        ClearDynamicTools();
+        return;
+    }
+
+    cJSON *root = nullptr;
+    cJSON *data = nullptr;
+    std::string response_message;
+    const bool envelope_valid = response.transport_succeeded
+        && response.status_code == 200
+        && ParseSuccessData(response.body, &root, &data, response_message);
+    if (!envelope_valid)
+    {
+        cJSON_Delete(root);
+        ESP_LOGW(kTag, "MCP 清单同步失败，HTTP 状态码=%d", response.status_code);
+        return;
+    }
+
+    uint32_t manifest_revision = 0;
+    cJSON *revision = cJSON_GetObjectItemCaseSensitive(data, "revision");
+    cJSON *tools = cJSON_GetObjectItemCaseSensitive(data, "tools");
+    if (!ReadUnsignedInteger(revision, true, manifest_revision)
+        || !cJSON_IsArray(tools)
+        || cJSON_GetArraySize(tools) > static_cast<int>(kMaximumDynamicToolCount))
+    {
+        cJSON_Delete(root);
+        ESP_LOGW(kTag, "MCP 清单修订号或工具数量无效");
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
+        if (mcp_manifest_loaded_ && mcp_manifest_revision_ == manifest_revision)
+        {
+            cJSON_Delete(root);
+            ESP_LOGD(kTag, "MCP 清单没有变化，修订号=%lu",
+                     static_cast<unsigned long>(manifest_revision));
+            return;
+        }
+    }
+
+    std::vector<McpDynamicToolDefinition> definitions;
+    definitions.reserve(static_cast<size_t>(cJSON_GetArraySize(tools)));
+    std::unordered_set<std::string> names;
+    bool manifest_valid = true;
+    cJSON *tool = nullptr;
+    cJSON_ArrayForEach(tool, tools)
+    {
+        std::string tool_name;
+        std::string description;
+        uint32_t tool_revision = 0;
+        cJSON *revision_item = cJSON_GetObjectItemCaseSensitive(tool, "tool_revision");
+        cJSON *parameters = cJSON_GetObjectItemCaseSensitive(tool, "parameters");
+        cJSON *schema_version = cJSON_GetObjectItemCaseSensitive(tool, "result_schema_version");
+        manifest_valid = cJSON_IsObject(tool)
+            && ReadBoundedString(tool, "tool_name", kDynamicToolNameMaxBytes, tool_name)
+            && IsValidDynamicToolName(tool_name)
+            && ReadBoundedString(
+                tool,
+                "description",
+                kDynamicToolDescriptionMaxBytes,
+                description)
+            && ReadUnsignedInteger(revision_item, false, tool_revision)
+            && cJSON_IsArray(parameters)
+            && cJSON_GetArraySize(parameters) == 0
+            && cJSON_IsString(schema_version)
+            && std::strcmp(schema_version->valuestring, kDynamicToolSchemaVersion) == 0
+            && names.insert(tool_name).second;
+        if (!manifest_valid)
+        {
+            break;
+        }
+
+        McpDynamicToolDefinition definition;
+        definition.name = tool_name;
+        definition.description = description;
+        definition.properties = PropertyList();
+        definition.input_schema_json = kDynamicToolInputSchema;
+        definition.callback = [this, tool_name, tool_revision](
+                                  const PropertyList &properties,
+                                  McpToolCompletion completion) mutable
+        {
+            (void)properties;
+            StartDynamicToolExecution(
+                tool_name,
+                tool_revision,
+                [completion = std::move(completion)](
+                    const std::string &message,
+                    bool is_error) mutable
+                {
+                    completion(McpToolResult{message, is_error});
+                });
+        };
+        definitions.push_back(std::move(definition));
+    }
+    cJSON_Delete(root);
+
+    if (!manifest_valid)
+    {
+        ESP_LOGW(kTag, "MCP 清单包含无效或重复的工具定义");
+        return;
+    }
+
+    Application::GetInstance().Schedule(
+        [this, manifest_revision, definitions = std::move(definitions)]() mutable
+        {
+            if (!McpServer::GetInstance().ReplaceDynamicTools(std::move(definitions)))
+            {
+                ESP_LOGE(kTag, "MCP 清单安装失败，修订号=%lu",
+                         static_cast<unsigned long>(manifest_revision));
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
+                mcp_manifest_revision_ = manifest_revision;
+                mcp_manifest_loaded_ = true;
+            }
+            ESP_LOGI(kTag, "MCP 清单同步成功，修订号=%lu",
+                     static_cast<unsigned long>(manifest_revision));
+        });
+}
+
+/**
+ * @brief 创建代理执行动态 MCP 工具的单次后台任务。
+ * @param tool_name 清单中的完整工具名称。
+ * @param tool_revision 清单中的工具版本号。
+ * @param completion 执行完成后回复原始 MCP 请求的一次性回调。
+ */
+void BackendService::StartDynamicToolExecution(
+    const std::string &tool_name,
+    uint32_t tool_revision,
+    DynamicToolCompletion completion)
+{
+    if (!network_connected_.load())
+    {
+        completion("设备网络尚未连接，暂时无法执行该服务。", true);
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        if (device_access_token_.empty())
+        {
+            completion("设备尚未绑定囤囤管家，无法执行该服务。", true);
+            return;
+        }
+    }
+
+    DynamicToolCompletion rejected_completion;
+    const char *rejected_message = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
+        if (dynamic_tool_task_handle_ != nullptr)
+        {
+            rejected_completion = std::move(completion);
+            rejected_message = "设备正在执行另一个自定义服务，请稍后再试。";
+        }
+        else
+        {
+            auto *context = new (std::nothrow) DynamicToolTaskContext{
+                this,
+                tool_name,
+                tool_revision,
+                std::move(completion)};
+            if (context == nullptr)
+            {
+                rejected_completion = std::move(completion);
+                rejected_message = "设备内存不足，无法执行该服务。";
+            }
+            else
+            {
+                const BaseType_t created = xTaskCreate(
+                    DynamicToolTaskEntry,
+                    "mcp_execute",
+                    kMcpTaskStackSize,
+                    context,
+                    kMcpTaskPriority,
+                    &dynamic_tool_task_handle_);
+                if (created == pdPASS)
+                {
+                    return;
+                }
+                rejected_completion = std::move(context->completion);
+                delete context;
+                dynamic_tool_task_handle_ = nullptr;
+                rejected_message = "设备内存不足，无法执行该服务。";
+            }
+        }
+    }
+    if (rejected_completion)
+    {
+        rejected_completion(rejected_message, true);
+    }
+}
+
+/**
+ * @brief FreeRTOS 动态工具执行入口，确保回调和任务标志始终得到处理。
+ * @param context DynamicToolTaskContext 指针。
+ */
+void BackendService::DynamicToolTaskEntry(void *context)
+{
+    std::unique_ptr<DynamicToolTaskContext> task_context(
+        static_cast<DynamicToolTaskContext *>(context));
+    BackendService *service = task_context->service;
+    try
+    {
+        service->RunDynamicToolExecution(
+            task_context->tool_name,
+            task_context->tool_revision,
+            task_context->completion);
+    }
+    catch (const std::exception &exception)
+    {
+        ESP_LOGE(kTag, "动态 MCP 工具执行异常，原因=%s", exception.what());
+        FinishToolRequest(task_context->completion, kDynamicToolFallbackError, true);
+    }
+    catch (...)
+    {
+        ESP_LOGE(kTag, "动态 MCP 工具执行发生未知异常");
+        FinishToolRequest(task_context->completion, kDynamicToolFallbackError, true);
+    }
+    if (task_context->completion)
+    {
+        FinishToolRequest(task_context->completion, kDynamicToolFallbackError, true);
+    }
+    bool refresh_manifest = false;
+    {
+        std::lock_guard<std::mutex> lock(service->dynamic_mcp_mutex_);
+        service->dynamic_tool_task_handle_ = nullptr;
+        refresh_manifest = service->mcp_manifest_refresh_requested_;
+        service->mcp_manifest_refresh_requested_ = false;
+    }
+    if (refresh_manifest)
+    {
+        service->StartMcpManifestSync();
+    }
+    vTaskDelete(nullptr);
+}
+
+/**
+ * @brief 调用平台执行接口并校验 ServiceExecutionResult v1。
+ * @param tool_name 本次请求的完整工具名称。
+ * @param tool_revision 本次请求固定的工具版本号。
+ * @param completion 执行完成后回复原始 MCP 请求的一次性回调。
+ */
+void BackendService::RunDynamicToolExecution(
+    const std::string &tool_name,
+    uint32_t tool_revision,
+    DynamicToolCompletion &completion)
+{
+    std::string access_token;
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        access_token = device_access_token_;
+    }
+    if (access_token.empty())
+    {
+        FinishToolRequest(completion, "设备认证信息不存在，请重新绑定设备。", true);
+        return;
+    }
+
+    const std::string request_json = BuildDynamicToolRequestJson(tool_name, tool_revision);
+    if (request_json.empty())
+    {
+        FinishToolRequest(completion, "设备内存不足，无法生成服务请求。", true);
+        return;
+    }
+
+    const HttpResponse response = SendJsonRequest(
+        "POST",
+        kMcpExecutePath,
+        access_token,
+        request_json);
+    if (response.status_code == 409)
+    {
+        std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
+        mcp_manifest_refresh_requested_ = true;
+    }
+
+    cJSON *root = nullptr;
+    cJSON *data = nullptr;
+    std::string response_message;
+    const bool envelope_valid = response.transport_succeeded
+        && response.status_code == 200
+        && ParseSuccessData(response.body, &root, &data, response_message);
+    if (!envelope_valid)
+    {
+        cJSON_Delete(root);
+        ESP_LOGW(kTag, "动态 MCP 工具执行请求失败，HTTP 状态码=%d",
+                 response.status_code);
+        const bool authentication_failed = response.status_code == 401
+            || response.status_code == 403;
+        if (authentication_failed)
+        {
+            ClearDynamicTools();
+        }
+        const std::string message = authentication_failed
+            ? "设备认证已失效，请重新绑定设备。"
+            : (response_message.empty()
+                   || response_message.size() > kDynamicToolDescriptionMaxBytes
+                   ? kDynamicToolFallbackError
+                   : response_message);
+        FinishToolRequest(completion, message, true);
+        return;
+    }
+
+    cJSON *schema_version = cJSON_GetObjectItemCaseSensitive(data, "schema_version");
+    cJSON *result_tool_name = cJSON_GetObjectItemCaseSensitive(data, "tool_name");
+    cJSON *status = cJSON_GetObjectItemCaseSensitive(data, "status");
+    cJSON *content = cJSON_GetObjectItemCaseSensitive(data, "content");
+    uint32_t result_status = 0;
+    const size_t content_length = cJSON_IsString(content) && content->valuestring != nullptr
+        ? std::strlen(content->valuestring)
+        : 0;
+    const bool result_valid = cJSON_IsString(schema_version)
+        && std::strcmp(schema_version->valuestring, kDynamicToolSchemaVersion) == 0
+        && cJSON_IsString(result_tool_name)
+        && tool_name == result_tool_name->valuestring
+        && ReadUnsignedInteger(status, false, result_status)
+        && (result_status == 1 || result_status == 2)
+        && cJSON_IsString(content)
+        && content_length <= kDynamicToolResultTextMaxBytes
+        && (result_status == 2 || content_length > 0);
+    if (!result_valid)
+    {
+        cJSON_Delete(root);
+        ESP_LOGW(kTag, "动态 MCP 工具返回了无效结果");
+        FinishToolRequest(completion, "平台返回的服务结果格式无效。", true);
+        return;
+    }
+
+    const bool execution_failed = result_status == 2;
+    const std::string result_text = content_length == 0
+        ? std::string(kDynamicToolFallbackError)
+        : std::string(content->valuestring, content_length);
+    cJSON_Delete(root);
+    FinishToolRequest(completion, result_text, execution_failed);
+}
+
+/**
+ * @brief 在 Application 主任务中清空后端动态工具和清单修订状态。
+ */
+void BackendService::ClearDynamicTools()
+{
+    Application::GetInstance().Schedule([this]()
+    {
+        {
+            std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
+            if (!mcp_manifest_loaded_)
+            {
+                return;
+            }
+        }
+        if (!McpServer::GetInstance().ReplaceDynamicTools({}))
+        {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
+        mcp_manifest_revision_ = 0;
+        mcp_manifest_loaded_ = false;
+        ESP_LOGI(kTag, "认证失败后已清空动态 MCP 工具");
+    });
 }
 
 /**
@@ -681,7 +1275,7 @@ void BackendService::StartWeatherSync(bool force_refresh)
 
     if (task_start_failed)
     {
-        ESP_LOGE(kTag, "Insufficient memory to start weather task");
+        ESP_LOGE(kTag, "内存不足，无法启动天气同步任务");
         ShowWeatherStatusIfUnavailable("天气任务启动失败");
     }
 }
@@ -699,12 +1293,12 @@ void BackendService::WeatherTaskEntry(void *context)
     }
     catch (const std::exception &exception)
     {
-        ESP_LOGE(kTag, "Weather task failed: %s", exception.what());
+        ESP_LOGE(kTag, "天气同步任务异常，原因=%s", exception.what());
         service->ShowWeatherStatusIfUnavailable("天气同步失败");
     }
     catch (...)
     {
-        ESP_LOGE(kTag, "Weather task failed with an unknown exception");
+        ESP_LOGE(kTag, "天气同步任务发生未知异常");
         service->ShowWeatherStatusIfUnavailable("天气同步失败");
     }
     {
@@ -764,7 +1358,7 @@ void BackendService::RunWeatherSync()
 
     if (!parsed)
     {
-        ESP_LOGW(kTag, "Weather sync failed, http=%d", response.status_code);
+        ESP_LOGW(kTag, "天气同步失败，HTTP 状态码=%d", response.status_code);
         ShowWeatherStatusIfUnavailable(
             response.status_code == 401 || response.status_code == 403
                 ? "设备认证已失效"
@@ -782,7 +1376,7 @@ void BackendService::RunWeatherSync()
     {
         ShowWeatherSnapshot(snapshot);
     }
-    ESP_LOGI(kTag, "Weather synchronized");
+    ESP_LOGI(kTag, "天气同步成功");
 }
 
 /**
@@ -933,7 +1527,7 @@ void BackendService::WeatherLocationTaskEntry(void *context)
     }
     catch (const std::exception &exception)
     {
-        ESP_LOGE(kTag, "Weather location task failed: %s", exception.what());
+        ESP_LOGE(kTag, "天气位置设置任务异常，原因=%s", exception.what());
         FinishToolRequest(
             task_context->completion,
             "天气城市设置失败，请稍后重试。",
@@ -941,7 +1535,7 @@ void BackendService::WeatherLocationTaskEntry(void *context)
     }
     catch (...)
     {
-        ESP_LOGE(kTag, "Weather location task failed with an unknown exception");
+        ESP_LOGE(kTag, "天气位置设置任务发生未知异常");
         FinishToolRequest(
             task_context->completion,
             "天气城市设置失败，请稍后重试。",
@@ -1009,7 +1603,7 @@ void BackendService::RunWeatherLocationTask(
 
     if (!parsed)
     {
-        ESP_LOGW(kTag, "Weather location update failed, http=%d", response.status_code);
+        ESP_LOGW(kTag, "天气位置更新失败，HTTP 状态码=%d", response.status_code);
         const std::string error_message = response.status_code == 401 || response.status_code == 403
                                               ? "设备认证已失效，请重新绑定设备。"
                                               : (response_message.empty()
@@ -1111,7 +1705,7 @@ void BackendService::StartBindingTask(bool request_new_session,
 
     if (task_start_failed && !completion)
     {
-        ESP_LOGE(kTag, "Insufficient memory to start binding task");
+        ESP_LOGE(kTag, "内存不足，无法启动设备绑定任务");
         return;
     }
     if (task_start_failed)
@@ -1154,7 +1748,7 @@ void BackendService::BindingTaskEntry(void *context)
     }
     catch (const std::exception &exception)
     {
-        ESP_LOGE(kTag, "Binding task failed: %s", exception.what());
+        ESP_LOGE(kTag, "设备绑定任务异常，原因=%s", exception.what());
         ShowBindingPage("", "绑定流程异常，请稍后重试");
         FinishToolRequest(task_context->completion,
                           "设备绑定流程异常，请稍后重试。", true);
@@ -1163,7 +1757,7 @@ void BackendService::BindingTaskEntry(void *context)
     }
     catch (...)
     {
-        ESP_LOGE(kTag, "Binding task failed with an unknown exception");
+        ESP_LOGE(kTag, "设备绑定任务发生未知异常");
         ShowBindingPage("", "绑定流程异常，请稍后重试");
         FinishToolRequest(task_context->completion,
                           "设备绑定流程异常，请稍后重试。", true);
@@ -1175,9 +1769,22 @@ void BackendService::BindingTaskEntry(void *context)
         FinishToolRequest(task_context->completion,
                           "设备绑定流程未能完成，请稍后重试。", true);
     }
+    bool start_bound_device_sync = false;
     {
         std::lock_guard<std::mutex> lock(service->binding_mutex_);
         service->binding_task_handle_ = nullptr;
+        start_bound_device_sync = !service->device_access_token_.empty();
+    }
+    if (start_bound_device_sync)
+    {
+        Application::GetInstance().Schedule([service]()
+        {
+            service->StartMcpManifestSync();
+            if (service->screensaver_active_.load())
+            {
+                service->StartWeatherSync(true);
+            }
+        });
     }
     vTaskDelete(nullptr);
 }
@@ -1232,7 +1839,7 @@ void BackendService::RunBindingTask(bool request_new_session,
         cJSON_Delete(root);
         if (!parsed)
         {
-            ESP_LOGW(kTag, "Binding request failed, http=%d", response.status_code);
+            ESP_LOGW(kTag, "绑定码申请失败，HTTP 状态码=%d", response.status_code);
             ShowBindingPage("", message.empty() ? "获取绑定码失败，请稍后重试" : message);
             FinishToolRequest(
                 completion,
@@ -1295,7 +1902,7 @@ void BackendService::RunBindingTask(bool request_new_session,
                 HideBindingPage();
                 return;
             }
-            ESP_LOGW(kTag, "Binding status request failed, http=%d",
+            ESP_LOGW(kTag, "绑定状态查询失败，HTTP 状态码=%d",
                      status_response.status_code);
             vTaskDelay(pdMS_TO_TICKS(kBindingRetryIntervalMs));
             continue;
@@ -1330,7 +1937,7 @@ void BackendService::RunBindingTask(bool request_new_session,
             cJSON_Delete(complete_root);
             if (!complete_parsed)
             {
-                ESP_LOGW(kTag, "Binding completion failed, http=%d",
+                ESP_LOGW(kTag, "设备绑定完成请求失败，HTTP 状态码=%d",
                          complete_response.status_code);
                 vTaskDelay(pdMS_TO_TICKS(kBindingRetryIntervalMs));
                 continue;
@@ -1338,14 +1945,10 @@ void BackendService::RunBindingTask(bool request_new_session,
 
             SaveDeviceCredential(device_id, access_token);
             ClearPendingBinding();
-            if (screensaver_active_.load())
-            {
-                StartWeatherSync(true);
-            }
             ShowBindingPage("", "绑定成功");
             vTaskDelay(pdMS_TO_TICKS(3000));
             HideBindingPage();
-            ESP_LOGI(kTag, "Device binding completed");
+            ESP_LOGI(kTag, "设备绑定完成");
             return;
         }
         if (binding_status == kBindingStatusCompleted)
@@ -1367,7 +1970,7 @@ void BackendService::RunBindingTask(bool request_new_session,
             return;
         }
 
-        ESP_LOGW(kTag, "Unknown binding status=%d", binding_status);
+        ESP_LOGW(kTag, "设备绑定状态未知，状态值=%d", binding_status);
         vTaskDelay(pdMS_TO_TICKS(kBindingRetryIntervalMs));
     }
 }
