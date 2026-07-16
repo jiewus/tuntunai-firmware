@@ -135,8 +135,9 @@ public:
     }
     /**
      * @brief 替换屏保循环展示的备忘录数组。
-     * @param memos 已按后端优先级排序的正文数组，最多使用前 5 条。
-     * @details 默认实现为空操作，具体 LCD 实现负责复制正文并重置轮播位置。
+     * @param memos 已按后端优先级排序的屏保文本数组，最多使用前 5 条。
+     * @details 每条结构化文本使用“时间换行正文”格式。默认实现为空操作，具体 LCD 实现负责
+     *          复制文本、限制三行并重置轮播位置。
      */
     virtual void SetScreensaverMemos(const std::vector<std::string>& memos) {
         (void)memos;

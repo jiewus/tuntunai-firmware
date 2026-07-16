@@ -1,6 +1,6 @@
 /**
  * @file backend_service.cc
- * @brief 囤囤管家设备绑定、屏保天气、动态 MCP 和未接入业务的占位实现。
+ * @brief 囤囤管家设备绑定、屏保天气、备忘录和动态 MCP 实现。
  */
 
 #include "backend_service.h"
@@ -10,9 +10,12 @@
 #include <esp_log.h>
 #include <http.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <exception>
 #include <limits>
 #include <memory>
@@ -36,6 +39,13 @@ namespace
     constexpr const char *kTag = "TuntunBackend";
 
     /**
+     * @brief 串行保护囤囤管家后端的 TLS 连接创建和完整 HTTP 请求生命周期。
+     * @details ESP32-C5 在证书签名校验阶段需要临时申请较大的连续内存。天气、备忘录和动态 MCP
+     *          同时握手会导致 PK 校验内存分配失败，因此所有自建后端请求统一串行执行。
+     */
+    std::mutex backend_http_mutex;
+
+    /**
      * @brief 保存绑定会话和最终设备凭据的 NVS 命名空间。
      * @details 名称及其全部键名均不超过 ESP-IDF NVS 的 15 字符限制。
      */
@@ -57,6 +67,14 @@ namespace
      */
     constexpr const char *kWeatherPath = "/api/device/weather";
     constexpr const char *kWeatherSettingsPath = "/api/device/weather/settings";
+
+    /**
+     * @brief 使用设备访问 Token 创建、查询和统计备忘录的固定接口路径。
+     */
+    constexpr const char *kMemosPath = "/api/device/memos";
+    constexpr const char *kMemoStatisticsPath = "/api/device/memos/statistics";
+    constexpr const char *kMemoScreensaverPath =
+        "/api/device/memos?page_index=1&page_size=5&screen_only=true";
 
     /**
      * @brief 使用设备访问 Token 同步和执行动态 MCP 工具的固定接口路径。
@@ -87,6 +105,14 @@ namespace
     constexpr UBaseType_t kWeatherTaskPriority = 3;
 
     /**
+     * @brief 屏保备忘录缓存周期和临时 Worker 的资源配置。
+     * @details 屏保持续显示时每 5 分钟允许刷新一次；语音工具和屏保同步共用同一个 8KB 任务槽。
+     */
+    constexpr int64_t kMemoRefreshIntervalUs = 5LL * 60LL * 1000LL * 1000LL;
+    constexpr uint32_t kMemoTaskStackSize = 8192;
+    constexpr UBaseType_t kMemoTaskPriority = 3;
+
+    /**
      * @brief 动态 MCP 清单检查周期和临时 Worker 的资源配置。
      * @details 清单同步与工具执行都涉及 HTTPS 和 cJSON，因此使用独立 8KB 任务栈。第一版同时只
      *          运行一个清单同步任务和一个动态工具执行任务，避免并发请求挤压设备可用内存。
@@ -113,7 +139,18 @@ namespace
      */
     constexpr size_t kMaxApiResponseBytes = 4096;
     constexpr size_t kMcpManifestResponseMaxBytes = 12288;
+    constexpr size_t kMemoResponseMaxBytes = 12288;
     constexpr size_t kHttpReadChunkBytes = 512;
+
+    /**
+     * @brief 备忘录正文、提醒时间和语音查询结果的固件边界。
+     * @details 后端正文上限为 500 个 Unicode 字符，按中文 UTF-8 最坏情况预留 1500 字节。
+     */
+    constexpr size_t kMemoContentMaxBytes = 1500;
+    constexpr size_t kMemoReminderTimeMaxBytes = 48;
+    constexpr size_t kMemoQueryItemMaxBytes = 360;
+    constexpr size_t kMemoQueryResultMaxBytes = 3000;
+    constexpr size_t kMaximumScreensaverMemoCount = 5;
 
     /**
      * @brief 第一版动态 MCP 清单和统一执行结果的固件安全边界。
@@ -142,7 +179,6 @@ namespace
     constexpr const char *kWeatherTemperaturePlaceholder = "--℃";
     constexpr const char *kWeatherDescriptionPlaceholder = "--";
     constexpr const char *kWeatherRangePlaceholder = "--/--";
-    constexpr const char *kMemoPlaceholder = "备忘录服务开发中";
 
     /**
      * @brief 保存一次 HTTP 请求的传输结果。
@@ -193,6 +229,7 @@ namespace
                                  std::string request_body,
                                  size_t maximum_response_bytes = kMaxApiResponseBytes)
     {
+        std::lock_guard<std::mutex> request_lock(backend_http_mutex);
         HttpResponse response;
         auto *network = Board::GetInstance().GetNetwork();
         if (network == nullptr)
@@ -300,6 +337,32 @@ namespace
     }
 
     /**
+     * @brief 解析不要求 data 对象的统一成功响应。
+     * @param body 完整响应正文。
+     * @param message 输出服务端可安全展示的响应说明。
+     * @return JSON 根节点有效且业务 code 为 0 时返回 true。
+     * @details 删除接口成功时 data 为 null，因此不能使用要求 data 必须为对象的 ParseSuccessData。
+     */
+    bool ParseSuccessEnvelope(const std::string &body, std::string &message)
+    {
+        cJSON *root = cJSON_Parse(body.c_str());
+        if (root == nullptr)
+        {
+            message = "平台响应格式无效";
+            return false;
+        }
+        cJSON *message_item = cJSON_GetObjectItemCaseSensitive(root, "message");
+        if (cJSON_IsString(message_item) && message_item->valuestring != nullptr)
+        {
+            message = message_item->valuestring;
+        }
+        cJSON *code = cJSON_GetObjectItemCaseSensitive(root, "code");
+        const bool succeeded = cJSON_IsNumber(code) && code->valueint == 0;
+        cJSON_Delete(root);
+        return succeeded;
+    }
+
+    /**
      * @brief 从 JSON 对象读取一个非空且长度受限的 UTF-8 字符串。
      * @param object 包含目标字段的 JSON 对象。
      * @param name 需要读取的精确字段名。
@@ -395,6 +458,209 @@ namespace
         cJSON_free(json_text);
         cJSON_Delete(root);
         return result;
+    }
+
+    /**
+     * @brief 构建语音创建备忘录使用的固定强类型 JSON。
+     * @param content 用户口述的备忘录正文。
+     * @param remind_at RFC 3339 提醒时间；空字符串表示不设置提醒时间。
+     * @return 包含 content 和 remind_at 的紧凑 JSON；内存不足时返回空字符串。
+     */
+    std::string BuildMemoCreateRequestJson(
+        const std::string &content,
+        const std::string &remind_at)
+    {
+        cJSON *root = cJSON_CreateObject();
+        if (root == nullptr)
+        {
+            return {};
+        }
+        cJSON_AddStringToObject(root, "content", content.c_str());
+        if (remind_at.empty())
+        {
+            cJSON_AddNullToObject(root, "remind_at");
+        }
+        else
+        {
+            cJSON_AddStringToObject(root, "remind_at", remind_at.c_str());
+        }
+        char *json_text = cJSON_PrintUnformatted(root);
+        std::string result = json_text == nullptr ? std::string() : std::string(json_text);
+        cJSON_free(json_text);
+        cJSON_Delete(root);
+        return result;
+    }
+
+    /**
+     * @brief 构建完整修改备忘录使用的固定强类型 JSON。
+     * @param content 修改后的完整正文。
+     * @param remind_at 修改后的 RFC 3339 提醒时间；空字符串表示取消提醒时间。
+     * @param status 修改后的状态，1 和 2 分别表示未完成和已完成。
+     * @return 包含 content、remind_at 和 status 的紧凑 JSON；内存不足时返回空字符串。
+     */
+    std::string BuildMemoUpdateRequestJson(
+        const std::string &content,
+        const std::string &remind_at,
+        int status)
+    {
+        cJSON *root = cJSON_CreateObject();
+        if (root == nullptr)
+        {
+            return {};
+        }
+        cJSON_AddStringToObject(root, "content", content.c_str());
+        if (remind_at.empty())
+        {
+            cJSON_AddNullToObject(root, "remind_at");
+        }
+        else
+        {
+            cJSON_AddStringToObject(root, "remind_at", remind_at.c_str());
+        }
+        cJSON_AddNumberToObject(root, "status", status);
+        char *json_text = cJSON_PrintUnformatted(root);
+        std::string result = json_text == nullptr ? std::string() : std::string(json_text);
+        cJSON_free(json_text);
+        cJSON_Delete(root);
+        return result;
+    }
+
+    /**
+     * @brief 在不拆分 UTF-8 字符的前提下限制返回给模型的文本字节数。
+     * @param value 原始 UTF-8 文本。
+     * @param maximum_bytes 允许保留的最大字节数。
+     * @return 未超限时返回原文；超限时返回完整字符边界内的前缀并追加省略号。
+     */
+    std::string TruncateUtf8(const std::string &value, size_t maximum_bytes)
+    {
+        if (value.size() <= maximum_bytes)
+        {
+            return value;
+        }
+        size_t length = maximum_bytes;
+        while (length > 0
+               && (static_cast<unsigned char>(value[length]) & 0xC0U) == 0x80U)
+        {
+            --length;
+        }
+        return value.substr(0, length) + "…";
+    }
+
+    /**
+     * @brief 校验后端备忘录 ID 可安全拼接到固定 API 路径。
+     * @param memo_id 查询工具返回的后端唯一编号。
+     * @return 长度为 1 至 50 且只包含 ASCII 字母、数字或连字符时返回 true。
+     */
+    bool IsSafeMemoId(const std::string &memo_id)
+    {
+        if (memo_id.empty() || memo_id.size() > 50)
+        {
+            return false;
+        }
+        return std::all_of(memo_id.begin(), memo_id.end(), [](char character)
+        {
+            return (character >= 'a' && character <= 'z')
+                || (character >= 'A' && character <= 'Z')
+                || (character >= '0' && character <= '9')
+                || character == '-';
+        });
+    }
+
+    /**
+     * @brief 从 RFC 3339 文本的固定位置读取十进制日期或时间字段。
+     * @param value 完整提醒时间文本。
+     * @param offset 字段起始字节下标。
+     * @param length 字段固定数字位数。
+     * @param result 成功时接收十进制整数。
+     * @return 指定范围全部为 ASCII 数字时返回 true。
+     */
+    bool ParseFixedDecimal(
+        const std::string &value,
+        size_t offset,
+        size_t length,
+        int &result)
+    {
+        if (offset + length > value.size())
+        {
+            return false;
+        }
+        result = 0;
+        for (size_t index = 0; index < length; ++index)
+        {
+            const char character = value[offset + index];
+            if (character < '0' || character > '9')
+            {
+                return false;
+            }
+            result = result * 10 + (character - '0');
+        }
+        return true;
+    }
+
+    /**
+     * @brief 按当前本地日期格式化屏保备忘录的提醒时间行。
+     * @param remind_at 后端返回的带 +08:00 偏移 RFC 3339 时间。
+     * @param result 成功时接收 HH:mm、MM-dd HH:mm 或 yyyy-MM-dd。
+     * @return 时间结构和字段范围有效时返回 true。
+     * @details 今天只显示时间；今年内显示月日和时间；非今年只显示完整日期。系统时间尚未
+     *          校准时无法判断“今天”和“今年”，此时保守显示完整日期。
+     */
+    bool FormatMemoReminderLine(
+        const std::string &remind_at,
+        std::string &result)
+    {
+        if (remind_at.size() < 16
+            || remind_at[4] != '-'
+            || remind_at[7] != '-'
+            || (remind_at[10] != 'T' && remind_at[10] != ' ')
+            || remind_at[13] != ':')
+        {
+            return false;
+        }
+
+        int year = 0;
+        int month = 0;
+        int day = 0;
+        int hour = 0;
+        int minute = 0;
+        if (!ParseFixedDecimal(remind_at, 0, 4, year)
+            || !ParseFixedDecimal(remind_at, 5, 2, month)
+            || !ParseFixedDecimal(remind_at, 8, 2, day)
+            || !ParseFixedDecimal(remind_at, 11, 2, hour)
+            || !ParseFixedDecimal(remind_at, 14, 2, minute)
+            || year < 2000 || year > 9999
+            || month < 1 || month > 12
+            || day < 1 || day > 31
+            || hour < 0 || hour > 23
+            || minute < 0 || minute > 59)
+        {
+            return false;
+        }
+
+        const time_t now = time(nullptr);
+        struct tm local_time = {};
+        const bool current_time_valid = now >= 1609459200
+            && localtime_r(&now, &local_time) != nullptr;
+        char formatted[20] = {};
+        if (current_time_valid
+            && year == local_time.tm_year + 1900
+            && month == local_time.tm_mon + 1
+            && day == local_time.tm_mday)
+        {
+            std::snprintf(formatted, sizeof(formatted), "%02d:%02d", hour, minute);
+        }
+        else if (current_time_valid && year == local_time.tm_year + 1900)
+        {
+            std::snprintf(
+                formatted, sizeof(formatted), "%02d-%02d %02d:%02d",
+                month, day, hour, minute);
+        }
+        else
+        {
+            std::snprintf(formatted, sizeof(formatted), "%04d-%02d-%02d", year, month, day);
+        }
+        result = formatted;
+        return true;
     }
 
     /**
@@ -598,7 +864,7 @@ void BackendService::Start()
 }
 
 /**
- * @brief 注册设备绑定状态处理、解绑说明和天气设置 MCP 工具。
+ * @brief 注册设备绑定状态处理、天气设置和备忘录 MCP 工具。
  * @param server 设备 MCP 服务器。
  */
 void BackendService::RegisterMcpTools(McpServer &server)
@@ -674,6 +940,154 @@ void BackendService::RegisterMcpTools(McpServer &server)
                     completion(McpToolResult{message, is_error});
                 });
         });
+
+    // 创建备忘录工具接收语音整理后的正文和可选绝对提醒时间，由后端保存到当前设备所属账号。
+    server.AddAsyncTool(
+        "self.tuntun.create_memo",
+        "创建囤囤管家备忘录。用户说“添加备忘”“记一下”“帮我记住”或“提醒我”时必须调用本工具，"
+        "不要回答设备没有备忘录功能。content 只传备忘正文；用户指定时间时，将时间转换为带 +08:00 "
+        "偏移的 RFC 3339 绝对时间传入 remind_at，否则省略 remind_at 或传空字符串。",
+        PropertyList({
+            Property("content", kPropertyTypeString),
+            Property("remind_at", kPropertyTypeString, std::string(""))
+        }),
+        [this](const PropertyList &properties, McpToolCompletion completion)
+        {
+            auto *context = new (std::nothrow) MemoToolTaskContext();
+            if (context == nullptr)
+            {
+                completion(McpToolResult{"设备内存不足，无法创建备忘录。", true});
+                return;
+            }
+            context->service = this;
+            context->operation = MemoToolOperation::Create;
+            context->content = properties["content"].value<std::string>();
+            context->remind_at = properties["remind_at"].value<std::string>();
+            context->completion =
+                [completion = std::move(completion)](const std::string &message,
+                                                     bool is_error) mutable
+                {
+                    completion(McpToolResult{message, is_error});
+                };
+            StartMemoToolTask(context);
+        });
+
+    // 查询工具使用固定数值范围，避免大模型传入无法稳定解析的自然语言筛选值。
+    server.AddAsyncTool(
+        "self.tuntun.query_memos",
+        "查询囤囤管家备忘录详情、完成状态和备忘录 ID。用户询问有哪些备忘，或修改、删除目标的 ID 未知时调用。"
+        "status：0=全部，1=未完成，2=已完成；time_range：0=不限，1=今天，2=明天，3=本周，4=未到期。",
+        PropertyList({
+            Property("status", kPropertyTypeInteger, 1, 0, 2),
+            Property("time_range", kPropertyTypeInteger, 0, 0, 4)
+        }),
+        [this](const PropertyList &properties, McpToolCompletion completion)
+        {
+            auto *context = new (std::nothrow) MemoToolTaskContext();
+            if (context == nullptr)
+            {
+                completion(McpToolResult{"设备内存不足，无法查询备忘录。", true});
+                return;
+            }
+            context->service = this;
+            context->operation = MemoToolOperation::Query;
+            context->status = properties["status"].value<int>();
+            context->time_range = properties["time_range"].value<int>();
+            context->completion =
+                [completion = std::move(completion)](const std::string &message,
+                                                     bool is_error) mutable
+                {
+                    completion(McpToolResult{message, is_error});
+                };
+            StartMemoToolTask(context);
+        });
+
+    // 修改工具要求完整目标值，模型必须先查询 ID 和原记录，防止模糊正文匹配到错误记录。
+    server.AddAsyncTool(
+        "self.tuntun.update_memo",
+        "修改一条囤囤管家备忘录。用户明确要求修改正文、提醒时间或完成状态时调用。若 memo_id 未知，"
+        "必须先调用 self.tuntun.query_memos 获取准确 ID。content、remind_at、status 必须表示修改后的"
+        "完整结果；remind_at 为空表示取消提醒，status：1=未完成，2=已完成。",
+        PropertyList({
+            Property("memo_id", kPropertyTypeString),
+            Property("content", kPropertyTypeString),
+            Property("remind_at", kPropertyTypeString, std::string("")),
+            Property("status", kPropertyTypeInteger, 1, 2)
+        }),
+        [this](const PropertyList &properties, McpToolCompletion completion)
+        {
+            auto *context = new (std::nothrow) MemoToolTaskContext();
+            if (context == nullptr)
+            {
+                completion(McpToolResult{"设备内存不足，无法修改备忘录。", true});
+                return;
+            }
+            context->service = this;
+            context->operation = MemoToolOperation::Update;
+            context->memo_id = properties["memo_id"].value<std::string>();
+            context->content = properties["content"].value<std::string>();
+            context->remind_at = properties["remind_at"].value<std::string>();
+            context->status = properties["status"].value<int>();
+            context->completion =
+                [completion = std::move(completion)](const std::string &message,
+                                                     bool is_error) mutable
+                {
+                    completion(McpToolResult{message, is_error});
+                };
+            StartMemoToolTask(context);
+        });
+
+    // 删除工具只接受查询接口返回的 ID，不支持用正文模糊删除。
+    server.AddAsyncTool(
+        "self.tuntun.delete_memo",
+        "删除一条囤囤管家备忘录。仅在用户明确要求删除时调用；若 memo_id 未知，必须先调用 "
+        "self.tuntun.query_memos 获取准确 ID，禁止猜测或使用备忘录正文代替 ID。",
+        PropertyList({Property("memo_id", kPropertyTypeString)}),
+        [this](const PropertyList &properties, McpToolCompletion completion)
+        {
+            auto *context = new (std::nothrow) MemoToolTaskContext();
+            if (context == nullptr)
+            {
+                completion(McpToolResult{"设备内存不足，无法删除备忘录。", true});
+                return;
+            }
+            context->service = this;
+            context->operation = MemoToolOperation::Delete;
+            context->memo_id = properties["memo_id"].value<std::string>();
+            context->completion =
+                [completion = std::move(completion)](const std::string &message,
+                                                     bool is_error) mutable
+                {
+                    completion(McpToolResult{message, is_error});
+                };
+            StartMemoToolTask(context);
+        });
+
+    // 统计工具直接返回后端同一时刻计算的总数和常用时间范围数量，避免模型自行统计分页结果。
+    server.AddAsyncTool(
+        "self.tuntun.get_memo_statistics",
+        "统计囤囤管家备忘录数量，返回全部、未到期、今天、明天和本周数量。用户询问有多少条备忘录，"
+        "或今天、明天、本周是否有备忘录时调用，不要根据分页查询结果自行计算。",
+        PropertyList(),
+        [this](const PropertyList &properties, McpToolCompletion completion)
+        {
+            (void)properties;
+            auto *context = new (std::nothrow) MemoToolTaskContext();
+            if (context == nullptr)
+            {
+                completion(McpToolResult{"设备内存不足，无法统计备忘录。", true});
+                return;
+            }
+            context->service = this;
+            context->operation = MemoToolOperation::Statistics;
+            context->completion =
+                [completion = std::move(completion)](const std::string &message,
+                                                     bool is_error) mutable
+                {
+                    completion(McpToolResult{message, is_error});
+                };
+            StartMemoToolTask(context);
+        });
 }
 
 /**
@@ -694,6 +1108,7 @@ void BackendService::OnNetworkConnected()
     if (screensaver_active_.load())
     {
         StartWeatherSync(false);
+        StartMemoSync(false);
     }
     StartMcpManifestSync();
 }
@@ -705,6 +1120,7 @@ void BackendService::OnNetworkDisconnected()
 {
     network_connected_.store(false);
     ShowWeatherStatusIfUnavailable("等待网络连接");
+    ShowMemoStatusIfUnavailable("等待网络连接");
 }
 
 /**
@@ -1178,7 +1594,659 @@ void BackendService::ClearDynamicTools()
 }
 
 /**
- * @brief 在屏保显示期间使用最近缓存并按需同步天气，同时保留备忘录占位内容。
+ * @brief 校验语音参数并创建单个备忘录后台任务。
+ * @param context 调用方分配且由本方法接管的任务上下文。
+ */
+void BackendService::StartMemoToolTask(MemoToolTaskContext *context)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+    if (!network_connected_.load())
+    {
+        FinishToolRequest(context->completion, "设备网络尚未连接，暂时无法操作备忘录。", true);
+        delete context;
+        return;
+    }
+    if ((context->operation == MemoToolOperation::Create
+         || context->operation == MemoToolOperation::Update)
+        && (context->content.empty()
+            || context->content.size() > kMemoContentMaxBytes
+            || context->content.find_first_not_of(" \t\r\n") == std::string::npos))
+    {
+        FinishToolRequest(context->completion, "备忘录内容为空或过长，请重新说明。", true);
+        delete context;
+        return;
+    }
+    if ((context->operation == MemoToolOperation::Update
+         || context->operation == MemoToolOperation::Delete)
+        && !IsSafeMemoId(context->memo_id))
+    {
+        FinishToolRequest(context->completion, "备忘录编号无效，请先查询目标备忘录。", true);
+        delete context;
+        return;
+    }
+    if ((context->operation == MemoToolOperation::Create
+         || context->operation == MemoToolOperation::Update)
+        && context->remind_at.size() > kMemoReminderTimeMaxBytes)
+    {
+        FinishToolRequest(context->completion, "备忘录提醒时间格式无效，请重新说明。", true);
+        delete context;
+        return;
+    }
+    if (context->operation == MemoToolOperation::Update
+        && context->status != 1 && context->status != 2)
+    {
+        FinishToolRequest(context->completion, "备忘录状态无效，请重新查询目标备忘录。", true);
+        delete context;
+        return;
+    }
+
+    bool has_device_credential = false;
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        has_device_credential = !device_access_token_.empty();
+    }
+    if (!has_device_credential)
+    {
+        FinishToolRequest(context->completion, "设备尚未绑定囤囤管家，无法操作备忘录。", true);
+        delete context;
+        return;
+    }
+
+    bool task_busy = false;
+    bool task_start_failed = false;
+    {
+        std::lock_guard<std::mutex> lock(memo_mutex_);
+        if (memo_task_handle_ != nullptr)
+        {
+            task_busy = true;
+        }
+        else
+        {
+            const BaseType_t created = xTaskCreate(
+                MemoToolTaskEntry, "memo_tool", kMemoTaskStackSize, context,
+                kMemoTaskPriority, &memo_task_handle_);
+            if (created != pdPASS)
+            {
+                memo_task_handle_ = nullptr;
+                task_start_failed = true;
+            }
+        }
+    }
+
+    if (!task_busy && !task_start_failed)
+    {
+        return;
+    }
+    FinishToolRequest(
+        context->completion,
+        task_busy ? "备忘录服务正在处理其他请求，请稍后再试。"
+                  : "设备内存不足，无法启动备忘录任务。",
+        true);
+    delete context;
+}
+
+/**
+ * @brief FreeRTOS 备忘录语音任务入口，确保上下文和任务占用标志始终释放。
+ * @param context MemoToolTaskContext 指针。
+ */
+void BackendService::MemoToolTaskEntry(void *context)
+{
+    std::unique_ptr<MemoToolTaskContext> task_context(
+        static_cast<MemoToolTaskContext *>(context));
+    BackendService *service = task_context->service;
+    try
+    {
+        service->RunMemoToolTask(*task_context);
+    }
+    catch (const std::exception &exception)
+    {
+        ESP_LOGE(kTag, "备忘录语音任务异常，原因=%s", exception.what());
+        FinishToolRequest(task_context->completion, "备忘录操作失败，请稍后重试。", true);
+    }
+    catch (...)
+    {
+        ESP_LOGE(kTag, "备忘录语音任务发生未知异常");
+        FinishToolRequest(task_context->completion, "备忘录操作失败，请稍后重试。", true);
+    }
+    if (task_context->completion)
+    {
+        FinishToolRequest(task_context->completion, "备忘录操作未能完成，请稍后重试。", true);
+    }
+    {
+        std::lock_guard<std::mutex> lock(service->memo_mutex_);
+        service->memo_task_handle_ = nullptr;
+    }
+    vTaskDelete(nullptr);
+}
+
+/**
+ * @brief 调用后端备忘录创建、列表、修改、删除或统计接口，并生成中文 MCP 结果。
+ * @param context 已通过固件输入边界校验的任务上下文。
+ */
+void BackendService::RunMemoToolTask(MemoToolTaskContext &context)
+{
+    std::string access_token;
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        access_token = device_access_token_;
+    }
+    if (access_token.empty())
+    {
+        FinishToolRequest(context.completion, "设备尚未绑定囤囤管家，无法操作备忘录。", true);
+        return;
+    }
+
+    if (context.operation == MemoToolOperation::Create)
+    {
+        const std::string request_body = BuildMemoCreateRequestJson(
+            context.content, context.remind_at);
+        if (request_body.empty())
+        {
+            FinishToolRequest(context.completion, "设备内存不足，无法生成备忘录请求。", true);
+            return;
+        }
+        const HttpResponse response = SendJsonRequest(
+            "POST", kMemosPath, access_token, request_body, kMemoResponseMaxBytes);
+        cJSON *root = nullptr;
+        cJSON *data = nullptr;
+        std::string response_message;
+        bool parsed = response.transport_succeeded
+            && response.status_code == 201
+            && ParseSuccessData(response.body, &root, &data, response_message);
+        std::string memo_id;
+        std::string saved_content;
+        if (parsed)
+        {
+            parsed = ReadBoundedString(data, "id", 50, memo_id)
+                && IsSafeMemoId(memo_id)
+                && ReadBoundedString(
+                    data, "content", kMemoContentMaxBytes, saved_content);
+        }
+        cJSON_Delete(root);
+        if (!parsed)
+        {
+            ESP_LOGW(kTag, "创建备忘录失败，HTTP 状态码=%d", response.status_code);
+            FinishToolRequest(
+                context.completion,
+                response_message.empty() ? "创建备忘录失败，请稍后重试。" : response_message,
+                true);
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(memo_mutex_);
+            memo_snapshot_.valid = false;
+            memo_snapshot_.contents.clear();
+            memo_last_success_us_ = 0;
+        }
+        std::string result = "备忘录已创建，ID：" + memo_id + "，内容："
+            + TruncateUtf8(saved_content, kMemoQueryItemMaxBytes);
+        if (!context.remind_at.empty())
+        {
+            result += "。提醒时间：" + context.remind_at;
+        }
+        ESP_LOGI(kTag, "语音创建备忘录成功");
+        FinishToolRequest(context.completion, result, false);
+        return;
+    }
+
+    if (context.operation == MemoToolOperation::Query)
+    {
+        std::string path = std::string(kMemosPath) + "?page_index=1&page_size=5";
+        if (context.status != 0)
+        {
+            path += "&status=" + std::to_string(context.status);
+        }
+        if (context.time_range != 0)
+        {
+            path += "&time_range=" + std::to_string(context.time_range);
+        }
+        const HttpResponse response = SendJsonRequest(
+            "GET", path.c_str(), access_token, "", kMemoResponseMaxBytes);
+        cJSON *root = nullptr;
+        cJSON *data = nullptr;
+        std::string response_message;
+        bool parsed = response.transport_succeeded
+            && response.status_code == 200
+            && ParseSuccessData(response.body, &root, &data, response_message);
+        uint32_t total_count = 0;
+        cJSON *records = nullptr;
+        if (parsed)
+        {
+            records = cJSON_GetObjectItemCaseSensitive(data, "records");
+            parsed = ReadUnsignedInteger(
+                         cJSON_GetObjectItemCaseSensitive(data, "total_count"),
+                         true, total_count)
+                && cJSON_IsArray(records)
+                && cJSON_GetArraySize(records) <= static_cast<int>(kMaximumScreensaverMemoCount);
+        }
+
+        std::string result;
+        if (parsed && total_count == 0)
+        {
+            result = "没有找到符合条件的备忘录。";
+        }
+        else if (parsed)
+        {
+            const int record_count = cJSON_GetArraySize(records);
+            if (record_count == 0)
+            {
+                parsed = false;
+            }
+            else
+            {
+                result = "共找到" + std::to_string(total_count) + "条备忘录，以下是前"
+                    + std::to_string(record_count) + "条：";
+                for (int index = 0; index < record_count && parsed; ++index)
+                {
+                    cJSON *record = cJSON_GetArrayItem(records, index);
+                    std::string memo_id;
+                    std::string content;
+                    uint32_t memo_status = 0;
+                    parsed = cJSON_IsObject(record)
+                        && ReadBoundedString(record, "id", 50, memo_id)
+                        && IsSafeMemoId(memo_id)
+                        && ReadBoundedString(
+                            record, "content", kMemoContentMaxBytes, content)
+                        && ReadUnsignedInteger(
+                            cJSON_GetObjectItemCaseSensitive(record, "status"),
+                            false, memo_status)
+                        && (memo_status == 1 || memo_status == 2);
+                    if (!parsed)
+                    {
+                        break;
+                    }
+                    result += std::to_string(index + 1) + ". ID：" + memo_id
+                        + "，内容：" + TruncateUtf8(content, kMemoQueryItemMaxBytes)
+                        + (memo_status == 1 ? "，状态：未完成" : "，状态：已完成");
+                    cJSON *remind_at = cJSON_GetObjectItemCaseSensitive(record, "remind_at");
+                    if (cJSON_IsString(remind_at)
+                        && remind_at->valuestring != nullptr
+                        && std::strlen(remind_at->valuestring) <= kMemoReminderTimeMaxBytes)
+                    {
+                        result += "，提醒时间：";
+                        result += remind_at->valuestring;
+                    }
+                    result += "；";
+                }
+            }
+        }
+        cJSON_Delete(root);
+        if (!parsed || result.size() > kMemoQueryResultMaxBytes)
+        {
+            ESP_LOGW(kTag, "查询备忘录失败，HTTP 状态码=%d", response.status_code);
+            FinishToolRequest(
+                context.completion,
+                response_message.empty() ? "查询备忘录失败，请稍后重试。" : response_message,
+                true);
+            return;
+        }
+        ESP_LOGI(kTag, "语音查询备忘录成功，匹配数量=%u", static_cast<unsigned>(total_count));
+        FinishToolRequest(context.completion, result, false);
+        return;
+    }
+
+    if (context.operation == MemoToolOperation::Update)
+    {
+        const std::string request_body = BuildMemoUpdateRequestJson(
+            context.content, context.remind_at, context.status);
+        if (request_body.empty())
+        {
+            FinishToolRequest(context.completion, "设备内存不足，无法生成备忘录修改请求。", true);
+            return;
+        }
+        const std::string path = std::string(kMemosPath) + "/" + context.memo_id;
+        const HttpResponse response = SendJsonRequest(
+            "PUT", path.c_str(), access_token, request_body, kMemoResponseMaxBytes);
+        cJSON *root = nullptr;
+        cJSON *data = nullptr;
+        std::string response_message;
+        bool parsed = response.transport_succeeded
+            && response.status_code == 200
+            && ParseSuccessData(response.body, &root, &data, response_message);
+        std::string saved_id;
+        std::string saved_content;
+        if (parsed)
+        {
+            parsed = ReadBoundedString(data, "id", 50, saved_id)
+                && saved_id == context.memo_id
+                && ReadBoundedString(
+                    data, "content", kMemoContentMaxBytes, saved_content);
+        }
+        cJSON_Delete(root);
+        if (!parsed)
+        {
+            ESP_LOGW(kTag, "修改备忘录失败，HTTP 状态码=%d", response.status_code);
+            FinishToolRequest(
+                context.completion,
+                response_message.empty() ? "修改备忘录失败，请稍后重试。" : response_message,
+                true);
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(memo_mutex_);
+            memo_snapshot_.valid = false;
+            memo_snapshot_.contents.clear();
+            memo_last_success_us_ = 0;
+        }
+        std::string result = "备忘录已修改，ID：" + saved_id + "，内容："
+            + TruncateUtf8(saved_content, kMemoQueryItemMaxBytes);
+        if (!context.remind_at.empty())
+        {
+            result += "，提醒时间：" + context.remind_at;
+        }
+        result += context.status == 2 ? "，状态：已完成。" : "，状态：未完成。";
+        ESP_LOGI(kTag, "语音修改备忘录成功");
+        FinishToolRequest(context.completion, result, false);
+        return;
+    }
+
+    if (context.operation == MemoToolOperation::Delete)
+    {
+        const std::string path = std::string(kMemosPath) + "/" + context.memo_id;
+        const HttpResponse response = SendJsonRequest(
+            "DELETE", path.c_str(), access_token, "", kMemoResponseMaxBytes);
+        std::string response_message;
+        const bool parsed = response.transport_succeeded
+            && response.status_code == 200
+            && ParseSuccessEnvelope(response.body, response_message);
+        if (!parsed)
+        {
+            ESP_LOGW(kTag, "删除备忘录失败，HTTP 状态码=%d", response.status_code);
+            FinishToolRequest(
+                context.completion,
+                response_message.empty() ? "删除备忘录失败，请稍后重试。" : response_message,
+                true);
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(memo_mutex_);
+            memo_snapshot_.valid = false;
+            memo_snapshot_.contents.clear();
+            memo_last_success_us_ = 0;
+        }
+        ESP_LOGI(kTag, "语音删除备忘录成功");
+        FinishToolRequest(
+            context.completion,
+            "备忘录已删除，ID：" + context.memo_id + "。",
+            false);
+        return;
+    }
+
+    const HttpResponse response = SendJsonRequest(
+        "GET", kMemoStatisticsPath, access_token, "", kMemoResponseMaxBytes);
+    cJSON *root = nullptr;
+    cJSON *data = nullptr;
+    std::string response_message;
+    bool parsed = response.transport_succeeded
+        && response.status_code == 200
+        && ParseSuccessData(response.body, &root, &data, response_message);
+    uint32_t total_count = 0;
+    uint32_t unexpired_count = 0;
+    uint32_t today_count = 0;
+    uint32_t tomorrow_count = 0;
+    uint32_t this_week_count = 0;
+    if (parsed)
+    {
+        parsed = ReadUnsignedInteger(
+                     cJSON_GetObjectItemCaseSensitive(data, "total_count"), true, total_count)
+            && ReadUnsignedInteger(
+                cJSON_GetObjectItemCaseSensitive(data, "unexpired_count"), true, unexpired_count)
+            && ReadUnsignedInteger(
+                cJSON_GetObjectItemCaseSensitive(data, "today_count"), true, today_count)
+            && ReadUnsignedInteger(
+                cJSON_GetObjectItemCaseSensitive(data, "tomorrow_count"), true, tomorrow_count)
+            && ReadUnsignedInteger(
+                cJSON_GetObjectItemCaseSensitive(data, "this_week_count"), true, this_week_count);
+    }
+    cJSON_Delete(root);
+    if (!parsed)
+    {
+        ESP_LOGW(kTag, "统计备忘录失败，HTTP 状态码=%d", response.status_code);
+        FinishToolRequest(
+            context.completion,
+            response_message.empty() ? "统计备忘录失败，请稍后重试。" : response_message,
+            true);
+        return;
+    }
+
+    std::string result = "备忘录统计：全部" + std::to_string(total_count)
+        + "条，未到期" + std::to_string(unexpired_count)
+        + "条，今天" + std::to_string(today_count)
+        + "条，明天" + std::to_string(tomorrow_count)
+        + "条，本周" + std::to_string(this_week_count) + "条。";
+    ESP_LOGI(kTag, "语音统计备忘录成功");
+    FinishToolRequest(context.completion, result, false);
+}
+
+/**
+ * @brief 在屏保备忘录缓存需要更新时创建一个临时 FreeRTOS Worker。
+ * @param force_refresh true 忽略最近成功时间；false 遵守 5 分钟本地新鲜周期。
+ */
+void BackendService::StartMemoSync(bool force_refresh)
+{
+    if (!screensaver_active_.load() || !network_connected_.load())
+    {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        if (device_access_token_.empty())
+        {
+            return;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(weather_mutex_);
+        if (weather_task_handle_ != nullptr)
+        {
+            return;
+        }
+    }
+
+    bool task_start_failed = false;
+    {
+        std::lock_guard<std::mutex> lock(memo_mutex_);
+        if (memo_task_handle_ != nullptr)
+        {
+            return;
+        }
+        const int64_t now_us = esp_timer_get_time();
+        if (!force_refresh && memo_snapshot_.valid && memo_last_success_us_ > 0
+            && now_us - memo_last_success_us_ < kMemoRefreshIntervalUs)
+        {
+            return;
+        }
+        const BaseType_t created = xTaskCreate(
+            MemoSyncTaskEntry, "memo_sync", kMemoTaskStackSize, this,
+            kMemoTaskPriority, &memo_task_handle_);
+        if (created != pdPASS)
+        {
+            memo_task_handle_ = nullptr;
+            task_start_failed = true;
+        }
+    }
+    if (task_start_failed)
+    {
+        ESP_LOGE(kTag, "内存不足，无法启动备忘录同步任务");
+        ShowMemoStatusIfUnavailable("备忘录任务启动失败");
+    }
+}
+
+/**
+ * @brief FreeRTOS 屏保备忘录 Worker 入口，捕获异常并始终释放任务占用标志。
+ * @param context 指向 BackendService 单例。
+ */
+void BackendService::MemoSyncTaskEntry(void *context)
+{
+    auto *service = static_cast<BackendService *>(context);
+    try
+    {
+        service->RunMemoSync();
+    }
+    catch (const std::exception &exception)
+    {
+        ESP_LOGE(kTag, "备忘录同步任务异常，原因=%s", exception.what());
+        service->ShowMemoStatusIfUnavailable("备忘录同步失败");
+    }
+    catch (...)
+    {
+        ESP_LOGE(kTag, "备忘录同步任务发生未知异常");
+        service->ShowMemoStatusIfUnavailable("备忘录同步失败");
+    }
+    {
+        std::lock_guard<std::mutex> lock(service->memo_mutex_);
+        service->memo_task_handle_ = nullptr;
+    }
+    vTaskDelete(nullptr);
+}
+
+/**
+ * @brief 获取屏保前 5 条未完成备忘录并更新运行内存缓存。
+ */
+void BackendService::RunMemoSync()
+{
+    if (!screensaver_active_.load() || !network_connected_.load())
+    {
+        return;
+    }
+    std::string access_token;
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        access_token = device_access_token_;
+    }
+    if (access_token.empty())
+    {
+        ShowMemoStatusIfUnavailable("请先绑定囤囤管家");
+        return;
+    }
+
+    const HttpResponse response = SendJsonRequest(
+        "GET", kMemoScreensaverPath, access_token, "", kMemoResponseMaxBytes);
+    cJSON *root = nullptr;
+    cJSON *data = nullptr;
+    std::string response_message;
+    bool parsed = response.transport_succeeded
+        && response.status_code == 200
+        && ParseSuccessData(response.body, &root, &data, response_message);
+    MemoSnapshot snapshot;
+    cJSON *records = nullptr;
+    if (parsed)
+    {
+        records = cJSON_GetObjectItemCaseSensitive(data, "records");
+        parsed = cJSON_IsArray(records)
+            && cJSON_GetArraySize(records) <= static_cast<int>(kMaximumScreensaverMemoCount);
+    }
+    if (parsed)
+    {
+        const int record_count = cJSON_GetArraySize(records);
+        snapshot.contents.reserve(static_cast<size_t>(record_count));
+        for (int index = 0; index < record_count; ++index)
+        {
+            cJSON *record = cJSON_GetArrayItem(records, index);
+            std::string content;
+            if (!cJSON_IsObject(record)
+                || !ReadBoundedString(record, "content", kMemoContentMaxBytes, content))
+            {
+                parsed = false;
+                break;
+            }
+
+            cJSON *remind_at_item = cJSON_GetObjectItemCaseSensitive(record, "remind_at");
+            std::string reminder_line;
+            if (cJSON_IsNull(remind_at_item))
+            {
+                reminder_line = "未设置时间";
+            }
+            else
+            {
+                std::string remind_at;
+                if (!ReadBoundedString(
+                        record, "remind_at", kMemoReminderTimeMaxBytes, remind_at)
+                    || !FormatMemoReminderLine(remind_at, reminder_line))
+                {
+                    parsed = false;
+                    break;
+                }
+            }
+            snapshot.contents.push_back(
+                reminder_line + "\n" + std::move(content));
+        }
+    }
+    cJSON_Delete(root);
+
+    if (!parsed)
+    {
+        ESP_LOGW(kTag, "备忘录同步失败，HTTP 状态码=%d", response.status_code);
+        ShowMemoStatusIfUnavailable(
+            response.status_code == 401 || response.status_code == 403
+                ? "设备认证已失效"
+                : "备忘录同步失败");
+        return;
+    }
+
+    snapshot.valid = true;
+    {
+        std::lock_guard<std::mutex> lock(memo_mutex_);
+        memo_snapshot_ = snapshot;
+        memo_last_success_us_ = esp_timer_get_time();
+    }
+    if (screensaver_active_.load())
+    {
+        ShowMemoSnapshot(snapshot);
+    }
+    ESP_LOGI(kTag, "备忘录同步成功，显示数量=%u",
+             static_cast<unsigned>(snapshot.contents.size()));
+}
+
+/**
+ * @brief 把有效备忘录快照写入当前 LCD 表盘。
+ * @param snapshot 已完成字段和数量校验的运行内存快照。
+ */
+void BackendService::ShowMemoSnapshot(const MemoSnapshot &snapshot)
+{
+    if (!screensaver_active_.load() || !snapshot.valid)
+    {
+        return;
+    }
+    Display *display = Board::GetInstance().GetDisplay();
+    if (display != nullptr)
+    {
+        display->SetScreensaverMemos(snapshot.contents);
+    }
+}
+
+/**
+ * @brief 没有历史备忘录可保留时，向屏保备忘录区域写入固定状态文本。
+ * @param message 加载、网络、认证或错误状态。
+ */
+void BackendService::ShowMemoStatusIfUnavailable(const std::string &message)
+{
+    if (!screensaver_active_.load())
+    {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(memo_mutex_);
+        if (memo_snapshot_.valid)
+        {
+            return;
+        }
+    }
+    Display *display = Board::GetInstance().GetDisplay();
+    if (display != nullptr)
+    {
+        display->SetScreensaverMemos({message});
+    }
+}
+
+/**
+ * @brief 在屏保显示期间使用最近缓存并按需同步天气和备忘录。
  * @param active true 表示屏保可见；false 表示屏保已经退出。
  */
 void BackendService::OnScreensaverChanged(bool active)
@@ -1194,7 +2262,35 @@ void BackendService::OnScreensaverChanged(bool active)
     {
         return;
     }
-    display->SetScreensaverMemos({kMemoPlaceholder});
+    MemoSnapshot memo_snapshot;
+    {
+        std::lock_guard<std::mutex> lock(memo_mutex_);
+        memo_snapshot = memo_snapshot_;
+    }
+    if (memo_snapshot.valid)
+    {
+        ShowMemoSnapshot(memo_snapshot);
+    }
+    else
+    {
+        bool has_device_credential = false;
+        {
+            std::lock_guard<std::mutex> lock(binding_mutex_);
+            has_device_credential = !device_access_token_.empty();
+        }
+        if (!has_device_credential)
+        {
+            ShowMemoStatusIfUnavailable("请先绑定囤囤管家");
+        }
+        else if (!network_connected_.load())
+        {
+            ShowMemoStatusIfUnavailable("等待网络连接");
+        }
+        else
+        {
+            ShowMemoStatusIfUnavailable("备忘录加载中");
+        }
+    }
 
     WeatherSnapshot snapshot;
     {
@@ -1226,6 +2322,7 @@ void BackendService::OnScreensaverChanged(bool active)
         }
     }
     StartWeatherSync(false);
+    StartMemoSync(false);
 }
 
 /**
@@ -1305,6 +2402,13 @@ void BackendService::WeatherTaskEntry(void *context)
         std::lock_guard<std::mutex> lock(service->weather_mutex_);
         service->weather_task_handle_ = nullptr;
     }
+    if (service->screensaver_active_.load())
+    {
+        Application::GetInstance().Schedule([service]()
+        {
+            service->StartMemoSync(false);
+        });
+    }
     vTaskDelete(nullptr);
 }
 
@@ -1316,6 +2420,7 @@ void BackendService::WeatherTimerCallback(void *context)
 {
     auto *service = static_cast<BackendService *>(context);
     service->StartWeatherSync(false);
+    service->StartMemoSync(false);
 }
 
 /**
@@ -1783,6 +2888,7 @@ void BackendService::BindingTaskEntry(void *context)
             if (service->screensaver_active_.load())
             {
                 service->StartWeatherSync(true);
+                service->StartMemoSync(true);
             }
         });
     }

@@ -153,7 +153,8 @@ constexpr int kScreensaverMemoWidth = 228;
 
 /**
  * @brief 备忘录固定显示的行数。
- * @details 三行以内保持静止，超过三行后在固定视口内向上滚动，不启用左右滚动。
+ * @details 结构化备忘录固定使用一行时间和两行正文，第三行末尾按需显示省略号；加载状态等
+ *          兼容文本仍可使用原有纵向滚动，不启用左右滚动。
  */
 constexpr int kScreensaverMemoVisibleLines = 3;
 
@@ -194,8 +195,8 @@ static_assert(kScreensaverMemoViewportHeight % kScreensaverMemoVisibleLines == 0
               "备忘录视口高度必须能够被三条裁切带整除");
 
 /**
- * @brief 超长备忘录向上滚动的目标速度，单位为物理像素每秒。
- * @details 直接复用普通对话字幕的速度，使两个页面的文字移动节奏保持一致。
+ * @brief 兼容超长状态文本向上滚动的目标速度，单位为物理像素每秒。
+ * @details 结构化备忘录不会使用该值；兼容文本继续复用普通对话字幕速度。
  */
 constexpr int kScreensaverMemoScrollPixelsPerSecond =
     kRoundSubtitleScrollPixelsPerSecond;
@@ -1982,10 +1983,9 @@ void LcdDisplay::SetScreensaverMemos(const std::vector<std::string>& memos) {
 }
 
 /**
- * @brief 刷新当前备忘录文本并重新计算三行视口的纵向滚动。
- * @details 标签始终使用自动换行，不再按字符数量启用横向滚动。文本替换后立即终止上一条
- *          备忘录的动画并从顶部重新排版，随后由 UpdateScreensaverMemoScroll 根据实际高度
- *          决定静止居中或向上滚动。
+ * @brief 刷新当前备忘录文本并重新计算三行视口布局。
+ * @details 结构化屏保文本使用“时间换行正文”格式，首行固定显示时间，正文最多显示两行并以
+ *          省略号截断。没有时间首行的加载状态和兼容文本继续使用原有高度判断。
  */
 void LcdDisplay::UpdateScreensaverMemo() {
     if (screensaver_memo_labels_[0] == nullptr) {
@@ -2011,11 +2011,10 @@ void LcdDisplay::UpdateScreensaverMemo() {
 }
 
 /**
- * @brief 根据当前备忘录的真实排版高度配置三行视口内的纵向滚动动画。
- * @details 方法先删除三条裁切带中的旧动画并恢复顶部位置，再把镜像标签设置为内容自适应
- *          高度。三行以内的文本在视口中垂直居中；超过三行时，三个标签以与普通字幕相同
- *          的节奏同步向上移动。多条备忘录在首屏停留、滚动和末屏停留完成后立即切换，
- *          不再为了凑满固定周期而产生额外停顿。
+ * @brief 根据当前备忘录文本类型配置固定三行或兼容滚动布局。
+ * @details 包含显式换行的结构化备忘录固定占用三行并在第三行末尾省略，保证时间始终位于
+ *          第一行、正文最多两行。没有显式时间行的状态文本仍按实际高度居中；兼容的超长文本
+ *          继续使用原有纵向滚动逻辑。
  */
 void LcdDisplay::UpdateScreensaverMemoScroll() {
     lv_obj_t* measurement_label = screensaver_memo_labels_[0];
@@ -2036,6 +2035,29 @@ void LcdDisplay::UpdateScreensaverMemoScroll() {
 
     const int text_scale =
         lv_obj_get_style_transform_scale_y_safe(measurement_label, LV_PART_MAIN);
+    const char* measurement_text = lv_label_get_text(measurement_label);
+    const bool has_reminder_line =
+        measurement_text != nullptr && std::strchr(measurement_text, '\n') != nullptr;
+    if (has_reminder_line) {
+        const int logical_viewport_height =
+            (kScreensaverMemoViewportHeight * 256 + text_scale - 1) / text_scale;
+        for (int row = 0; row < kScreensaverMemoVisibleLines; ++row) {
+            lv_obj_t* memo_label = screensaver_memo_labels_[row];
+            if (memo_label == nullptr) {
+                continue;
+            }
+            lv_label_set_long_mode(memo_label, LV_LABEL_LONG_DOT);
+            lv_obj_set_height(memo_label, logical_viewport_height);
+            lv_obj_align(memo_label, LV_ALIGN_TOP_MID, 0,
+                         -row * kScreensaverMemoRowHeight);
+            lv_obj_update_layout(memo_label);
+        }
+        if (screensaver_memo_timer_ != nullptr) {
+            lv_timer_set_period(screensaver_memo_timer_, 8000);
+        }
+        return;
+    }
+
     const int logical_content_height = lv_obj_get_height(measurement_label);
     const int visible_content_height =
         (logical_content_height * text_scale + 255) / 256;

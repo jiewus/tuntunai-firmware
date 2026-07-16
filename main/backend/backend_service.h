@@ -10,19 +10,20 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <vector>
 
 class McpServer;
 
 /**
  * @file backend_service.h
- * @brief 囤囤管家业务 API 的设备绑定、屏保天气、动态 MCP 和未接入业务占位能力入口。
+ * @brief 囤囤管家业务 API 的设备绑定、天气、备忘录和动态 MCP 能力入口。
  */
 
 /**
  * @brief 管理固件与囤囤管家后端之间的异步业务流程。
  *
- * 当前版本实现设备绑定码申请、状态轮询、设备 Token 领取、绑定页面联动、屏保天气同步，
- * 以及动态 MCP 工具清单同步和代理执行。备忘录和主动提醒仍保留占位内容。
+ * 当前版本实现设备绑定码申请、状态轮询、设备 Token 领取、绑定页面联动、屏保天气与备忘录
+ * 同步，以及内置和动态 MCP 工具执行。主动语音提醒不属于本阶段范围。
  */
 class BackendService {
 public:
@@ -39,7 +40,7 @@ public:
     void Start();
 
     /**
-     * @brief 注册由小智大模型调用的设备绑定工具。
+     * @brief 注册由小智大模型调用的设备绑定、天气和备忘录工具。
      * @param server 已完成基础工具初始化的设备 MCP 服务器。
      */
     void RegisterMcpTools(McpServer& server);
@@ -63,7 +64,7 @@ public:
     void OnMcpDisconnected();
 
     /**
-     * @brief 根据屏保可见状态启停按需天气同步，并维护备忘录占位内容。
+     * @brief 根据屏保可见状态启停按需天气和备忘录同步。
      * @param active true 表示屏保已经显示；false 表示屏保已经退出。
      * @details 进入屏保后优先显示内存中的最近天气；缓存过期且网络与设备凭据可用时创建
      *          单次天气任务。退出屏保后不再创建请求，已经发出的请求允许安全收尾并缓存结果。
@@ -95,6 +96,26 @@ private:
     using DynamicToolCompletion = std::function<void(
         const std::string& message,
         bool is_error)>;
+
+    /**
+     * @brief 备忘录语音工具完成后的轻量结果回调。
+     * @param message 返回给小智模型的中文创建、查询、修改、删除或统计结果。
+     * @param is_error true 表示备忘录操作未成功完成。
+     */
+    using MemoCompletion = std::function<void(
+        const std::string& message,
+        bool is_error)>;
+
+    /**
+     * @brief 定义共享备忘录 Worker 当前执行的语音操作。
+     */
+    enum class MemoToolOperation : uint8_t {
+        Create,
+        Query,
+        Update,
+        Delete,
+        Statistics
+    };
 
     /**
      * @brief 传递给独立绑定任务的启动参数。
@@ -159,6 +180,44 @@ private:
     };
 
     /**
+     * @brief 传递给备忘录语音工具 Worker 的强类型调用参数。
+     */
+    struct MemoToolTaskContext {
+        /**
+         * @brief 指向固件生命周期内唯一的后端服务实例。
+         */
+        BackendService* service = nullptr;
+        /**
+         * @brief 本次需要执行的创建、查询或统计操作。
+         */
+        MemoToolOperation operation = MemoToolOperation::Query;
+        /**
+         * @brief 创建或修改操作使用的备忘录正文。
+         */
+        std::string content;
+        /**
+         * @brief 修改或删除操作使用的后端备忘录唯一编号。
+         */
+        std::string memo_id;
+        /**
+         * @brief 创建或修改操作使用的 RFC 3339 提醒时间；空字符串表示没有提醒时间。
+         */
+        std::string remind_at;
+        /**
+         * @brief 查询或修改使用的状态值；查询时 0 表示全部，1、2 表示未完成、已完成。
+         */
+        int status = 1;
+        /**
+         * @brief 查询操作使用的时间范围；0 至 4 分别表示不限、今天、明天、本周、未到期。
+         */
+        int time_range = 0;
+        /**
+         * @brief HTTP 操作结束后回复原始 MCP tools/call 的一次性回调。
+         */
+        MemoCompletion completion;
+    };
+
+    /**
      * @brief 保存最近一次成功同步且已经完成边界校验的屏保天气。
      * @details 快照只保存在运行内存中，不周期写入 Flash，避免天气刷新造成 NVS 擦写损耗。
      */
@@ -187,6 +246,20 @@ private:
          * @brief 当天最高摄氏温度。
          */
         int high_temperature = 0;
+    };
+
+    /**
+     * @brief 保存最近一次成功同步且已经完成边界校验的屏保备忘录。
+     */
+    struct MemoSnapshot {
+        /**
+         * @brief true 表示 contents 是后端最近一次成功返回的权威列表，包括空列表。
+         */
+        bool valid = false;
+        /**
+         * @brief 已按提醒时间排序的屏保文本，首行为时间，后续为正文，最多保存前 5 条。
+         */
+        std::vector<std::string> contents;
     };
 
     /**
@@ -309,6 +382,54 @@ private:
      * @details 仅在设备认证明确失效时调用；普通断网或服务器错误继续保留最近成功清单。
      */
     void ClearDynamicTools();
+
+    /**
+     * @brief 创建一个异步备忘录语音操作任务。
+     * @param context 包含操作类型、输入参数和最终结果回调的任务上下文。
+     * @details 屏保同步和语音操作共用一个任务槽，避免多个备忘录 HTTPS 请求同时占用内存。
+     */
+    void StartMemoToolTask(MemoToolTaskContext* context);
+
+    /**
+     * @brief FreeRTOS 备忘录语音工具任务入口。
+     * @param context 指向由工具回调分配的 MemoToolTaskContext。
+     */
+    static void MemoToolTaskEntry(void* context);
+
+    /**
+     * @brief 根据任务操作调用创建、列表、修改、删除或统计接口，并生成中文结果。
+     * @param context 已完成固件边界校验的语音工具任务上下文。
+     */
+    void RunMemoToolTask(MemoToolTaskContext& context);
+
+    /**
+     * @brief 在满足屏保、网络、凭据和缓存条件时创建单次备忘录同步任务。
+     * @param force_refresh true 忽略最近成功时间；false 遵守本地缓存新鲜周期。
+     */
+    void StartMemoSync(bool force_refresh);
+
+    /**
+     * @brief FreeRTOS 屏保备忘录同步任务入口。
+     * @param context 指向当前 BackendService 单例。
+     */
+    static void MemoSyncTaskEntry(void* context);
+
+    /**
+     * @brief 使用设备 Token 获取前 5 条未完成备忘录并更新运行内存快照。
+     */
+    void RunMemoSync();
+
+    /**
+     * @brief 把有效备忘录快照写入当前 LCD 表盘。
+     * @param snapshot 已完成条数和正文长度校验的备忘录快照。
+     */
+    void ShowMemoSnapshot(const MemoSnapshot& snapshot);
+
+    /**
+     * @brief 仅在没有成功备忘录缓存时显示同步状态，避免短暂失败覆盖旧内容。
+     * @param message 备忘录区域需要显示的简短状态文本。
+     */
+    void ShowMemoStatusIfUnavailable(const std::string& message);
 
     /**
      * @brief 在满足屏保、网络、凭据和缓存条件时创建单次天气同步任务。
@@ -459,6 +580,23 @@ private:
      * @brief 最近一次成功同步的单调时钟时间，单位为微秒。
      */
     int64_t weather_last_success_us_ = 0;
+
+    /**
+     * @brief 串行保护备忘录任务句柄、最近快照和成功时间戳。
+     */
+    std::mutex memo_mutex_;
+    /**
+     * @brief 当前备忘录 HTTP 任务句柄；为空表示允许创建屏保同步或语音操作任务。
+     */
+    TaskHandle_t memo_task_handle_ = nullptr;
+    /**
+     * @brief 最近一次成功屏保备忘录数据的运行内存副本。
+     */
+    MemoSnapshot memo_snapshot_;
+    /**
+     * @brief 最近一次成功同步备忘录的单调时钟时间，单位为微秒。
+     */
+    int64_t memo_last_success_us_ = 0;
 };
 
 #endif
