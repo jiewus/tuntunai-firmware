@@ -71,6 +71,12 @@ protected:
      */
     lv_obj_t* screensaver_memo_labels_[3] = {};
     /**
+     * @brief 覆盖在备忘录首行上的日期时间粗体镜像。
+     * @details 三个标签与正文镜像使用相同位置和裁切带，只绘制方括号包围的日期时间首行，
+     *          从而在不加粗正文的前提下模拟点阵粗体。
+     */
+    lv_obj_t* screensaver_memo_date_labels_[3] = {};
+    /**
      * @brief 驱动多条屏保备忘录循环切换的 LVGL 定时器。
      */
     lv_timer_t* screensaver_memo_timer_ = nullptr;
@@ -196,8 +202,9 @@ protected:
     void UpdateScreensaverMemo();
     /**
      * @brief 根据备忘录类型选择固定三行省略或兼容纵向滚动。
-     * @details 带时间首行时固定显示“时间加两行正文”；其他文本三行以内垂直居中，超过三行后
-     *          三个镜像标签以普通字幕节奏同步滚动。两种模式均保留圆屏弧形安全边界。
+     * @details 带时间首行时最多显示“时间加两行正文”，不足三行会整体垂直居中；其他文本三行
+     *          以内同样垂直居中，超过三行后三个镜像标签以普通字幕节奏同步滚动。两种模式均
+     *          保留圆屏弧形安全边界。
      *          调用者必须持有 LVGL 锁。
      */
     void UpdateScreensaverMemoScroll();

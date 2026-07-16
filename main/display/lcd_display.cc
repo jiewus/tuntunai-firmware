@@ -1088,6 +1088,15 @@ void LcdDisplay::ApplyScreensaverTextFont(const lv_font_t* font) {
         lv_obj_set_style_transform_pivot_y(label, 0, 0);
         lv_obj_set_style_text_line_space(label, logical_line_spacing, 0);
     }
+    for (lv_obj_t* label : screensaver_memo_date_labels_) {
+        if (label == nullptr) {
+            continue;
+        }
+        lv_obj_set_style_text_font(label, font, 0);
+        lv_obj_set_style_transform_scale(label, text_scale, 0);
+        lv_obj_set_style_transform_pivot_x(label, LV_PCT(50), 0);
+        lv_obj_set_style_transform_pivot_y(label, 0, 0);
+    }
     if (screensaver_memo_viewport_ != nullptr) {
         lv_obj_set_size(screensaver_memo_viewport_, kScreensaverMemoWidth,
                         kScreensaverMemoViewportHeight);
@@ -1104,6 +1113,11 @@ void LcdDisplay::ApplyScreensaverTextFont(const lv_font_t* font) {
         if (screensaver_memo_labels_[row] != nullptr) {
             lv_obj_set_width(screensaver_memo_labels_[row], todo_logical_width);
             lv_obj_align(screensaver_memo_labels_[row], LV_ALIGN_TOP_MID, 0,
+                         -row * kScreensaverMemoRowHeight);
+        }
+        if (screensaver_memo_date_labels_[row] != nullptr) {
+            lv_obj_set_width(screensaver_memo_date_labels_[row], todo_logical_width);
+            lv_obj_align(screensaver_memo_date_labels_[row], LV_ALIGN_TOP_MID, 0,
                          -row * kScreensaverMemoRowHeight);
         }
     }
@@ -1533,6 +1547,19 @@ void LcdDisplay::CreateScreensaverUI() {
         lv_label_set_long_mode(memo_label, LV_LABEL_LONG_WRAP);
         lv_label_set_text(memo_label, "暂无待办");
         lv_obj_align(memo_label, LV_ALIGN_TOP_MID, 0,
+                     -row * kScreensaverMemoRowHeight);
+
+        lv_obj_t* date_label = lv_label_create(row_viewport);
+        screensaver_memo_date_labels_[row] = date_label;
+        lv_obj_set_width(date_label, kScreensaverMemoWidth);
+        lv_obj_set_height(date_label, LV_SIZE_CONTENT);
+        lv_obj_set_style_text_font(date_label, text_font, 0);
+        lv_obj_set_style_text_color(date_label, lv_color_hex(0xDDE1E4), 0);
+        lv_obj_set_style_text_align(date_label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(date_label, LV_LABEL_LONG_CLIP);
+        lv_label_set_text(date_label, "");
+        EnableBitmapTextBold(date_label);
+        lv_obj_align(date_label, LV_ALIGN_TOP_MID, 0,
                      -row * kScreensaverMemoRowHeight);
     }
     screensaver_memo_timer_ = lv_timer_create(
@@ -2007,14 +2034,23 @@ void LcdDisplay::UpdateScreensaverMemo() {
             lv_label_set_text(memo_label, visible_text);
         }
     }
+    const char* line_break = std::strchr(visible_text, '\n');
+    const std::string date_text = line_break == nullptr
+        ? std::string()
+        : std::string(visible_text, static_cast<size_t>(line_break - visible_text));
+    for (lv_obj_t* date_label : screensaver_memo_date_labels_) {
+        if (date_label != nullptr) {
+            lv_label_set_text(date_label, date_text.c_str());
+        }
+    }
     UpdateScreensaverMemoScroll();
 }
 
 /**
  * @brief 根据当前备忘录文本类型配置固定三行或兼容滚动布局。
- * @details 包含显式换行的结构化备忘录固定占用三行并在第三行末尾省略，保证时间始终位于
- *          第一行、正文最多两行。没有显式时间行的状态文本仍按实际高度居中；兼容的超长文本
- *          继续使用原有纵向滚动逻辑。
+ * @details 包含显式换行的结构化备忘录最多占用三行：不足三行时按真实高度垂直居中，超出时
+ *          在第三行末尾省略，保证时间始终位于第一行、正文最多两行。没有显式时间行的状态文本
+ *          仍按实际高度居中；兼容的超长文本继续使用原有纵向滚动逻辑。
  */
 void LcdDisplay::UpdateScreensaverMemoScroll() {
     lv_obj_t* measurement_label = screensaver_memo_labels_[0];
@@ -2035,10 +2071,18 @@ void LcdDisplay::UpdateScreensaverMemoScroll() {
 
     const int text_scale =
         lv_obj_get_style_transform_scale_y_safe(measurement_label, LV_PART_MAIN);
+    const int logical_content_height = lv_obj_get_height(measurement_label);
+    const int visible_content_height =
+        (logical_content_height * text_scale + 255) / 256;
     const char* measurement_text = lv_label_get_text(measurement_label);
     const bool has_reminder_line =
         measurement_text != nullptr && std::strchr(measurement_text, '\n') != nullptr;
     if (has_reminder_line) {
+        const bool content_fits =
+            visible_content_height <= kScreensaverMemoViewportHeight;
+        const int top_offset = content_fits
+            ? (kScreensaverMemoViewportHeight - visible_content_height) / 2
+            : 0;
         const int logical_viewport_height =
             (kScreensaverMemoViewportHeight * 256 + text_scale - 1) / text_scale;
         for (int row = 0; row < kScreensaverMemoVisibleLines; ++row) {
@@ -2046,11 +2090,21 @@ void LcdDisplay::UpdateScreensaverMemoScroll() {
             if (memo_label == nullptr) {
                 continue;
             }
-            lv_label_set_long_mode(memo_label, LV_LABEL_LONG_DOT);
-            lv_obj_set_height(memo_label, logical_viewport_height);
+            lv_label_set_long_mode(
+                memo_label,
+                content_fits ? LV_LABEL_LONG_WRAP : LV_LABEL_LONG_DOT);
+            lv_obj_set_height(
+                memo_label,
+                content_fits ? logical_content_height : logical_viewport_height);
             lv_obj_align(memo_label, LV_ALIGN_TOP_MID, 0,
-                         -row * kScreensaverMemoRowHeight);
+                         top_offset - row * kScreensaverMemoRowHeight);
             lv_obj_update_layout(memo_label);
+            lv_obj_t* date_label = screensaver_memo_date_labels_[row];
+            if (date_label != nullptr) {
+                lv_obj_align(date_label, LV_ALIGN_TOP_MID, 0,
+                             top_offset - row * kScreensaverMemoRowHeight);
+                lv_obj_update_layout(date_label);
+            }
         }
         if (screensaver_memo_timer_ != nullptr) {
             lv_timer_set_period(screensaver_memo_timer_, 8000);
@@ -2058,9 +2112,6 @@ void LcdDisplay::UpdateScreensaverMemoScroll() {
         return;
     }
 
-    const int logical_content_height = lv_obj_get_height(measurement_label);
-    const int visible_content_height =
-        (logical_content_height * text_scale + 255) / 256;
     if (visible_content_height <= kScreensaverMemoViewportHeight) {
         const int top_offset =
             (kScreensaverMemoViewportHeight - visible_content_height) / 2;

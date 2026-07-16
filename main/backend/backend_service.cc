@@ -600,10 +600,10 @@ namespace
     /**
      * @brief 按当前本地日期格式化屏保备忘录的提醒时间行。
      * @param remind_at 后端返回的带 +08:00 偏移 RFC 3339 时间。
-     * @param result 成功时接收 HH:mm、MM-dd HH:mm 或 yyyy-MM-dd。
+     * @param result 成功时接收 HH:mm、MM-dd 或 yyyy-MM-dd。
      * @return 时间结构和字段范围有效时返回 true。
-     * @details 今天只显示时间；今年内显示月日和时间；非今年只显示完整日期。系统时间尚未
-     *          校准时无法判断“今天”和“今年”，此时保守显示完整日期。
+     * @details 今天只显示时间；其他日期只显示日期，其中今年省略年份、非今年保留年份。
+     *          系统时间尚未校准时无法判断“今天”和“今年”，此时保守显示完整日期。
      */
     bool FormatMemoReminderLine(
         const std::string &remind_at,
@@ -651,9 +651,7 @@ namespace
         }
         else if (current_time_valid && year == local_time.tm_year + 1900)
         {
-            std::snprintf(
-                formatted, sizeof(formatted), "%02d-%02d %02d:%02d",
-                month, day, hour, minute);
+            std::snprintf(formatted, sizeof(formatted), "%02d-%02d", month, day);
         }
         else
         {
@@ -941,15 +939,15 @@ void BackendService::RegisterMcpTools(McpServer &server)
                 });
         });
 
-    // 创建备忘录工具接收语音整理后的正文和可选绝对提醒时间，由后端保存到当前设备所属账号。
+    // 创建工具要求模型先通过对话补齐精确提醒日期和时间，不能把事项日期直接当作提醒时间。
     server.AddAsyncTool(
         "self.tuntun.create_memo",
-        "创建囤囤管家备忘录。用户说“添加备忘”“记一下”“帮我记住”或“提醒我”时必须调用本工具，"
-        "不要回答设备没有备忘录功能。content 只传备忘正文；用户指定时间时，将时间转换为带 +08:00 "
-        "偏移的 RFC 3339 绝对时间传入 remind_at，否则省略 remind_at 或传空字符串。",
+        "创建囤囤管家备忘录，不能回答没有此功能。调用前必须取得具体提醒日期和时间：用户只说事项日期时"
+        "询问何时提醒，只说提醒日期时继续询问几点；明确说不提醒才传空 remind_at。content 传正文，"
+        "remind_at 传带 +08:00 偏移的 RFC 3339 绝对时间。",
         PropertyList({
             Property("content", kPropertyTypeString),
-            Property("remind_at", kPropertyTypeString, std::string(""))
+            Property("remind_at", kPropertyTypeString)
         }),
         [this](const PropertyList &properties, McpToolCompletion completion)
         {
@@ -1002,16 +1000,16 @@ void BackendService::RegisterMcpTools(McpServer &server)
             StartMemoToolTask(context);
         });
 
-    // 修改工具要求完整目标值，模型必须先查询 ID 和原记录，防止模糊正文匹配到错误记录。
+    // 修改工具要求完整目标值；变更提醒时间时同样必须先通过对话补齐日期和具体时间。
     server.AddAsyncTool(
         "self.tuntun.update_memo",
-        "修改一条囤囤管家备忘录。用户明确要求修改正文、提醒时间或完成状态时调用。若 memo_id 未知，"
-        "必须先调用 self.tuntun.query_memos 获取准确 ID。content、remind_at、status 必须表示修改后的"
-        "完整结果；remind_at 为空表示取消提醒，status：1=未完成，2=已完成。",
+        "修改囤囤管家备忘录。先 query_memos 取得 ID 和原值；修改提醒但缺少日期或具体时间时必须继续询问，"
+        "不修改提醒则保留原值，明确取消提醒才传空 remind_at。传修改后的完整 content、remind_at、status，"
+        "status：1=未完成，2=已完成。",
         PropertyList({
             Property("memo_id", kPropertyTypeString),
             Property("content", kPropertyTypeString),
-            Property("remind_at", kPropertyTypeString, std::string("")),
+            Property("remind_at", kPropertyTypeString),
             Property("status", kPropertyTypeInteger, 1, 2)
         }),
         [this](const PropertyList &properties, McpToolCompletion completion)
@@ -2175,7 +2173,7 @@ void BackendService::RunMemoSync()
                 }
             }
             snapshot.contents.push_back(
-                reminder_line + "\n" + std::move(content));
+                "[" + reminder_line + "]\n" + std::move(content));
         }
     }
     cJSON_Delete(root);
