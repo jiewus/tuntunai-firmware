@@ -263,6 +263,20 @@ private:
     };
 
     /**
+     * @brief 保存一项已经安装到设备 MCP 服务器的动态工具展示信息。
+     */
+    struct DynamicToolSummary {
+        /**
+         * @brief 后端签发且包含 custom. 前缀的完整工具名称。
+         */
+        std::string name;
+        /**
+         * @brief 后台配置并提供给大模型的工具用途说明。
+         */
+        std::string description;
+    };
+
+    /**
      * @brief 构造业务后端服务。
      */
     BackendService() = default;
@@ -336,12 +350,6 @@ private:
      * @param context 指向当前 BackendService 单例。
      */
     static void McpManifestTaskEntry(void* context);
-
-    /**
-     * @brief 周期清单检查定时器回调，只创建任务，不直接执行 HTTPS 请求。
-     * @param context 指向当前 BackendService 单例。
-     */
-    static void McpManifestTimerCallback(void* context);
 
     /**
      * @brief 获取并严格校验当前设备的权威动态 MCP 工具清单。
@@ -537,10 +545,6 @@ private:
      */
     TaskHandle_t dynamic_tool_task_handle_ = nullptr;
     /**
-     * @brief 每 30 秒触发一次清单一致性检查的 esp_timer 句柄。
-     */
-    esp_timer_handle_t mcp_manifest_timer_ = nullptr;
-    /**
      * @brief 最近一次成功安装到设备 MCP 服务器的后端清单修订号。
      */
     uint32_t mcp_manifest_revision_ = 0;
@@ -548,6 +552,10 @@ private:
      * @brief true 表示设备已经成功同步过清单，包括修订号为0的空清单。
      */
     bool mcp_manifest_loaded_ = false;
+    /**
+     * @brief 最近一次成功安装的动态 MCP 名称和说明快照。
+     */
+    std::vector<DynamicToolSummary> dynamic_tool_summaries_;
     /**
      * @brief true 表示最近一次动态工具执行遇到版本冲突，应在执行任务释放栈后重新同步清单。
      */

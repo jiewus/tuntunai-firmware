@@ -16,7 +16,7 @@
  */
 
 /**
- * @brief Movecall Moji2 使用的 ES8311 全双工音频驱动。
+ * @brief Tuntun Moji2 使用的 ES8311 全双工音频驱动。
  */
 class Es8311AudioCodec : public AudioCodec {
 private:

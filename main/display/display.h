@@ -143,6 +143,25 @@ public:
         (void)memos;
     }
     /**
+     * @brief 显示自定义 MCP 工具清单专用表盘。
+     * @param title 固定显示在页面顶部的清单标题。
+     * @param items 按顺序轮播的 MCP 名称和说明数组。
+     * @details 专用表盘只保留背景、金属外圈和刻度，隐藏天气、日期、时间、备忘录以及
+     *          网络和电量图标。默认实现为空操作，具体 LCD 实现负责单项轮播。
+     */
+    virtual void ShowCustomMcpList(
+        const std::string& title,
+        const std::vector<std::string>& items) {
+        (void)title;
+        (void)items;
+    }
+    /**
+     * @brief 隐藏自定义 MCP 工具清单专用表盘。
+     * @details 默认实现为空操作。带屏设备应恢复普通对话界面，并清理仍在运行的列表动画。
+     */
+    virtual void HideCustomMcpList() {
+    }
+    /**
      * @brief 显示设备绑定码专用页面。
      * @param binding_code 允许用户输入到网页端的短绑定码；为空时页面只显示流程状态。
      * @param message 绑定码下方的操作说明、成功提示或失败原因。

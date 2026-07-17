@@ -1,6 +1,6 @@
 # 编译配置指南
 
-本文档介绍了如何为 **Movecall Moji2.0 (小智AI衍生版)** 配置和编译固件。
+本文档介绍了如何为 **Tuntun Moji2 ESP32-C5** 配置和编译固件。
 
 ## 🛠 环境要求
 *   **ESP-IDF 版本**: v5.5
@@ -27,7 +27,7 @@ idf.py menuconfig
 ```
 
 **请在菜单中按照以下路径进行操作：**
-> **Xiaozhi Assistant** -> **Board Type** -> **Movecall Moji2.0 小智AI衍生版**
+> **Tuntun Moji2 Assistant** -> **Board Type** -> **Tuntun Moji2 ESP32-C5**
 
 *操作提示：配置完成后，按 **S** 保存并按回车确认，按 **Q** 退出。*
 

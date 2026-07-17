@@ -1,5 +1,5 @@
-# 本文件只保留 Moji2 ESP32-C5 实际使用的产品配置项。
-menu "Movecall Moji2 Assistant"
+# 本文件只保留 Tuntun Moji2 ESP32-C5 实际使用的产品配置项。
+menu "Tuntun Moji2 Assistant"
 
 config OTA_URL
     string "Default OTA URL"
@@ -33,10 +33,10 @@ config CUSTOM_ASSETS_FILE
 choice BOARD_TYPE
     prompt "Board Type"
     # 裁剪后的仓库只有一个板型，保留 choice 是为了兼容现有 CONFIG 宏。
-    default BOARD_TYPE_MOVECALL_MOJI2_ESP32C5
+    default BOARD_TYPE_TUNTUN_MOJI2_ESP32C5
 
-    config BOARD_TYPE_MOVECALL_MOJI2_ESP32C5
-        bool "Movecall Moji2.0 ESP32-C5"
+    config BOARD_TYPE_TUNTUN_MOJI2_ESP32C5
+        bool "Tuntun Moji2 ESP32-C5"
         depends on IDF_TARGET_ESP32C5
 endchoice
 

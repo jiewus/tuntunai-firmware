@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""为唯一保留的 Movecall Moji2 ESP32-C5 板型构建并打包发布固件。"""
+"""为唯一保留的 Tuntun Moji2 ESP32-C5 板型构建并打包发布固件。"""
 
 import argparse
 import json
@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-BOARD = "movecall-moji2-esp32c5"
+BOARD = "tuntun-moji2-esp32c5"
 BOARD_DIR = PROJECT_ROOT / "main" / "boards" / BOARD
 
 
@@ -75,8 +75,8 @@ def append_sdkconfig(entries: list[str]) -> None:
     """把板型选择和额外 Kconfig 项追加到 sdkconfig；entries 中每项必须是完整 CONFIG_ 行。"""
     sdkconfig = PROJECT_ROOT / "sdkconfig"
     with sdkconfig.open("a", encoding="utf-8") as file:
-        file.write("\n# Movecall Moji2 build configuration\n")
-        file.write("CONFIG_BOARD_TYPE_MOVECALL_MOJI2_ESP32C5=y\n")
+        file.write("\n# Tuntun Moji2 build configuration\n")
+        file.write("CONFIG_BOARD_TYPE_TUNTUN_MOJI2_ESP32C5=y\n")
         for entry in entries:
             file.write(f"{entry}\n")
 
@@ -111,7 +111,7 @@ def build() -> Path:
 
 def main() -> None:
     """解析命令行；支持列出唯一板型，或执行完整发布构建。"""
-    parser = argparse.ArgumentParser(description="Build Movecall Moji2 ESP32-C5 firmware")
+    parser = argparse.ArgumentParser(description="Build Tuntun Moji2 ESP32-C5 firmware")
     parser.add_argument("board", nargs="?", default=BOARD)
     parser.add_argument("--list-boards", action="store_true")
     args = parser.parse_args()

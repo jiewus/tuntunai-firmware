@@ -3,7 +3,7 @@
 
 /**
  * @file config.h
- * @brief Movecall Moji2 ESP32-C5 的固定硬件引脚与总线参数。
+ * @brief Tuntun Moji2 ESP32-C5 的固定硬件引脚与总线参数。
  *
  * 修改本文件前必须对照原理图。ESP32-C5 的 GPIO28 同时是下载模式绑带脚，
  * 上电/复位时按住 BOOT 会进入 ROM 烧录模式。

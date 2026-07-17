@@ -1061,6 +1061,9 @@ void Application::HandleStateChangedEvent() {
     // 状态变化会刷新背光计时；如果表盘已经显示，该后台事件不会退出屏保。
     board.WakeUpScreen();
     auto display = board.GetDisplay();
+    if (new_state != kDeviceStateSpeaking) {
+        display->HideCustomMcpList();
+    }
     auto led = board.GetLed();
     led->OnStateChanged();
     

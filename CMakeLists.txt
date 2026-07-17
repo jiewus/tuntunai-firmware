@@ -9,5 +9,5 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 idf_build_set_property(MINIMAL_BUILD ON)
 
 # 固件版本会写入应用描述符，并用于 OTA 版本比较和发布包命名。
-set(PROJECT_VER "2.2.6")
+set(PROJECT_VER "1.0.0")
 project(xiaozhi)

@@ -1,4 +1,4 @@
-# Movecall Moji2 ESP32-C5 产品组件构建入口。
+# Tuntun Moji2 ESP32-C5 产品组件构建入口。
 
 # 项目自有源码清单；新增模块必须在此登记，否则不会参与编译和链接。
 set(SOURCES
@@ -30,7 +30,7 @@ set(SOURCES
     "boards/common/button.cc"
     "boards/common/power_save_timer.cc"
     "boards/common/press_to_talk_mcp_tool.cc"
-    "boards/movecall-moji2-esp32c5/movecall_moji2_esp32c5.cc"
+    "boards/tuntun-moji2-esp32c5/tuntun_moji2_esp32c5.cc"
     "backend/backend_service.cc"
     "mcp_server.cc"
     "system_info.cc"
@@ -58,15 +58,15 @@ set(INCLUDE_DIRS
 # 唯一板型、内置字体和表情资源选择，同时传给 C++ 宏和资源构建脚本。
 # 360x360 圆屏对话字幕使用 30 px 中文字形源，界面中缩放为约 25 px 显示；
 # 状态栏在 LCD 实现中单独使用 20 px 字体。
-set(BOARD_TYPE "movecall-moji2-esp32c5")
-set(BOARD_NAME "movecall-moji2-esp32c5")
+set(BOARD_TYPE "tuntun-moji2-esp32c5")
+set(BOARD_NAME "Tuntun Moji2 ESP32-C5")
 set(BUILTIN_TEXT_FONT font_puhui_basic_30_4)
 set(BUILTIN_ICON_FONT font_awesome_20_4)
 set(DEFAULT_EMOJI_COLLECTION twemoji_64)
 
 # 保留带 CONFIG 条件的板型赋值，发布脚本和 menuconfig 都依赖该声明识别板型。
-if(CONFIG_BOARD_TYPE_MOVECALL_MOJI2_ESP32C5)
-    set(BOARD_TYPE "movecall-moji2-esp32c5")
+if(CONFIG_BOARD_TYPE_TUNTUN_MOJI2_ESP32C5)
+    set(BOARD_TYPE "tuntun-moji2-esp32c5")
 endif()
 
 # 中文语言 JSON 会生成 lang_config.h；对应 OGG 文件直接嵌入 main 组件二进制。

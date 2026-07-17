@@ -1,6 +1,6 @@
 /**
- * @file movecall_moji2_esp32c5.cc
- * @brief Movecall Moji2 ESP32-C5 板级硬件初始化和外设绑定实现。
+ * @file tuntun_moji2_esp32c5.cc
+ * @brief Tuntun Moji2 ESP32-C5 板级硬件初始化和外设绑定实现。
  */
 #include "wifi_board.h"
 #include "codecs/es8311_audio_codec.h"
@@ -28,7 +28,7 @@
 
 #include "adc_battery_monitor.h"
 
-#define TAG "MovecallMoji2ESP32C5"
+#define TAG "TuntunMoji2ESP32C5"
 
 static const st77916_lcd_init_cmd_t lcd_init_cmds[] = {
     {0xF0, (uint8_t []){0x28}, 1, 0},
@@ -217,7 +217,7 @@ static const st77916_lcd_init_cmd_t lcd_init_cmds[] = {
     {0x00, (uint8_t []){}, 0, 120},
 };
 
-class MovecallMoji2ESP32C5 : public WifiBoard {
+class TuntunMoji2ESP32C5 : public WifiBoard {
 private:
     i2c_master_bus_handle_t codec_i2c_bus_;
     Button boot_button_;
@@ -466,7 +466,7 @@ public:
      * @brief 按硬件依赖顺序完成整块 Moji2 开发板初始化。
      * @details I2C 必须先于 Codec，SPI 必须先于 LCD；显示和按键就绪后注册 MCP 工具，最后从 NVS 恢复背光亮度。
      */
-    MovecallMoji2ESP32C5() : boot_button_(BOOT_BUTTON_GPIO) {  
+    TuntunMoji2ESP32C5() : boot_button_(BOOT_BUTTON_GPIO) {
         InitializeCodecI2c();
         InitializePowerSaveTimer();
         InitializeBatteryMonitor();
@@ -513,6 +513,9 @@ public:
      *          背光，但恢复后仍显示原来的屏保界面。
      */
     virtual void WakeUpScreen(bool user_initiated = false) override {
+        if (user_initiated && display_ != nullptr) {
+            display_->HideCustomMcpList();
+        }
         if (power_save_timer_ != nullptr && (!screensaver_active_ || user_initiated)) {
             power_save_timer_->WakeUp();
         }
@@ -655,4 +658,4 @@ public:
 
 };
 
-DECLARE_BOARD(MovecallMoji2ESP32C5);
+DECLARE_BOARD(TuntunMoji2ESP32C5);

@@ -83,9 +83,9 @@ namespace
     constexpr const char *kMcpExecutePath = "/api/mcp-tools/execute";
 
     /**
-     * @brief 设备型号在后端 DeviceModelEnum 中对应 Movecall Moji2 ESP32-C5 的数值。
+     * @brief 设备型号在后端 DeviceModelEnum 中对应 Tuntun Moji2 ESP32-C5 的数值。
      */
-    constexpr int kDeviceModelMovecallMoji2Esp32C5 = 1;
+    constexpr int kDeviceModelTuntunMoji2Esp32C5 = 1;
 
     /**
      * @brief 绑定状态轮询周期和单次 HTTP 超时，单位均为毫秒。
@@ -113,13 +113,28 @@ namespace
     constexpr UBaseType_t kMemoTaskPriority = 3;
 
     /**
-     * @brief 动态 MCP 清单检查周期和临时 Worker 的资源配置。
+     * @brief 动态 MCP 清单同步和临时 Worker 的资源配置。
      * @details 清单同步与工具执行都涉及 HTTPS 和 cJSON，因此使用独立 8KB 任务栈。第一版同时只
      *          运行一个清单同步任务和一个动态工具执行任务，避免并发请求挤压设备可用内存。
      */
-    constexpr int64_t kMcpManifestCheckIntervalUs = 30LL * 1000LL * 1000LL;
     constexpr uint32_t kMcpTaskStackSize = 8192;
     constexpr UBaseType_t kMcpTaskPriority = 3;
+
+    /**
+     * @brief 去除后台动态工具名称的固定命名空间，得到适合屏幕和语音介绍的名称。
+     * @param tool_name 后端签发的完整工具名称。
+     * @return 不包含 custom. 前缀的工具名称。
+     */
+    std::string GetVisibleDynamicToolName(const std::string &tool_name)
+    {
+        constexpr const char *prefix = "custom.";
+        constexpr size_t prefix_length = 7;
+        if (tool_name.compare(0, prefix_length, prefix) == 0)
+        {
+            return tool_name.substr(prefix_length);
+        }
+        return tool_name;
+    }
 
     /**
      * @brief 天气响应和语音位置输入的固件边界，防止异常文本和温度进入任务或圆屏布局。
@@ -419,7 +434,7 @@ namespace
             return {};
         }
         cJSON_AddStringToObject(root, "hardware_id", SystemInfo::GetMacAddress().c_str());
-        cJSON_AddNumberToObject(root, "device_model", kDeviceModelMovecallMoji2Esp32C5);
+        cJSON_AddNumberToObject(root, "device_model", kDeviceModelTuntunMoji2Esp32C5);
         cJSON_AddStringToObject(root, "client_id", board.GetUuid().c_str());
         cJSON_AddStringToObject(root, "firmware_version", app_description->version);
         char *json_text = cJSON_PrintUnformatted(root);
@@ -833,30 +848,6 @@ void BackendService::Start()
         }
     }
 
-    const esp_timer_create_args_t mcp_manifest_timer_args = {
-        .callback = McpManifestTimerCallback,
-        .arg = this,
-        .dispatch_method = ESP_TIMER_TASK,
-        .name = "mcp_manifest",
-        .skip_unhandled_events = true,
-    };
-    timer_error = esp_timer_create(&mcp_manifest_timer_args, &mcp_manifest_timer_);
-    if (timer_error == ESP_OK)
-    {
-        timer_error = esp_timer_start_periodic(
-            mcp_manifest_timer_,
-            kMcpManifestCheckIntervalUs);
-    }
-    if (timer_error != ESP_OK)
-    {
-        ESP_LOGE(kTag, "MCP 清单定时器启动失败，原因=%s",
-                 esp_err_to_name(timer_error));
-        if (mcp_manifest_timer_ != nullptr)
-        {
-            esp_timer_delete(mcp_manifest_timer_);
-            mcp_manifest_timer_ = nullptr;
-        }
-    }
     ESP_LOGI(kTag, "囤囤管家后端服务已初始化，接口地址=%s，设备凭据=%s",
              CONFIG_TUNTUN_API_URL, device_access_token_.empty() ? "缺失" : "可用");
 }
@@ -867,6 +858,77 @@ void BackendService::Start()
  */
 void BackendService::RegisterMcpTools(McpServer &server)
 {
+    // 本地清单工具不访问后端，只介绍最近一次已经成功安装到设备的动态 MCP 快照。
+    server.AddTool(
+        "self.tuntun.list_custom_mcp_tools",
+        "显示并介绍当前设备已经加载的全部自定义 MCP 工具。用户询问有几个自定义工具包、"
+        "有几个自定义 MCP、有哪些自定义工具、查看自定义 MCP 列表或类似问题时必须调用。"
+        "本工具没有参数；不要回答没有权限，也不要执行清单中的动态工具。",
+        PropertyList(),
+        [this](const PropertyList &properties) -> ReturnValue
+        {
+            (void)properties;
+            std::vector<DynamicToolSummary> summaries;
+            bool manifest_loaded = false;
+            {
+                std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
+                summaries = dynamic_tool_summaries_;
+                manifest_loaded = mcp_manifest_loaded_;
+            }
+
+            std::string screen_title =
+                "自定义 MCP（" + std::to_string(summaries.size()) + "）";
+            std::vector<std::string> screen_items;
+            std::string speech_text;
+            if (!manifest_loaded)
+            {
+                screen_title = "自定义 MCP";
+                screen_items.push_back("清单尚未同步");
+                speech_text = "当前设备还没有同步到自定义 MCP 清单，请确认设备已经绑定并联网后稍后再试。";
+            }
+            else if (summaries.empty())
+            {
+                screen_items.push_back("暂无自定义 MCP");
+                speech_text = "你当前没有配置可用的自定义 MCP。";
+            }
+            else
+            {
+                speech_text = "你当前配置了 " + std::to_string(summaries.size())
+                    + " 个自定义 MCP。";
+                for (size_t index = 0; index < summaries.size(); ++index)
+                {
+                    const std::string visible_name =
+                        GetVisibleDynamicToolName(summaries[index].name);
+                    std::string screen_item =
+                        std::to_string(index + 1) + ". " + visible_name;
+                    if (!summaries[index].description.empty())
+                    {
+                        screen_item += "\n" + summaries[index].description;
+                    }
+                    screen_items.push_back(std::move(screen_item));
+
+                    speech_text += "第 " + std::to_string(index + 1) + " 个是 "
+                        + visible_name;
+                    if (!summaries[index].description.empty())
+                    {
+                        speech_text += "，" + summaries[index].description;
+                    }
+                    speech_text += "。";
+                }
+            }
+
+            auto &board = Board::GetInstance();
+            board.WakeUpScreen();
+            auto *display = board.GetDisplay();
+            if (display != nullptr)
+            {
+                display->ShowCustomMcpList(screen_title, screen_items);
+            }
+            ESP_LOGI(kTag, "正在显示并介绍自定义 MCP，数量=%u",
+                     static_cast<unsigned>(summaries.size()));
+            return speech_text;
+        });
+
     // 绑定工具在设备 MCP 服务器上注册为异步工具，确保在网络请求完成前不会阻塞语音会话。
     server.AddAsyncTool(
         "self.tuntun.bind_device",
@@ -1191,16 +1253,6 @@ void BackendService::McpManifestTaskEntry(void *context)
 }
 
 /**
- * @brief esp_timer 周期回调，创建动态 MCP 清单同步任务。
- * @param context 指向 BackendService 单例。
- */
-void BackendService::McpManifestTimerCallback(void *context)
-{
-    auto *service = static_cast<BackendService *>(context);
-    service->StartMcpManifestSync();
-}
-
-/**
  * @brief 获取、校验并安装当前设备的动态 MCP 权威清单。
  */
 void BackendService::RunMcpManifestSync()
@@ -1271,6 +1323,8 @@ void BackendService::RunMcpManifestSync()
 
     std::vector<McpDynamicToolDefinition> definitions;
     definitions.reserve(static_cast<size_t>(cJSON_GetArraySize(tools)));
+    std::vector<DynamicToolSummary> summaries;
+    summaries.reserve(static_cast<size_t>(cJSON_GetArraySize(tools)));
     std::unordered_set<std::string> names;
     bool manifest_valid = true;
     cJSON *tool = nullptr;
@@ -1322,6 +1376,7 @@ void BackendService::RunMcpManifestSync()
                 });
         };
         definitions.push_back(std::move(definition));
+        summaries.push_back(DynamicToolSummary{tool_name, description});
     }
     cJSON_Delete(root);
 
@@ -1332,7 +1387,8 @@ void BackendService::RunMcpManifestSync()
     }
 
     Application::GetInstance().Schedule(
-        [this, manifest_revision, definitions = std::move(definitions)]() mutable
+        [this, manifest_revision, definitions = std::move(definitions),
+         summaries = std::move(summaries)]() mutable
         {
             if (!McpServer::GetInstance().ReplaceDynamicTools(std::move(definitions)))
             {
@@ -1344,6 +1400,7 @@ void BackendService::RunMcpManifestSync()
                 std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
                 mcp_manifest_revision_ = manifest_revision;
                 mcp_manifest_loaded_ = true;
+                dynamic_tool_summaries_ = std::move(summaries);
             }
             ESP_LOGI(kTag, "MCP 清单同步成功，修订号=%lu",
                      static_cast<unsigned long>(manifest_revision));
@@ -1587,6 +1644,7 @@ void BackendService::ClearDynamicTools()
         std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
         mcp_manifest_revision_ = 0;
         mcp_manifest_loaded_ = false;
+        dynamic_tool_summaries_.clear();
         ESP_LOGI(kTag, "认证失败后已清空动态 MCP 工具");
     });
 }

@@ -281,6 +281,30 @@ constexpr int kScreensaverBottomSectionOffsetY = 87;
 constexpr int kScreensaverDialStatusInset = 0;
 
 /**
+ * @brief 自定义 MCP 清单根容器、固定标题和单项轮播区域尺寸。
+ * @details 根容器位于刻度内；30px 标题固定在顶部，当前 MCP 在下方 190px 高圆角区域中
+ *          垂直居中显示。
+ */
+constexpr int kCustomMcpListViewportWidth = 286;
+constexpr int kCustomMcpListViewportHeight = 286;
+constexpr int kCustomMcpListTitleWidth = 250;
+constexpr int kCustomMcpListTitleTextPixelSize = 30;
+constexpr int kCustomMcpListTitleTopOffset = 20;
+constexpr int kCustomMcpListItemViewportWidth = 286;
+constexpr int kCustomMcpListItemViewportHeight = 190;
+constexpr int kCustomMcpListItemViewportOffsetY = 25;
+constexpr int kCustomMcpListTextWidth = 250;
+constexpr int kCustomMcpListViewportRadius = 32;
+constexpr int kCustomMcpListItemSafeHeight = 174;
+
+/**
+ * @brief 自定义 MCP 单项内容的视觉字号、行距和切换周期。
+ */
+constexpr int kCustomMcpListTextPixelSize = 25;
+constexpr int kCustomMcpListLineSpacing = 5;
+constexpr int kCustomMcpListSwitchPeriodMs = 5000;
+
+/**
  * @brief 屏保全屏根容器的背景颜色，格式为 0xRRGGBB。
  * @details 0x050607 是接近纯黑的冷色金属黑，用于覆盖普通页面并作为整个表盘最底层背景。
  *          保留少量 RGB 亮度可以避免纯黑背景与内层金属区域完全失去层次。
@@ -422,7 +446,10 @@ void DrawBitmapBoldText(lv_event_t* event) {
         {0, kScreensaverBitmapBoldOffset},
         {kScreensaverBitmapBoldOffset, kScreensaverBitmapBoldOffset},
     };
-    for (const auto& offset : offsets) {
+    const bool lightweight = lv_event_get_user_data(event) != nullptr;
+    const size_t offset_count = lightweight ? 1 : sizeof(offsets) / sizeof(offsets[0]);
+    for (size_t index = 0; index < offset_count; ++index) {
+        const auto& offset = offsets[index];
         lv_area_t offset_area = text_area;
         offset_area.x1 += offset[0];
         offset_area.x2 += offset[0];
@@ -439,6 +466,24 @@ void DrawBitmapBoldText(lv_event_t* event) {
 void EnableBitmapTextBold(lv_obj_t* label) {
     if (label != nullptr) {
         lv_obj_add_event_cb(label, DrawBitmapBoldText, LV_EVENT_ALL, nullptr);
+        lv_obj_refresh_ext_draw_size(label);
+    }
+}
+
+/**
+ * @brief 为需要低负载更新的文本启用单次偏移点阵粗体。
+ * @param label 需要加粗的 LVGL Label；为空时不执行任何操作。
+ * @details 保留正常绘制加一次右移描边，只产生两次文本绘制，避免列表切换时三次附加描边
+ *          占用过多单核 CPU 和 QSPI 刷新带宽。
+ */
+void EnableLightweightBitmapTextBold(lv_obj_t* label) {
+    if (label != nullptr) {
+        static bool lightweight_marker = true;
+        lv_obj_add_event_cb(
+            label,
+            DrawBitmapBoldText,
+            LV_EVENT_ALL,
+            &lightweight_marker);
         lv_obj_refresh_ext_draw_size(label);
     }
 }
@@ -919,6 +964,10 @@ LcdDisplay::~LcdDisplay() {
     }
 
     lv_anim_delete(this, ScreensaverMemoScrollAnimationCallback);
+    if (screensaver_mcp_list_switch_timer_ != nullptr) {
+        lv_timer_delete(screensaver_mcp_list_switch_timer_);
+        screensaver_mcp_list_switch_timer_ = nullptr;
+    }
     if (screensaver_memo_timer_ != nullptr) {
         lv_timer_delete(screensaver_memo_timer_);
         screensaver_memo_timer_ = nullptr;
@@ -1119,6 +1168,81 @@ void LcdDisplay::ApplyScreensaverTextFont(const lv_font_t* font) {
             lv_obj_set_width(screensaver_memo_date_labels_[row], todo_logical_width);
             lv_obj_align(screensaver_memo_date_labels_[row], LV_ALIGN_TOP_MID, 0,
                          -row * kScreensaverMemoRowHeight);
+        }
+    }
+}
+
+/**
+ * @brief 将主题字体应用到自定义 MCP 固定标题和单项内容标签。
+ * @param font 当前主题的完整中文字库。
+ * @details 标题保持 30px，单项内容保持 25px；两者都按最终物理宽度反算逻辑宽度。
+ */
+void LcdDisplay::ApplyCustomMcpListFont(const lv_font_t* font) {
+    if (font == nullptr || font->line_height <= 0
+        || screensaver_mcp_list_title_label_ == nullptr
+        || screensaver_mcp_list_label_ == nullptr) {
+        return;
+    }
+
+    const int title_scale =
+        kCustomMcpListTitleTextPixelSize * 256 / font->line_height;
+    const int title_logical_width =
+        kCustomMcpListTitleWidth * 256 / title_scale;
+    lv_obj_set_width(screensaver_mcp_list_title_label_, title_logical_width);
+    lv_obj_set_style_text_font(screensaver_mcp_list_title_label_, font, 0);
+    lv_obj_set_style_transform_scale(
+        screensaver_mcp_list_title_label_, title_scale, 0);
+    lv_obj_set_style_transform_pivot_x(
+        screensaver_mcp_list_title_label_, LV_PCT(50), 0);
+    lv_obj_set_style_transform_pivot_y(
+        screensaver_mcp_list_title_label_, 0, 0);
+
+    const int text_scale =
+        kCustomMcpListTextPixelSize * 256 / font->line_height;
+    const int logical_width =
+        kCustomMcpListTextWidth * 256 / text_scale;
+    const int logical_line_spacing =
+        (kCustomMcpListLineSpacing * 256 + text_scale - 1) / text_scale;
+    lv_obj_set_width(screensaver_mcp_list_label_, logical_width);
+    lv_obj_set_style_text_font(screensaver_mcp_list_label_, font, 0);
+    lv_obj_set_style_text_line_space(
+        screensaver_mcp_list_label_, logical_line_spacing, 0);
+    lv_obj_set_style_transform_scale(screensaver_mcp_list_label_, text_scale, 0);
+    lv_obj_set_style_transform_pivot_x(
+        screensaver_mcp_list_label_, LV_PCT(50), 0);
+    lv_obj_set_style_transform_pivot_y(screensaver_mcp_list_label_, 0, 0);
+}
+
+/**
+ * @brief 在普通表盘内容和自定义 MCP 清单之间切换。
+ * @param visible true 显示普通表盘内容；false 只显示外圈、刻度和 MCP 清单。
+ */
+void LcdDisplay::SetStandardScreensaverContentVisible(bool visible) {
+    lv_obj_t* standard_objects[] = {
+        screensaver_weather_location_label_,
+        screensaver_weather_group_,
+        screensaver_date_group_,
+        screensaver_time_group_,
+        screensaver_memo_viewport_,
+        screensaver_network_label_,
+        screensaver_battery_label_,
+    };
+    for (lv_obj_t* object : standard_objects) {
+        if (object == nullptr) {
+            continue;
+        }
+        if (visible) {
+            lv_obj_remove_flag(object, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    if (screensaver_mcp_list_viewport_ != nullptr) {
+        if (visible) {
+            lv_obj_add_flag(screensaver_mcp_list_viewport_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_remove_flag(screensaver_mcp_list_viewport_, LV_OBJ_FLAG_HIDDEN);
         }
     }
 }
@@ -1372,6 +1496,76 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_scale_set_section_style_items(screensaver_scale_, screensaver_second_section_, &second_minor_style);
     lv_scale_set_section_style_indicator(screensaver_scale_, screensaver_second_section_, &second_major_style);
 
+    /* 自定义 MCP 清单根容器只负责组合固定标题和单项轮播区域。 */
+    screensaver_mcp_list_viewport_ = lv_obj_create(screensaver_container_);
+    lv_obj_set_size(screensaver_mcp_list_viewport_, kCustomMcpListViewportWidth,
+                    kCustomMcpListViewportHeight);
+    lv_obj_set_style_bg_opa(screensaver_mcp_list_viewport_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_radius(screensaver_mcp_list_viewport_, 0, 0);
+    lv_obj_set_style_border_width(screensaver_mcp_list_viewport_, 0, 0);
+    lv_obj_set_style_pad_all(screensaver_mcp_list_viewport_, 0, 0);
+    lv_obj_set_scrollbar_mode(screensaver_mcp_list_viewport_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_remove_flag(screensaver_mcp_list_viewport_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(screensaver_mcp_list_viewport_, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+    lv_obj_center(screensaver_mcp_list_viewport_);
+
+    screensaver_mcp_list_title_label_ = lv_label_create(screensaver_mcp_list_viewport_);
+    lv_obj_set_width(screensaver_mcp_list_title_label_, kCustomMcpListTitleWidth);
+    lv_obj_set_height(screensaver_mcp_list_title_label_, LV_SIZE_CONTENT);
+    lv_obj_set_style_text_font(screensaver_mcp_list_title_label_, text_font, 0);
+    lv_obj_set_style_text_color(
+        screensaver_mcp_list_title_label_, lv_color_white(), 0);
+    lv_obj_set_style_text_align(
+        screensaver_mcp_list_title_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(screensaver_mcp_list_title_label_, LV_LABEL_LONG_CLIP);
+    lv_label_set_text(screensaver_mcp_list_title_label_, "自定义 MCP");
+    EnableLightweightBitmapTextBold(screensaver_mcp_list_title_label_);
+    lv_obj_align(
+        screensaver_mcp_list_title_label_, LV_ALIGN_TOP_MID, 0,
+        kCustomMcpListTitleTopOffset);
+
+    screensaver_mcp_list_item_viewport_ = lv_obj_create(screensaver_mcp_list_viewport_);
+    lv_obj_set_size(
+        screensaver_mcp_list_item_viewport_,
+        kCustomMcpListItemViewportWidth,
+        kCustomMcpListItemViewportHeight);
+    lv_obj_set_style_bg_opa(screensaver_mcp_list_item_viewport_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_radius(
+        screensaver_mcp_list_item_viewport_, kCustomMcpListViewportRadius, 0);
+    lv_obj_set_style_border_width(screensaver_mcp_list_item_viewport_, 0, 0);
+    lv_obj_set_style_pad_all(screensaver_mcp_list_item_viewport_, 0, 0);
+    lv_obj_set_scrollbar_mode(
+        screensaver_mcp_list_item_viewport_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_remove_flag(
+        screensaver_mcp_list_item_viewport_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(
+        screensaver_mcp_list_item_viewport_, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+    lv_obj_align(
+        screensaver_mcp_list_item_viewport_, LV_ALIGN_CENTER, 0,
+        kCustomMcpListItemViewportOffsetY);
+
+    screensaver_mcp_list_label_ = lv_label_create(screensaver_mcp_list_item_viewport_);
+    lv_obj_set_width(screensaver_mcp_list_label_, kCustomMcpListTextWidth);
+    lv_obj_set_height(screensaver_mcp_list_label_, LV_SIZE_CONTENT);
+    lv_obj_set_style_text_font(screensaver_mcp_list_label_, text_font, 0);
+    lv_obj_set_style_text_color(
+        screensaver_mcp_list_label_, lv_color_hex(0xE8ECEF), 0);
+    lv_obj_set_style_text_align(
+        screensaver_mcp_list_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_line_space(
+        screensaver_mcp_list_label_, kCustomMcpListLineSpacing, 0);
+    lv_label_set_long_mode(screensaver_mcp_list_label_, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(screensaver_mcp_list_label_, "暂无自定义 MCP");
+    EnableLightweightBitmapTextBold(screensaver_mcp_list_label_);
+    lv_obj_center(screensaver_mcp_list_label_);
+
+    screensaver_mcp_list_switch_timer_ = lv_timer_create(
+        CustomMcpListSwitchTimerCallback,
+        kCustomMcpListSwitchPeriodMs,
+        this);
+    lv_timer_pause(screensaver_mcp_list_switch_timer_);
+    lv_obj_add_flag(screensaver_mcp_list_viewport_, LV_OBJ_FLAG_HIDDEN);
+
     /* 当前天气位置独占一行并位于天气三列上方，固定宽度保证文本始终以圆屏中心对齐。 */
     screensaver_weather_location_label_ = lv_label_create(screensaver_container_);
     lv_obj_set_width(screensaver_weather_location_label_, kScreensaverLocationWidth);
@@ -1598,6 +1792,7 @@ void LcdDisplay::CreateScreensaverUI() {
 
     /* 使用当前主题字体，并把不同源字号换算为各信息层级对应的表盘视觉字号。 */
     ApplyScreensaverTextFont(text_font);
+    ApplyCustomMcpListFont(text_font);
     ApplyScreensaverLocationFont(text_font);
     ApplyScreensaverWeatherFont(text_font);
     ApplyScreensaverDateFont(text_font);
@@ -1794,7 +1989,8 @@ void LcdDisplay::HideDeviceBinding() {
  *          由 BackendService 独立更新。本方法仅在标签内容变化时重绘，降低每秒刷新负担。
  */
 void LcdDisplay::UpdateScreensaverContent() {
-    if (!screensaver_active_ || screensaver_container_ == nullptr) {
+    if (!screensaver_active_ || screensaver_container_ == nullptr
+        || custom_mcp_list_active_.load()) {
         return;
     }
 
@@ -1910,6 +2106,7 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
 
     screensaver_active_ = enabled;
     if (enabled) {
+        SetStandardScreensaverContentVisible(true);
         if (gif_controller_) {
             gif_controller_->Stop();
         }
@@ -1929,6 +2126,11 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
         }
         lv_obj_invalidate(screensaver_container_);
     } else {
+        custom_mcp_list_active_.store(false);
+        SetStandardScreensaverContentVisible(true);
+        if (screensaver_mcp_list_switch_timer_ != nullptr) {
+            lv_timer_pause(screensaver_mcp_list_switch_timer_);
+        }
         if (screensaver_memo_timer_ != nullptr) {
             lv_timer_pause(screensaver_memo_timer_);
         }
@@ -1944,6 +2146,137 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
         }
         UpdateSubtitleScroll();
     }
+}
+
+/**
+ * @brief 显示仅保留表盘外圈的自定义 MCP 清单页面。
+ * @param title 固定显示在顶部的清单标题。
+ * @param items 按 5 秒间隔轮播的 MCP 名称和说明数组。
+ */
+void LcdDisplay::ShowCustomMcpList(
+    const std::string& title,
+    const std::vector<std::string>& items) {
+    DisplayLockGuard lock(this);
+    if (screensaver_container_ == nullptr
+        || screensaver_mcp_list_viewport_ == nullptr
+        || screensaver_mcp_list_title_label_ == nullptr
+        || screensaver_mcp_list_label_ == nullptr) {
+        return;
+    }
+
+    custom_mcp_list_active_.store(true);
+    screensaver_active_ = true;
+    if (gif_controller_) {
+        gif_controller_->Stop();
+    }
+    if (chat_message_label_ != nullptr) {
+        lv_anim_delete(chat_message_label_, nullptr);
+        lv_obj_set_style_translate_y(chat_message_label_, 0, 0);
+    }
+    if (screensaver_memo_timer_ != nullptr) {
+        lv_timer_pause(screensaver_memo_timer_);
+    }
+    lv_anim_delete(this, ScreensaverMemoScrollAnimationCallback);
+    SetStandardScreensaverContentVisible(false);
+
+    SetLabelTextIfChanged(
+        screensaver_mcp_list_title_label_,
+        title.empty() ? "自定义 MCP" : title.c_str());
+    custom_mcp_list_items_ = items;
+    if (custom_mcp_list_items_.empty()) {
+        custom_mcp_list_items_.push_back("暂无自定义 MCP");
+    }
+    custom_mcp_list_index_ = 0;
+    if (screensaver_scale_ != nullptr && screensaver_second_section_ != nullptr) {
+        lv_scale_set_section_range(screensaver_scale_, screensaver_second_section_, 0, 0);
+        lv_obj_invalidate(screensaver_scale_);
+    }
+    UpdateCustomMcpListItem();
+    if (screensaver_mcp_list_switch_timer_ != nullptr) {
+        if (custom_mcp_list_items_.size() > 1) {
+            lv_timer_resume(screensaver_mcp_list_switch_timer_);
+            lv_timer_reset(screensaver_mcp_list_switch_timer_);
+        } else {
+            lv_timer_pause(screensaver_mcp_list_switch_timer_);
+        }
+    }
+    lv_obj_remove_flag(screensaver_container_, LV_OBJ_FLAG_HIDDEN);
+    if (binding_active_ && binding_container_ != nullptr) {
+        lv_obj_move_foreground(binding_container_);
+    }
+    lv_obj_invalidate(screensaver_container_);
+}
+
+/**
+ * @brief 退出自定义 MCP 清单页面。
+ * @details 复用屏保退出路径，统一停止列表动画、恢复普通内容并重新启用对话界面动画。
+ */
+void LcdDisplay::HideCustomMcpList() {
+    if (!custom_mcp_list_active_.load()) {
+        return;
+    }
+    SetScreensaverMode(false);
+}
+
+/**
+ * @brief 更新当前 MCP 单项并在内容视口中垂直居中。
+ * @details 超出单项安全高度时使用省略号截断，不启动滚动，确保语音播放期间屏幕保持低负载。
+ */
+void LcdDisplay::UpdateCustomMcpListItem() {
+    if (screensaver_mcp_list_label_ == nullptr
+        || screensaver_mcp_list_item_viewport_ == nullptr
+        || custom_mcp_list_items_.empty()) {
+        return;
+    }
+
+    if (custom_mcp_list_index_ >= custom_mcp_list_items_.size()) {
+        custom_mcp_list_index_ = 0;
+    }
+    lv_label_set_long_mode(screensaver_mcp_list_label_, LV_LABEL_LONG_WRAP);
+    lv_obj_set_height(screensaver_mcp_list_label_, LV_SIZE_CONTENT);
+    lv_label_set_text(
+        screensaver_mcp_list_label_,
+        custom_mcp_list_items_[custom_mcp_list_index_].c_str());
+    lv_obj_update_layout(screensaver_mcp_list_label_);
+
+    const int text_scale =
+        lv_obj_get_style_transform_scale_y_safe(
+            screensaver_mcp_list_label_, LV_PART_MAIN);
+    const int logical_content_height = lv_obj_get_height(screensaver_mcp_list_label_);
+    const int visible_content_height =
+        (logical_content_height * text_scale + 255) / 256;
+    int visible_height = visible_content_height;
+    if (visible_content_height > kCustomMcpListItemSafeHeight) {
+        const int logical_safe_height =
+            (kCustomMcpListItemSafeHeight * 256 + text_scale - 1) / text_scale;
+        lv_label_set_long_mode(screensaver_mcp_list_label_, LV_LABEL_LONG_DOT);
+        lv_obj_set_height(screensaver_mcp_list_label_, logical_safe_height);
+        visible_height = kCustomMcpListItemSafeHeight;
+    }
+    lv_obj_align(
+        screensaver_mcp_list_label_,
+        LV_ALIGN_TOP_MID,
+        0,
+        (kCustomMcpListItemViewportHeight - visible_height) / 2);
+    lv_obj_invalidate(screensaver_mcp_list_item_viewport_);
+}
+
+/**
+ * @brief 每 5 秒切换到下一项 MCP。
+ * @param timer user_data 指向当前 LcdDisplay 实例。
+ */
+void LcdDisplay::CustomMcpListSwitchTimerCallback(lv_timer_t* timer) {
+    auto* display = static_cast<LcdDisplay*>(lv_timer_get_user_data(timer));
+    if (display == nullptr || !display->screensaver_active_
+        || !display->custom_mcp_list_active_.load()
+        || display->custom_mcp_list_items_.size() <= 1) {
+        lv_timer_pause(timer);
+        return;
+    }
+    display->custom_mcp_list_index_ =
+        (display->custom_mcp_list_index_ + 1)
+        % display->custom_mcp_list_items_.size();
+    display->UpdateCustomMcpListItem();
 }
 
 /**
@@ -3101,12 +3434,16 @@ void LcdDisplay::SetTheme(Theme* theme) {
      * 表盘标签设置了局部字体，不会自动继承屏幕字体，因此需要在此显式同步。
      */
     ApplyScreensaverTextFont(text_font);
+    ApplyCustomMcpListFont(text_font);
     ApplyScreensaverLocationFont(text_font);
     ApplyScreensaverWeatherFont(text_font);
     ApplyScreensaverDateFont(text_font);
     ApplyScreensaverStatusIconFont(icon_font);
     ApplyDeviceBindingFont(text_font);
     UpdateScreensaverMemo();
+    if (custom_mcp_list_active_.load()) {
+        UpdateCustomMcpListItem();
+    }
 
     // Set background image
     if (lvgl_theme->background_image() != nullptr) {

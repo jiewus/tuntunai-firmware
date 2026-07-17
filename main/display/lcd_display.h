@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <memory>
+#include <string>
 #include <vector>
 
 #define PREVIEW_IMAGE_DURATION_MS 5000
@@ -89,6 +90,34 @@ protected:
      */
     lv_obj_t* screensaver_battery_label_ = nullptr;
     /**
+     * @brief 覆盖刻度内圆形安全区的自定义 MCP 清单透明视口。
+     */
+    lv_obj_t* screensaver_mcp_list_viewport_ = nullptr;
+    /**
+     * @brief 固定显示在 MCP 清单页面顶部的 30px 标题标签。
+     */
+    lv_obj_t* screensaver_mcp_list_title_label_ = nullptr;
+    /**
+     * @brief 承载当前单个 MCP 内容的圆角透明视口。
+     */
+    lv_obj_t* screensaver_mcp_list_item_viewport_ = nullptr;
+    /**
+     * @brief 在圆角视口中显示当前单个 MCP 名称和说明的文本标签。
+     */
+    lv_obj_t* screensaver_mcp_list_label_ = nullptr;
+    /**
+     * @brief 每 5 秒切换到下一项 MCP 的 LVGL 定时器。
+     */
+    lv_timer_t* screensaver_mcp_list_switch_timer_ = nullptr;
+    /**
+     * @brief 当前页面按后台清单顺序保存的 MCP 单项展示文本。
+     */
+    std::vector<std::string> custom_mcp_list_items_;
+    /**
+     * @brief 当前正在显示的 MCP 项目下标。
+     */
+    size_t custom_mcp_list_index_ = 0;
+    /**
      * @brief 覆盖普通界面和屏保的设备绑定页面根容器。
      */
     lv_obj_t* binding_container_ = nullptr;
@@ -113,6 +142,10 @@ protected:
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
     bool hide_subtitle_ = false;  ///< true 时不在屏幕显示对话字幕。
     bool screensaver_active_ = false;  ///< true 时金属黑表盘覆盖正常对话界面。
+    /**
+     * @brief true 时表盘只显示外圈和自定义 MCP 清单。
+     */
+    std::atomic<bool> custom_mcp_list_active_{false};
     /**
      * @brief true 时设备绑定页面覆盖屏保和普通对话界面。
      */
@@ -189,6 +222,16 @@ protected:
      */
     void ApplyScreensaverStatusIconFont(const lv_font_t* font);
     /**
+     * @brief 将主题字体应用到自定义 MCP 清单，并保持固定的圆屏视觉字号和宽度。
+     * @param font 当前主题的完整中文字库。
+     */
+    void ApplyCustomMcpListFont(const lv_font_t* font);
+    /**
+     * @brief 显示或隐藏普通表盘内容，同时反向切换自定义 MCP 清单视口。
+     * @param visible true 显示天气、日期、时间、备忘录和状态图标。
+     */
+    void SetStandardScreensaverContentVisible(bool visible);
+    /**
      * @brief 使用当前系统时间、网络状态和电池状态刷新表盘内容。
      * @details 调用者必须已经持有 LVGL 锁；农历由公历日期在本地换算，天气和待办区域
      *          在数据接口接入前显示占位内容。
@@ -216,6 +259,15 @@ protected:
      *          造成裁切带交界处抖动。该回调由 LVGL 动画任务调用，调用期间已处于 LVGL 上下文。
      */
     static void ScreensaverMemoScrollAnimationCallback(void* target, int32_t value);
+    /**
+     * @brief 更新当前单个 MCP 文本并在剩余区域垂直居中。
+     */
+    void UpdateCustomMcpListItem();
+    /**
+     * @brief 每 5 秒切换到下一项 MCP。
+     * @param timer user_data 指向当前 LcdDisplay 实例。
+     */
+    static void CustomMcpListSwitchTimerCallback(lv_timer_t* timer);
     /**
      * @brief LVGL 定时器回调，切换到下一条缓存备忘录。
      * @param timer user_data 指向当前 LcdDisplay 实例。
@@ -295,6 +347,18 @@ public:
      * @brief 线程安全地替换备忘录缓存，并从第一条重新开始轮播。
      */
     virtual void SetScreensaverMemos(const std::vector<std::string>& memos) override;
+    /**
+     * @brief 显示只保留表盘外圈的自定义 MCP 工具清单页面。
+     * @param title 固定显示在顶部的清单标题。
+     * @param items 按 5 秒间隔轮播的 MCP 名称和说明数组。
+     */
+    virtual void ShowCustomMcpList(
+        const std::string& title,
+        const std::vector<std::string>& items) override;
+    /**
+     * @brief 退出自定义 MCP 清单页面并恢复普通对话界面。
+     */
+    virtual void HideCustomMcpList() override;
     /**
      * @brief 线程安全地显示设备绑定码页面并更新流程说明。
      * @param binding_code 用户需要输入网页端的短绑定码；为空时隐藏绑定码框。

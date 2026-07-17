@@ -2,7 +2,7 @@
     "target": "esp32c5",
     "builds": [
         {
-            "name": "movecall-moji2-esp32c5",
+            "name": "tuntun-moji2-esp32c5",
             "sdkconfig_append": [
                 "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y",
                 "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/16m.csv\"",
