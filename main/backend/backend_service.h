@@ -539,7 +539,7 @@ private:
 
     /**
      * @brief 在设备已绑定且联网时启动一次通知同步任务。
-     * @param reconnect_mqtt true 表示同时按需获取配置并连接业务 NanoMQ。
+     * @param reconnect_mqtt true 表示同时按需获取配置并连接业务 EMQX。
      */
     void StartNotificationSync(bool reconnect_mqtt);
 
@@ -550,13 +550,13 @@ private:
     static void NotificationTaskEntry(void* context);
 
     /**
-     * @brief 连接独立业务 NanoMQ 并通过 HTTPS 拉取可处理通知。
-     * @param reconnect_mqtt true 表示允许重新创建 NanoMQ 客户端。
+     * @brief 连接独立业务 EMQX 并通过 HTTPS 拉取可处理通知。
+     * @param reconnect_mqtt true 表示允许重新创建 EMQX 客户端。
      */
     void RunNotificationSync(bool reconnect_mqtt);
 
     /**
-     * @brief 获取业务 NanoMQ 配置并建立当前设备唯一主题订阅。
+     * @brief 获取业务 EMQX 独立凭据并建立当前设备唯一主题订阅。
      * @return 成功连接和订阅时返回 true。
      */
     bool ConnectNotificationMqtt();
@@ -751,11 +751,11 @@ private:
     int64_t memo_last_success_us_ = 0;
 
     /**
-     * @brief 串行保护业务 NanoMQ、通知任务和当前待确认通知。
+     * @brief 串行保护业务 EMQX、通知任务和当前待确认通知。
      */
     std::mutex notification_mutex_;
     /**
-     * @brief 囤囤管家业务 NanoMQ 客户端，不复用小智 MQTT。
+     * @brief 囤囤管家业务 EMQX 客户端，不复用小智 MQTT。
      */
     std::unique_ptr<Mqtt> notification_mqtt_;
     /**
@@ -763,7 +763,7 @@ private:
      */
     TaskHandle_t notification_task_handle_ = nullptr;
     /**
-     * @brief 下一次同步任务是否需要重新建立业务 NanoMQ。
+     * @brief 下一次同步任务是否需要重新建立业务 EMQX。
      */
     std::atomic<bool> notification_reconnect_requested_{false};
     /**

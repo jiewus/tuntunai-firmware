@@ -84,7 +84,7 @@ namespace
     constexpr const char *kMcpExecutePath = "/api/mcp-tools/execute";
 
     /**
-     * @brief 主动通知、业务 NanoMQ 配置和设备确认接口路径。
+     * @brief 主动通知、业务 EMQX 配置和设备确认接口路径。
      */
     constexpr const char *kNotificationPendingPath = "/api/device/notifications/pending";
     constexpr const char *kNotificationMqttConfigPath = "/api/device/mqtt/config";
@@ -3642,7 +3642,7 @@ void BackendService::SaveDeviceCredential(const std::string &device_id,
 
 /**
  * @brief 在设备已绑定且联网时启动一次通知同步任务。
- * @param reconnect_mqtt true 表示同时按需重新连接业务 NanoMQ。
+ * @param reconnect_mqtt true 表示同时按需重新连接业务 EMQX。
  */
 void BackendService::StartNotificationSync(bool reconnect_mqtt)
 {
@@ -3696,8 +3696,8 @@ void BackendService::NotificationTaskEntry(void *context)
 }
 
 /**
- * @brief 按需连接业务 NanoMQ，并通过 HTTPS 获取第一条可处理通知。
- * @param reconnect_mqtt true 表示重新建立 NanoMQ 连接。
+ * @brief 按需连接业务 EMQX，并通过 HTTPS 获取第一条可处理通知。
+ * @param reconnect_mqtt true 表示重新建立 EMQX 连接。
  */
 void BackendService::RunNotificationSync(bool reconnect_mqtt)
 {
@@ -3797,7 +3797,7 @@ void BackendService::RunNotificationSync(bool reconnect_mqtt)
 }
 
 /**
- * @brief 获取业务 NanoMQ 配置并订阅当前设备唯一通知主题。
+ * @brief 获取业务 EMQX 独立凭据并订阅当前设备唯一通知主题。
  * @return 连接和订阅成功时返回 true。
  */
 bool BackendService::ConnectNotificationMqtt()
@@ -3815,7 +3815,7 @@ bool BackendService::ConnectNotificationMqtt()
         kNotificationResponseMaxBytes);
     if (!response.transport_succeeded || response.status_code != 200)
     {
-        ESP_LOGW(kTag, "业务NanoMQ配置获取失败，HTTP状态码=%d", response.status_code);
+        ESP_LOGW(kTag, "业务EMQX配置获取失败，HTTP状态码=%d", response.status_code);
         return false;
     }
     cJSON *root = nullptr;
@@ -3824,7 +3824,7 @@ bool BackendService::ConnectNotificationMqtt()
     if (!ParseSuccessData(response.body, &root, &data, message))
     {
         cJSON_Delete(root);
-        ESP_LOGW(kTag, "业务NanoMQ配置响应无效");
+        ESP_LOGW(kTag, "业务EMQX配置响应无效");
         return false;
     }
     std::string host;
@@ -3833,17 +3833,19 @@ bool BackendService::ConnectNotificationMqtt()
     std::string password;
     std::string topic;
     cJSON *port = cJSON_GetObjectItemCaseSensitive(data, "port");
+    cJSON *use_tls = cJSON_GetObjectItemCaseSensitive(data, "use_tls");
     const bool valid = ReadBoundedString(data, "host", 255, host) &&
                        ReadBoundedString(data, "client_id", 128, client_id) &&
                        ReadBoundedString(data, "username", 256, username) &&
                        ReadBoundedString(data, "password", 256, password) &&
                        ReadBoundedString(data, "topic", 255, topic) &&
-                       cJSON_IsNumber(port) && port->valueint > 0 && port->valueint <= 65535;
+                       cJSON_IsNumber(port) && port->valueint > 0 && port->valueint <= 65535 &&
+                       cJSON_IsTrue(use_tls);
     const int broker_port = cJSON_IsNumber(port) ? port->valueint : 0;
     cJSON_Delete(root);
     if (!valid)
     {
-        ESP_LOGW(kTag, "业务NanoMQ配置字段校验失败");
+        ESP_LOGW(kTag, "业务EMQX配置字段校验失败");
         return false;
     }
 
@@ -3879,15 +3881,15 @@ bool BackendService::ConnectNotificationMqtt()
         }
     });
     mqtt->OnDisconnected([]()
-                         { ESP_LOGW(kTag, "业务NanoMQ连接已断开，等待HTTPS补偿或下次重连"); });
+                         { ESP_LOGW(kTag, "业务EMQX连接已断开，等待HTTPS补偿或下次重连"); });
     if (!mqtt->Connect(host, broker_port, client_id, username, password))
     {
-        ESP_LOGW(kTag, "业务NanoMQ连接失败，错误码=0x%x", mqtt->GetLastError());
+        ESP_LOGW(kTag, "业务EMQX连接失败，错误码=0x%x", mqtt->GetLastError());
         return false;
     }
     if (!mqtt->Subscribe(topic, 1))
     {
-        ESP_LOGW(kTag, "业务NanoMQ主题订阅失败");
+        ESP_LOGW(kTag, "业务EMQX主题订阅失败");
         mqtt->Disconnect();
         return false;
     }
@@ -3899,7 +3901,7 @@ bool BackendService::ConnectNotificationMqtt()
         }
         notification_mqtt_ = std::move(mqtt);
     }
-    ESP_LOGI(kTag, "业务NanoMQ连接成功并已订阅当前设备通知主题");
+    ESP_LOGI(kTag, "业务EMQX连接成功并已订阅当前设备通知主题");
     return true;
 }
 
