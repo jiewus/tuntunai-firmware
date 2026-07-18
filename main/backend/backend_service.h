@@ -4,11 +4,13 @@
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <mqtt.h>
 
 #include <atomic>
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -23,7 +25,7 @@ class McpServer;
  * @brief 管理固件与囤囤管家后端之间的异步业务流程。
  *
  * 当前版本实现设备绑定码申请、状态轮询、设备 Token 领取、绑定页面联动、屏保天气与备忘录
- * 同步，以及内置和动态 MCP 工具执行。主动语音提醒不属于本阶段范围。
+ * 同步、内置和动态 MCP 工具执行，以及主动通知同步和语音播放。
  */
 class BackendService {
 public:
@@ -158,6 +160,20 @@ private:
     };
 
     /**
+     * @brief 传递给独立天气播报设置任务的强类型参数。
+     */
+    struct WeatherAnnouncementTaskContext {
+        /** @brief 指向固件生命周期内唯一后端服务实例。 */
+        BackendService* service = nullptr;
+        /** @brief true 表示开启或修改每日播报，false 表示关闭。 */
+        bool enabled = false;
+        /** @brief 开启时使用的 HH:mm:ss 本地时间。 */
+        std::string announcement_time;
+        /** @brief 设置完成后回复原 MCP 调用的一次性回调。 */
+        WeatherLocationCompletion completion;
+    };
+
+    /**
      * @brief 传递给独立动态工具执行任务的不可变调用参数。
      */
     struct DynamicToolTaskContext {
@@ -267,13 +283,37 @@ private:
      */
     struct DynamicToolSummary {
         /**
-         * @brief 后端签发且包含 custom. 前缀的完整工具名称。
+         * @brief 后端签发且包含 custom. 前缀的完整工具代码。
          */
         std::string name;
+        /**
+         * @brief 后台配置的中文工具名称。
+         */
+        std::string display_name;
         /**
          * @brief 后台配置并提供给大模型的工具用途说明。
          */
         std::string description;
+    };
+
+    /**
+     * @brief 保存当前设备等待处理的一条主动通知。
+     */
+    struct PendingNotification {
+        /** @brief 通知 UUID。 */
+        std::string notification_id;
+        /** @brief 设备投递 UUID。 */
+        std::string delivery_id;
+        /** @brief 设备页面显示文本。 */
+        std::string display_text;
+        /** @brief MCP 名称、天气播报或备忘录提醒。 */
+        std::string source_title;
+        /** @brief 1直接播报，2询问后播报。 */
+        int notification_mode = 1;
+        /** @brief true 表示后端已经准备可播放 Ogg/Opus。 */
+        bool has_audio = false;
+        /** @brief true 表示其余字段包含有效通知。 */
+        bool valid = false;
     };
 
     /**
@@ -337,6 +377,27 @@ private:
     void RunWeatherLocationTask(
         const std::string& location_name,
         bool use_ip_auto,
+        WeatherLocationCompletion& completion);
+
+    /**
+     * @brief 启动开启、修改或关闭每日天气播报的独立任务。
+     */
+    void StartWeatherAnnouncementTask(
+        bool enabled,
+        const std::string& announcement_time,
+        WeatherLocationCompletion completion);
+
+    /**
+     * @brief FreeRTOS 天气播报设置任务入口。
+     */
+    static void WeatherAnnouncementTaskEntry(void* context);
+
+    /**
+     * @brief 读取当前天气位置并只更新每日播报配置。
+     */
+    void RunWeatherAnnouncementTask(
+        bool enabled,
+        const std::string& announcement_time,
         WeatherLocationCompletion& completion);
 
     /**
@@ -477,6 +538,85 @@ private:
     void ShowWeatherStatusIfUnavailable(const std::string& message);
 
     /**
+     * @brief 在设备已绑定且联网时启动一次通知同步任务。
+     * @param reconnect_mqtt true 表示同时按需获取配置并连接业务 NanoMQ。
+     */
+    void StartNotificationSync(bool reconnect_mqtt);
+
+    /**
+     * @brief FreeRTOS 主动通知同步任务入口。
+     * @param context 指向当前 BackendService 单例。
+     */
+    static void NotificationTaskEntry(void* context);
+
+    /**
+     * @brief 连接独立业务 NanoMQ 并通过 HTTPS 拉取可处理通知。
+     * @param reconnect_mqtt true 表示允许重新创建 NanoMQ 客户端。
+     */
+    void RunNotificationSync(bool reconnect_mqtt);
+
+    /**
+     * @brief 获取业务 NanoMQ 配置并建立当前设备唯一主题订阅。
+     * @return 成功连接和订阅时返回 true。
+     */
+    bool ConnectNotificationMqtt();
+
+    /**
+     * @brief 显示并处理当前待通知；设备忙碌时向后端确认延迟。
+     * @param notification 已完成 JSON 边界校验的通知快照。
+     */
+    void HandlePendingNotification(const PendingNotification& notification);
+
+    /**
+     * @brief 启动确认模式的内置询问语和无回答超时任务。
+     */
+    void StartNotificationConfirmation();
+
+    /**
+     * @brief 确认模式内置询问和超时任务入口。
+     * @param context 指向当前 BackendService 单例。
+     */
+    static void NotificationConfirmationTaskEntry(void* context);
+
+    /**
+     * @brief 播放固定询问语、开启一次监听并在无结果时确认延迟。
+     */
+    void RunNotificationConfirmation();
+
+    /**
+     * @brief 下载并播放当前等待通知的 Ogg/Opus 音频。
+     * @param wait_for_idle true 表示等待小智当前会话结束后再播放。
+     */
+    void StartPendingNotificationPlayback(bool wait_for_idle);
+
+    /**
+     * @brief 通知音频播放任务入口。
+     * @param context 指向当前 BackendService 单例。
+     */
+    static void NotificationPlaybackTaskEntry(void* context);
+
+    /**
+     * @brief 下载当前通知音频、更新页面并依次确认播放状态。
+     */
+    void RunPendingNotificationPlayback();
+
+    /**
+     * @brief 向后端确认当前通知投递状态。
+     * @param notification 当前通知快照。
+     * @param ack_type 固定设备确认动作数值。
+     * @return 后端成功接收确认时返回 true。
+     */
+    bool AckNotification(
+        const PendingNotification& notification,
+        int ack_type);
+
+    /**
+     * @brief 周期通知同步定时器回调。
+     * @param context 指向当前 BackendService 单例。
+     */
+    static void NotificationTimerCallback(void* context);
+
+    /**
      * @brief 从 NVS 恢复当前绑定码、绑定会话 Token 和已领取设备凭据。
      */
     void LoadBindingState();
@@ -577,6 +717,10 @@ private:
      */
     TaskHandle_t weather_location_task_handle_ = nullptr;
     /**
+     * @brief 当前天气播报设置任务句柄。
+     */
+    TaskHandle_t weather_announcement_task_handle_ = nullptr;
+    /**
      * @brief 周期检查天气缓存是否过期的 esp_timer 句柄。
      */
     esp_timer_handle_t weather_timer_ = nullptr;
@@ -605,6 +749,39 @@ private:
      * @brief 最近一次成功同步备忘录的单调时钟时间，单位为微秒。
      */
     int64_t memo_last_success_us_ = 0;
+
+    /**
+     * @brief 串行保护业务 NanoMQ、通知任务和当前待确认通知。
+     */
+    std::mutex notification_mutex_;
+    /**
+     * @brief 囤囤管家业务 NanoMQ 客户端，不复用小智 MQTT。
+     */
+    std::unique_ptr<Mqtt> notification_mqtt_;
+    /**
+     * @brief 当前通知同步任务句柄。
+     */
+    TaskHandle_t notification_task_handle_ = nullptr;
+    /**
+     * @brief 下一次同步任务是否需要重新建立业务 NanoMQ。
+     */
+    std::atomic<bool> notification_reconnect_requested_{false};
+    /**
+     * @brief 当前通知音频播放任务句柄。
+     */
+    TaskHandle_t notification_playback_task_handle_ = nullptr;
+    /**
+     * @brief 当前确认模式询问和超时任务句柄。
+     */
+    TaskHandle_t notification_confirmation_task_handle_ = nullptr;
+    /**
+     * @brief 五分钟 HTTPS 补偿同步定时器。
+     */
+    esp_timer_handle_t notification_timer_ = nullptr;
+    /**
+     * @brief 当前等待直接播放或用户确认的通知。
+     */
+    PendingNotification pending_notification_;
 };
 
 #endif

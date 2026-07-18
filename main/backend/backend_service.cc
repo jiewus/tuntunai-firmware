@@ -24,6 +24,7 @@
 #include <utility>
 
 #include "application.h"
+#include "assets/lang_config.h"
 #include "boards/common/board.h"
 #include "display/display.h"
 #include "mcp_server.h"
@@ -83,6 +84,12 @@ namespace
     constexpr const char *kMcpExecutePath = "/api/mcp-tools/execute";
 
     /**
+     * @brief 主动通知、业务 NanoMQ 配置和设备确认接口路径。
+     */
+    constexpr const char *kNotificationPendingPath = "/api/device/notifications/pending";
+    constexpr const char *kNotificationMqttConfigPath = "/api/device/mqtt/config";
+
+    /**
      * @brief 设备型号在后端 DeviceModelEnum 中对应 Tuntun Moji2 ESP32-C5 的数值。
      */
     constexpr int kDeviceModelTuntunMoji2Esp32C5 = 1;
@@ -119,6 +126,32 @@ namespace
      */
     constexpr uint32_t kMcpTaskStackSize = 8192;
     constexpr UBaseType_t kMcpTaskPriority = 3;
+
+    /**
+     * @brief 主动通知 HTTPS 补偿、音频下载和任务资源限制。
+     */
+    constexpr int64_t kNotificationCheckIntervalUs = 5LL * 60LL * 1000LL * 1000LL;
+    constexpr uint32_t kNotificationTaskStackSize = 10240;
+    constexpr UBaseType_t kNotificationTaskPriority = 4;
+    constexpr size_t kNotificationResponseMaxBytes = 12288;
+    constexpr size_t kNotificationAudioMaxBytes = 512 * 1024;
+    constexpr size_t kNotificationTextMaxBytes = 1500;
+    constexpr uint32_t kNotificationConfirmationTimeoutMs = 15000;
+
+    /**
+     * @brief 后端 NotificationModeEnum 和设备确认动作稳定数值。
+     */
+    constexpr int kNotificationModeDirect = 1;
+    constexpr int kNotificationModeConfirm = 2;
+    constexpr int kNotificationSourceScheduledMcp = 1;
+    constexpr int kNotificationSourceWeather = 2;
+    constexpr int kNotificationSourceMemo = 3;
+    constexpr int kNotificationAckReceived = 1;
+    constexpr int kNotificationAckDeferred = 2;
+    constexpr int kNotificationAckPlaying = 3;
+    constexpr int kNotificationAckCompleted = 4;
+    constexpr int kNotificationAckFailed = 5;
+    constexpr int kNotificationAckDismissed = 6;
 
     /**
      * @brief 去除后台动态工具名称的固定命名空间，得到适合屏幕和语音介绍的名称。
@@ -172,6 +205,7 @@ namespace
      */
     constexpr size_t kMaximumDynamicToolCount = 10;
     constexpr size_t kDynamicToolNameMaxBytes = 64;
+    constexpr size_t kDynamicToolDisplayNameMaxBytes = 400;
     constexpr size_t kDynamicToolDescriptionMaxBytes = 512;
     constexpr size_t kDynamicToolResultTextMaxBytes = 2048;
     constexpr const char *kDynamicToolSchemaVersion = "1.0";
@@ -448,11 +482,13 @@ namespace
      * @brief 构建固定城市或 IP 自动定位模式的天气设置请求 JSON。
      * @param location_name 固定模式下用户提供的城市或区县名称；IP 模式下为空。
      * @param use_ip_auto true 使用公网 IP 自动定位；false 使用固定城市。
-     * @return 包含位置模式和位置名称的紧凑 JSON；内存不足时返回空字符串。
+     * @param announcement_time 每日播报时间；空字符串表示关闭播报。
+     * @return 包含完整天气配置的紧凑 JSON；内存不足时返回空字符串。
      */
     std::string BuildWeatherLocationRequestJson(
         const std::string &location_name,
-        bool use_ip_auto)
+        bool use_ip_auto,
+        const std::string &announcement_time)
     {
         cJSON *root = cJSON_CreateObject();
         if (root == nullptr)
@@ -468,11 +504,41 @@ namespace
         {
             cJSON_AddStringToObject(root, "location_name", location_name.c_str());
         }
+        if (announcement_time.empty())
+        {
+            cJSON_AddNullToObject(root, "announcement_time");
+        }
+        else
+        {
+            cJSON_AddStringToObject(root, "announcement_time", announcement_time.c_str());
+        }
         char *json_text = cJSON_PrintUnformatted(root);
         std::string result = json_text == nullptr ? std::string() : std::string(json_text);
         cJSON_free(json_text);
         cJSON_Delete(root);
         return result;
+    }
+
+    /**
+     * @brief 校验后端 TimeOnly 使用的 HH:mm:ss 文本。
+     */
+    bool IsValidTimeText(const std::string &value)
+    {
+        if (value.size() != 8 || value[2] != ':' || value[5] != ':')
+        {
+            return false;
+        }
+        for (size_t index : {0U, 1U, 3U, 4U, 6U, 7U})
+        {
+            if (value[index] < '0' || value[index] > '9')
+            {
+                return false;
+            }
+        }
+        const int hour = (value[0] - '0') * 10 + value[1] - '0';
+        const int minute = (value[3] - '0') * 10 + value[4] - '0';
+        const int second = (value[6] - '0') * 10 + value[7] - '0';
+        return hour <= 23 && minute <= 59 && second <= 59;
     }
 
     /**
@@ -533,6 +599,30 @@ namespace
             cJSON_AddStringToObject(root, "remind_at", remind_at.c_str());
         }
         cJSON_AddNumberToObject(root, "status", status);
+        char *json_text = cJSON_PrintUnformatted(root);
+        std::string result = json_text == nullptr ? std::string() : std::string(json_text);
+        cJSON_free(json_text);
+        cJSON_Delete(root);
+        return result;
+    }
+
+    /**
+     * @brief 构建设备主动通知确认请求 JSON。
+     * @param delivery_id 当前设备投递 UUID。
+     * @param ack_type 固定确认动作数值。
+     * @return 紧凑 JSON；内存不足时返回空字符串。
+     */
+    std::string BuildNotificationAckJson(
+        const std::string &delivery_id,
+        int ack_type)
+    {
+        cJSON *root = cJSON_CreateObject();
+        if (root == nullptr)
+        {
+            return {};
+        }
+        cJSON_AddStringToObject(root, "delivery_id", delivery_id.c_str());
+        cJSON_AddNumberToObject(root, "ack_type", ack_type);
         char *json_text = cJSON_PrintUnformatted(root);
         std::string result = json_text == nullptr ? std::string() : std::string(json_text);
         cJSON_free(json_text);
@@ -848,6 +938,30 @@ void BackendService::Start()
         }
     }
 
+    const esp_timer_create_args_t notification_timer_args = {
+        .callback = NotificationTimerCallback,
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "notify_sync",
+        .skip_unhandled_events = true,
+    };
+    timer_error = esp_timer_create(&notification_timer_args, &notification_timer_);
+    if (timer_error == ESP_OK)
+    {
+        timer_error = esp_timer_start_periodic(
+            notification_timer_, kNotificationCheckIntervalUs);
+    }
+    if (timer_error != ESP_OK)
+    {
+        ESP_LOGE(kTag, "主动通知定时器启动失败，原因=%s",
+                 esp_err_to_name(timer_error));
+        if (notification_timer_ != nullptr)
+        {
+            esp_timer_delete(notification_timer_);
+            notification_timer_ = nullptr;
+        }
+    }
+
     ESP_LOGI(kTag, "囤囤管家后端服务已初始化，接口地址=%s，设备凭据=%s",
              CONFIG_TUNTUN_API_URL, device_access_token_.empty() ? "缺失" : "可用");
 }
@@ -897,18 +1011,13 @@ void BackendService::RegisterMcpTools(McpServer &server)
                     + " 个自定义 MCP。";
                 for (size_t index = 0; index < summaries.size(); ++index)
                 {
-                    const std::string visible_name =
-                        GetVisibleDynamicToolName(summaries[index].name);
                     std::string screen_item =
-                        std::to_string(index + 1) + ". " + visible_name;
-                    if (!summaries[index].description.empty())
-                    {
-                        screen_item += "\n" + summaries[index].description;
-                    }
+                        std::to_string(index + 1) + ". " + summaries[index].display_name
+                        + "\n" + summaries[index].name;
                     screen_items.push_back(std::move(screen_item));
 
                     speech_text += "第 " + std::to_string(index + 1) + " 个是 "
-                        + visible_name;
+                        + summaries[index].display_name;
                     if (!summaries[index].description.empty())
                     {
                         speech_text += "，" + summaries[index].description;
@@ -927,6 +1036,45 @@ void BackendService::RegisterMcpTools(McpServer &server)
             ESP_LOGI(kTag, "正在显示并介绍自定义 MCP，数量=%u",
                      static_cast<unsigned>(summaries.size()));
             return speech_text;
+        });
+
+    server.AddTool(
+        "self.tuntun.play_pending_notification",
+        "播放当前设备正在等待用户确认的囤囤管家主动通知。仅当设备刚询问是否播报，且用户明确回答播放、好的或需要时调用。",
+        PropertyList(),
+        [this](const PropertyList &properties) -> ReturnValue
+        {
+            (void)properties;
+            {
+                std::lock_guard<std::mutex> lock(notification_mutex_);
+                if (!pending_notification_.valid)
+                {
+                    return std::string("当前没有等待确认的通知。");
+                }
+            }
+            StartPendingNotificationPlayback(true);
+            return std::string("好的，当前对话结束后为你播报通知。");
+        });
+
+    server.AddTool(
+        "self.tuntun.dismiss_pending_notification",
+        "拒绝播放当前设备正在等待用户确认的囤囤管家主动通知。仅当用户明确回答不播放、不需要或取消时调用。",
+        PropertyList(),
+        [this](const PropertyList &properties) -> ReturnValue
+        {
+            (void)properties;
+            PendingNotification notification;
+            {
+                std::lock_guard<std::mutex> lock(notification_mutex_);
+                if (!pending_notification_.valid)
+                {
+                    return std::string("当前没有等待确认的通知。");
+                }
+                notification = pending_notification_;
+                pending_notification_ = PendingNotification{};
+            }
+            AckNotification(notification, kNotificationAckDismissed);
+            return std::string("已取消本次通知播报。");
         });
 
     // 绑定工具在设备 MCP 服务器上注册为异步工具，确保在网络请求完成前不会阻塞语音会话。
@@ -994,6 +1142,42 @@ void BackendService::RegisterMcpTools(McpServer &server)
             StartWeatherLocationTask(
                 "",
                 true,
+                [completion = std::move(completion)](const std::string &message,
+                                                     bool is_error) mutable
+                {
+                    completion(McpToolResult{message, is_error});
+                });
+        });
+
+    server.AddAsyncTool(
+        "self.tuntun.set_weather_announcement",
+        "设置当前设备的每日天气播报。用户必须给出具体播报时间；announcement_time 使用 HH:mm:ss。"
+        "到达设置时间后设备直接播报天气。",
+        PropertyList({
+            Property("announcement_time", kPropertyTypeString)
+        }),
+        [this](const PropertyList &properties, McpToolCompletion completion)
+        {
+            StartWeatherAnnouncementTask(
+                true,
+                properties["announcement_time"].value<std::string>(),
+                [completion = std::move(completion)](const std::string &message,
+                                                     bool is_error) mutable
+                {
+                    completion(McpToolResult{message, is_error});
+                });
+        });
+
+    server.AddAsyncTool(
+        "self.tuntun.disable_weather_announcement",
+        "关闭当前设备的每日天气播报。用户明确要求停止、关闭或取消天气播报时调用。",
+        PropertyList(),
+        [this](const PropertyList &properties, McpToolCompletion completion)
+        {
+            (void)properties;
+            StartWeatherAnnouncementTask(
+                false,
+                "",
                 [completion = std::move(completion)](const std::string &message,
                                                      bool is_error) mutable
                 {
@@ -1171,6 +1355,7 @@ void BackendService::OnNetworkConnected()
         StartMemoSync(false);
     }
     StartMcpManifestSync();
+    StartNotificationSync(true);
 }
 
 /**
@@ -1179,6 +1364,14 @@ void BackendService::OnNetworkConnected()
 void BackendService::OnNetworkDisconnected()
 {
     network_connected_.store(false);
+    {
+        std::lock_guard<std::mutex> lock(notification_mutex_);
+        if (notification_mqtt_ != nullptr)
+        {
+            notification_mqtt_->Disconnect();
+            notification_mqtt_.reset();
+        }
+    }
     ShowWeatherStatusIfUnavailable("等待网络连接");
     ShowMemoStatusIfUnavailable("等待网络连接");
 }
@@ -1331,6 +1524,7 @@ void BackendService::RunMcpManifestSync()
     cJSON_ArrayForEach(tool, tools)
     {
         std::string tool_name;
+        std::string display_name;
         std::string description;
         uint32_t tool_revision = 0;
         cJSON *revision_item = cJSON_GetObjectItemCaseSensitive(tool, "tool_revision");
@@ -1339,6 +1533,11 @@ void BackendService::RunMcpManifestSync()
         manifest_valid = cJSON_IsObject(tool)
             && ReadBoundedString(tool, "tool_name", kDynamicToolNameMaxBytes, tool_name)
             && IsValidDynamicToolName(tool_name)
+            && ReadBoundedString(
+                tool,
+                "display_name",
+                kDynamicToolDisplayNameMaxBytes,
+                display_name)
             && ReadBoundedString(
                 tool,
                 "description",
@@ -1376,7 +1575,7 @@ void BackendService::RunMcpManifestSync()
                 });
         };
         definitions.push_back(std::move(definition));
-        summaries.push_back(DynamicToolSummary{tool_name, description});
+        summaries.push_back(DynamicToolSummary{tool_name, display_name, description});
     }
     cJSON_Delete(root);
 
@@ -2636,7 +2835,8 @@ void BackendService::StartWeatherLocationTask(
     bool task_start_failed = false;
     {
         std::lock_guard<std::mutex> lock(weather_mutex_);
-        if (weather_location_task_handle_ != nullptr)
+        if (weather_location_task_handle_ != nullptr ||
+            weather_announcement_task_handle_ != nullptr)
         {
             task_already_running = true;
         }
@@ -2731,9 +2931,48 @@ void BackendService::RunWeatherLocationTask(
         return;
     }
 
+    const HttpResponse settings_response = SendJsonRequest(
+        "GET", kWeatherSettingsPath, access_token, "");
+    cJSON *settings_root = nullptr;
+    cJSON *settings_data = nullptr;
+    std::string settings_message;
+    bool settings_parsed = settings_response.transport_succeeded &&
+        settings_response.status_code == 200 &&
+        ParseSuccessData(
+            settings_response.body,
+            &settings_root,
+            &settings_data,
+            settings_message);
+    std::string announcement_time;
+    if (settings_parsed)
+    {
+        cJSON *announcement_item = cJSON_GetObjectItemCaseSensitive(
+            settings_data, "announcement_time");
+        if (cJSON_IsString(announcement_item) &&
+            announcement_item->valuestring != nullptr)
+        {
+            announcement_time = announcement_item->valuestring;
+            settings_parsed = IsValidTimeText(announcement_time);
+        }
+        else
+        {
+            settings_parsed = cJSON_IsNull(announcement_item);
+        }
+    }
+    cJSON_Delete(settings_root);
+    if (!settings_parsed)
+    {
+        FinishToolRequest(
+            completion,
+            settings_message.empty() ? "无法读取当前天气配置，请稍后重试。" : settings_message,
+            true);
+        return;
+    }
+
     const std::string request_json = BuildWeatherLocationRequestJson(
         location_name,
-        use_ip_auto);
+        use_ip_auto,
+        announcement_time);
     if (request_json.empty())
     {
         FinishToolRequest(completion, "设备内存不足，无法生成天气设置请求。", true);
@@ -2789,6 +3028,206 @@ void BackendService::RunWeatherLocationTask(
         use_ip_auto
             ? "天气位置已切换为根据设备公网 IP 自动识别。"
             : "天气城市已设置为" + resolved_location_name + "。",
+        false);
+}
+
+/**
+ * @brief 创建每日天气播报设置任务。
+ */
+void BackendService::StartWeatherAnnouncementTask(
+    bool enabled,
+    const std::string &announcement_time,
+    WeatherLocationCompletion completion)
+{
+    if (!network_connected_.load())
+    {
+        completion("设备网络尚未连接，暂时无法设置天气播报。", true);
+        return;
+    }
+    if (enabled && !IsValidTimeText(announcement_time))
+    {
+        completion("天气播报时间格式无效，请提供具体的小时和分钟。", true);
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        if (device_access_token_.empty())
+        {
+            completion("设备尚未绑定囤囤管家，无法设置天气播报。", true);
+            return;
+        }
+    }
+
+    auto *context = new (std::nothrow) WeatherAnnouncementTaskContext{
+        this,
+        enabled,
+        announcement_time,
+        std::move(completion)};
+    if (context == nullptr)
+    {
+        completion("设备内存不足，无法设置天气播报。", true);
+        return;
+    }
+
+    bool task_already_running = false;
+    bool task_start_failed = false;
+    {
+        std::lock_guard<std::mutex> lock(weather_mutex_);
+        if (weather_location_task_handle_ != nullptr ||
+            weather_announcement_task_handle_ != nullptr)
+        {
+            task_already_running = true;
+        }
+        else
+        {
+            const BaseType_t created = xTaskCreate(
+                WeatherAnnouncementTaskEntry,
+                "weather_announce",
+                kWeatherTaskStackSize,
+                context,
+                kWeatherTaskPriority,
+                &weather_announcement_task_handle_);
+            task_start_failed = created != pdPASS;
+            if (task_start_failed)
+            {
+                weather_announcement_task_handle_ = nullptr;
+            }
+        }
+    }
+    if (!task_already_running && !task_start_failed)
+    {
+        return;
+    }
+
+    auto callback = std::move(context->completion);
+    delete context;
+    callback(
+        task_already_running
+            ? "设备正在保存另一项天气设置，请稍后再试。"
+            : "设备内存不足，无法启动天气播报设置任务。",
+        true);
+}
+
+/**
+ * @brief 每日天气播报设置任务入口。
+ */
+void BackendService::WeatherAnnouncementTaskEntry(void *context)
+{
+    std::unique_ptr<WeatherAnnouncementTaskContext> task_context(
+        static_cast<WeatherAnnouncementTaskContext *>(context));
+    BackendService *service = task_context->service;
+    try
+    {
+        service->RunWeatherAnnouncementTask(
+            task_context->enabled,
+            task_context->announcement_time,
+            task_context->completion);
+    }
+    catch (const std::exception &exception)
+    {
+        ESP_LOGE(kTag, "天气播报设置任务异常，原因=%s", exception.what());
+        FinishToolRequest(
+            task_context->completion,
+            "天气播报设置失败，请稍后重试。",
+            true);
+    }
+    catch (...)
+    {
+        ESP_LOGE(kTag, "天气播报设置任务发生未知异常");
+        FinishToolRequest(
+            task_context->completion,
+            "天气播报设置失败，请稍后重试。",
+            true);
+    }
+    {
+        std::lock_guard<std::mutex> lock(service->weather_mutex_);
+        service->weather_announcement_task_handle_ = nullptr;
+    }
+    vTaskDelete(nullptr);
+}
+
+/**
+ * @brief 保留当前位置配置并更新每日天气播报。
+ */
+void BackendService::RunWeatherAnnouncementTask(
+    bool enabled,
+    const std::string &announcement_time,
+    WeatherLocationCompletion &completion)
+{
+    std::string access_token;
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        access_token = device_access_token_;
+    }
+    const HttpResponse settings_response = SendJsonRequest(
+        "GET", kWeatherSettingsPath, access_token, "");
+    cJSON *root = nullptr;
+    cJSON *data = nullptr;
+    std::string response_message;
+    bool parsed = settings_response.transport_succeeded &&
+        settings_response.status_code == 200 &&
+        ParseSuccessData(settings_response.body, &root, &data, response_message);
+    bool use_ip_auto = false;
+    std::string location_name;
+    if (parsed)
+    {
+        cJSON *location_mode = cJSON_GetObjectItemCaseSensitive(data, "location_mode");
+        parsed = cJSON_IsNumber(location_mode) &&
+            (location_mode->valueint == 1 || location_mode->valueint == 2);
+        if (parsed)
+        {
+            use_ip_auto = location_mode->valueint == 2;
+            if (!use_ip_auto)
+            {
+                parsed = ReadBoundedString(
+                    data,
+                    "location_name",
+                    kWeatherLocationInputMaxBytes,
+                    location_name);
+            }
+        }
+    }
+    cJSON_Delete(root);
+    if (!parsed)
+    {
+        FinishToolRequest(
+            completion,
+            response_message.empty() ? "无法读取当前天气配置，请稍后重试。" : response_message,
+            true);
+        return;
+    }
+
+    const std::string request_json = BuildWeatherLocationRequestJson(
+        location_name,
+        use_ip_auto,
+        enabled ? announcement_time : "");
+    const HttpResponse update_response = SendJsonRequest(
+        "PUT", kWeatherSettingsPath, access_token, request_json);
+    cJSON *update_root = nullptr;
+    cJSON *update_data = nullptr;
+    response_message.clear();
+    const bool updated = update_response.transport_succeeded &&
+        update_response.status_code == 200 &&
+        ParseSuccessData(
+            update_response.body,
+            &update_root,
+            &update_data,
+            response_message);
+    cJSON_Delete(update_root);
+    if (!updated)
+    {
+        FinishToolRequest(
+            completion,
+            response_message.empty() ? "天气播报设置失败，请稍后重试。" : response_message,
+            true);
+        return;
+    }
+
+    FinishToolRequest(
+        completion,
+        enabled
+            ? "每日天气播报已设置为" + announcement_time.substr(0, 5) + "。"
+            : "每日天气播报已关闭。",
         false);
 }
 
@@ -3199,4 +3638,545 @@ void BackendService::SaveDeviceCredential(const std::string &device_id,
     Settings settings(kSettingsNamespace, true);
     settings.SetString(kDeviceIdKey, device_id);
     settings.SetString(kDeviceTokenKey, access_token);
+}
+
+/**
+ * @brief 在设备已绑定且联网时启动一次通知同步任务。
+ * @param reconnect_mqtt true 表示同时按需重新连接业务 NanoMQ。
+ */
+void BackendService::StartNotificationSync(bool reconnect_mqtt)
+{
+    if (!network_connected_.load())
+    {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> binding_lock(binding_mutex_);
+        if (device_access_token_.empty() || device_id_.empty())
+        {
+            return;
+        }
+    }
+    std::lock_guard<std::mutex> lock(notification_mutex_);
+    if (reconnect_mqtt)
+    {
+        notification_reconnect_requested_.store(true);
+    }
+    if (notification_task_handle_ != nullptr)
+    {
+        return;
+    }
+    if (xTaskCreate(
+            NotificationTaskEntry,
+            "notify_sync",
+            kNotificationTaskStackSize,
+            this,
+            kNotificationTaskPriority,
+            &notification_task_handle_) != pdPASS)
+    {
+        notification_task_handle_ = nullptr;
+        ESP_LOGE(kTag, "主动通知同步任务创建失败");
+    }
+}
+
+/**
+ * @brief 主动通知同步任务入口。
+ * @param context 指向当前 BackendService 单例。
+ */
+void BackendService::NotificationTaskEntry(void *context)
+{
+    auto *service = static_cast<BackendService *>(context);
+    const bool reconnect_mqtt = service->notification_reconnect_requested_.exchange(false);
+    service->RunNotificationSync(reconnect_mqtt);
+    {
+        std::lock_guard<std::mutex> lock(service->notification_mutex_);
+        service->notification_task_handle_ = nullptr;
+    }
+    vTaskDelete(nullptr);
+}
+
+/**
+ * @brief 按需连接业务 NanoMQ，并通过 HTTPS 获取第一条可处理通知。
+ * @param reconnect_mqtt true 表示重新建立 NanoMQ 连接。
+ */
+void BackendService::RunNotificationSync(bool reconnect_mqtt)
+{
+    if (reconnect_mqtt || notification_mqtt_ == nullptr || !notification_mqtt_->IsConnected())
+    {
+        ConnectNotificationMqtt();
+    }
+
+    std::string access_token;
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        access_token = device_access_token_;
+    }
+    const HttpResponse response = SendJsonRequest(
+        "GET",
+        kNotificationPendingPath,
+        access_token,
+        "",
+        kNotificationResponseMaxBytes);
+    if (!response.transport_succeeded || response.status_code != 200)
+    {
+        ESP_LOGW(kTag, "主动通知同步失败，HTTP状态码=%d", response.status_code);
+        return;
+    }
+
+    cJSON *root = cJSON_Parse(response.body.c_str());
+    if (root == nullptr)
+    {
+        ESP_LOGW(kTag, "主动通知响应不是有效JSON");
+        return;
+    }
+    cJSON *code = cJSON_GetObjectItemCaseSensitive(root, "code");
+    cJSON *data = cJSON_GetObjectItemCaseSensitive(root, "data");
+    if (!cJSON_IsNumber(code) || code->valueint != 0 || !cJSON_IsArray(data))
+    {
+        cJSON_Delete(root);
+        ESP_LOGW(kTag, "主动通知响应结构无效");
+        return;
+    }
+    cJSON *item = cJSON_GetArrayItem(data, 0);
+    if (!cJSON_IsObject(item))
+    {
+        cJSON_Delete(root);
+        return;
+    }
+
+    PendingNotification notification;
+    cJSON *source_type = cJSON_GetObjectItemCaseSensitive(item, "source_type");
+    cJSON *notification_mode = cJSON_GetObjectItemCaseSensitive(item, "notification_mode");
+    cJSON *has_audio = cJSON_GetObjectItemCaseSensitive(item, "has_audio");
+    const bool valid = ReadBoundedString(
+                           item,
+                           "notification_id",
+                           50,
+                           notification.notification_id) &&
+                       ReadBoundedString(
+                           item,
+                           "delivery_id",
+                           50,
+                           notification.delivery_id) &&
+                       ReadBoundedString(
+                           item,
+                           "display_text",
+                           kNotificationTextMaxBytes,
+                           notification.display_text) &&
+                       cJSON_IsNumber(source_type) &&
+                       source_type->valueint >= kNotificationSourceScheduledMcp &&
+                       source_type->valueint <= kNotificationSourceMemo &&
+                       cJSON_IsNumber(notification_mode) &&
+                       (notification_mode->valueint == kNotificationModeDirect ||
+                        notification_mode->valueint == kNotificationModeConfirm) &&
+                       cJSON_IsBool(has_audio);
+    if (!valid)
+    {
+        cJSON_Delete(root);
+        ESP_LOGW(kTag, "主动通知字段校验失败");
+        return;
+    }
+    notification.notification_mode = notification_mode->valueint;
+    notification.has_audio = cJSON_IsTrue(has_audio);
+    if (source_type->valueint == kNotificationSourceScheduledMcp)
+    {
+        cJSON *tool_name = cJSON_GetObjectItemCaseSensitive(item, "mcp_tool_name");
+        notification.source_title = cJSON_IsString(tool_name) && tool_name->valuestring != nullptr
+            ? GetVisibleDynamicToolName(tool_name->valuestring)
+            : "MCP 通知";
+    }
+    else
+    {
+        notification.source_title = source_type->valueint == kNotificationSourceWeather
+            ? "天气播报"
+            : "备忘录提醒";
+    }
+    notification.valid = true;
+    cJSON_Delete(root);
+    HandlePendingNotification(notification);
+}
+
+/**
+ * @brief 获取业务 NanoMQ 配置并订阅当前设备唯一通知主题。
+ * @return 连接和订阅成功时返回 true。
+ */
+bool BackendService::ConnectNotificationMqtt()
+{
+    std::string access_token;
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        access_token = device_access_token_;
+    }
+    const HttpResponse response = SendJsonRequest(
+        "GET",
+        kNotificationMqttConfigPath,
+        access_token,
+        "",
+        kNotificationResponseMaxBytes);
+    if (!response.transport_succeeded || response.status_code != 200)
+    {
+        ESP_LOGW(kTag, "业务NanoMQ配置获取失败，HTTP状态码=%d", response.status_code);
+        return false;
+    }
+    cJSON *root = nullptr;
+    cJSON *data = nullptr;
+    std::string message;
+    if (!ParseSuccessData(response.body, &root, &data, message))
+    {
+        cJSON_Delete(root);
+        ESP_LOGW(kTag, "业务NanoMQ配置响应无效");
+        return false;
+    }
+    std::string host;
+    std::string client_id;
+    std::string username;
+    std::string password;
+    std::string topic;
+    cJSON *port = cJSON_GetObjectItemCaseSensitive(data, "port");
+    const bool valid = ReadBoundedString(data, "host", 255, host) &&
+                       ReadBoundedString(data, "client_id", 128, client_id) &&
+                       ReadBoundedString(data, "username", 256, username) &&
+                       ReadBoundedString(data, "password", 256, password) &&
+                       ReadBoundedString(data, "topic", 255, topic) &&
+                       cJSON_IsNumber(port) && port->valueint > 0 && port->valueint <= 65535;
+    const int broker_port = cJSON_IsNumber(port) ? port->valueint : 0;
+    cJSON_Delete(root);
+    if (!valid)
+    {
+        ESP_LOGW(kTag, "业务NanoMQ配置字段校验失败");
+        return false;
+    }
+
+    auto *network = Board::GetInstance().GetNetwork();
+    if (network == nullptr)
+    {
+        return false;
+    }
+    auto mqtt = network->CreateMqtt(1);
+    if (mqtt == nullptr)
+    {
+        return false;
+    }
+    mqtt->SetKeepAlive(120);
+    mqtt->OnMessage([this, topic](const std::string &received_topic,
+                                 const std::string &payload)
+                    {
+        if (received_topic != topic || payload.size() > 1024)
+        {
+            return;
+        }
+        cJSON *message_root = cJSON_Parse(payload.c_str());
+        cJSON *type = message_root == nullptr
+            ? nullptr
+            : cJSON_GetObjectItemCaseSensitive(message_root, "type");
+        const bool notification_ready = cJSON_IsString(type) &&
+            std::strcmp(type->valuestring, "notification.ready") == 0;
+        cJSON_Delete(message_root);
+        if (notification_ready)
+        {
+            ESP_LOGI(kTag, "收到主动通知就绪提示");
+            StartNotificationSync(false);
+        }
+    });
+    mqtt->OnDisconnected([]()
+                         { ESP_LOGW(kTag, "业务NanoMQ连接已断开，等待HTTPS补偿或下次重连"); });
+    if (!mqtt->Connect(host, broker_port, client_id, username, password))
+    {
+        ESP_LOGW(kTag, "业务NanoMQ连接失败，错误码=0x%x", mqtt->GetLastError());
+        return false;
+    }
+    if (!mqtt->Subscribe(topic, 1))
+    {
+        ESP_LOGW(kTag, "业务NanoMQ主题订阅失败");
+        mqtt->Disconnect();
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(notification_mutex_);
+        if (notification_mqtt_ != nullptr)
+        {
+            notification_mqtt_->Disconnect();
+        }
+        notification_mqtt_ = std::move(mqtt);
+    }
+    ESP_LOGI(kTag, "业务NanoMQ连接成功并已订阅当前设备通知主题");
+    return true;
+}
+
+/**
+ * @brief 根据设备状态直接播放、询问确认或延迟当前通知。
+ * @param notification 当前通知快照。
+ */
+void BackendService::HandlePendingNotification(const PendingNotification &notification)
+{
+    auto &app = Application::GetInstance();
+    AckNotification(notification, kNotificationAckReceived);
+    if (app.GetDeviceState() != kDeviceStateIdle)
+    {
+        AckNotification(notification, kNotificationAckDeferred);
+        ESP_LOGI(kTag, "设备当前忙碌，主动通知已延迟");
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(notification_mutex_);
+        pending_notification_ = notification;
+    }
+    if (notification.notification_mode == kNotificationModeDirect)
+    {
+        StartPendingNotificationPlayback(false);
+        return;
+    }
+    app.Schedule([notification]()
+                 {
+        auto &board = Board::GetInstance();
+        board.WakeUpScreen(true);
+        auto *display = board.GetDisplay();
+        if (display != nullptr)
+        {
+            display->SetScreensaverMode(false);
+            display->SetStatus(notification.source_title.c_str());
+            display->SetChatMessage("assistant", "您有一个任务通知，是否需要播报？");
+        }
+    });
+    StartNotificationConfirmation();
+}
+
+/**
+ * @brief 创建确认模式的内置询问语和超时任务。
+ */
+void BackendService::StartNotificationConfirmation()
+{
+    std::lock_guard<std::mutex> lock(notification_mutex_);
+    if (!pending_notification_.valid || notification_confirmation_task_handle_ != nullptr)
+    {
+        return;
+    }
+    if (xTaskCreate(
+            NotificationConfirmationTaskEntry,
+            "notify_confirm",
+            kNotificationTaskStackSize,
+            this,
+            kNotificationTaskPriority,
+            &notification_confirmation_task_handle_) != pdPASS)
+    {
+        notification_confirmation_task_handle_ = nullptr;
+        ESP_LOGE(kTag, "主动通知确认任务创建失败");
+    }
+}
+
+/**
+ * @brief 主动通知确认任务入口。
+ */
+void BackendService::NotificationConfirmationTaskEntry(void *context)
+{
+    auto *service = static_cast<BackendService *>(context);
+    service->RunNotificationConfirmation();
+    {
+        std::lock_guard<std::mutex> lock(service->notification_mutex_);
+        service->notification_confirmation_task_handle_ = nullptr;
+    }
+    vTaskDelete(nullptr);
+}
+
+/**
+ * @brief 播放固件内置确认语并在用户没有调用确认工具时延迟投递。
+ */
+void BackendService::RunNotificationConfirmation()
+{
+    Application::GetInstance().PlaySound(Lang::Sounds::OGG_NOTIFICATION_PROMPT);
+    Application::GetInstance().GetAudioService().WaitForPlaybackQueueEmpty();
+    Application::GetInstance().Schedule([]()
+                                        { Application::GetInstance().StartListening(); });
+    vTaskDelay(pdMS_TO_TICKS(kNotificationConfirmationTimeoutMs));
+
+    PendingNotification notification;
+    {
+        std::lock_guard<std::mutex> lock(notification_mutex_);
+        if (!pending_notification_.valid || notification_playback_task_handle_ != nullptr)
+        {
+            return;
+        }
+        notification = pending_notification_;
+    }
+    AckNotification(notification, kNotificationAckDeferred);
+    ESP_LOGI(kTag, "主动通知确认超时，已延迟到下一次允许询问时间");
+}
+
+/**
+ * @brief 启动当前主动通知音频播放任务。
+ * @param wait_for_idle true 表示等待小智会话结束。
+ */
+void BackendService::StartPendingNotificationPlayback(bool wait_for_idle)
+{
+    std::lock_guard<std::mutex> lock(notification_mutex_);
+    if (!pending_notification_.valid || notification_playback_task_handle_ != nullptr)
+    {
+        return;
+    }
+    (void)wait_for_idle;
+    if (xTaskCreate(
+            NotificationPlaybackTaskEntry,
+            "notify_play",
+            kNotificationTaskStackSize,
+            this,
+            kNotificationTaskPriority,
+            &notification_playback_task_handle_) != pdPASS)
+    {
+        notification_playback_task_handle_ = nullptr;
+        ESP_LOGE(kTag, "主动通知播放任务创建失败");
+    }
+}
+
+/**
+ * @brief 主动通知音频播放任务入口。
+ * @param context 指向当前 BackendService 单例。
+ */
+void BackendService::NotificationPlaybackTaskEntry(void *context)
+{
+    auto *service = static_cast<BackendService *>(context);
+    service->RunPendingNotificationPlayback();
+    {
+        std::lock_guard<std::mutex> lock(service->notification_mutex_);
+        service->notification_playback_task_handle_ = nullptr;
+    }
+    vTaskDelete(nullptr);
+}
+
+/**
+ * @brief 下载和播放当前通知音频，并确认开始与完成状态。
+ */
+void BackendService::RunPendingNotificationPlayback()
+{
+    PendingNotification notification;
+    {
+        std::lock_guard<std::mutex> lock(notification_mutex_);
+        notification = pending_notification_;
+    }
+    if (!notification.valid)
+    {
+        return;
+    }
+    for (int attempt = 0; attempt < 120; ++attempt)
+    {
+        auto &app = Application::GetInstance();
+        if (app.GetDeviceState() == kDeviceStateIdle && app.GetAudioService().IsIdle())
+        {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle)
+    {
+        AckNotification(notification, kNotificationAckDeferred);
+        return;
+    }
+
+    AckNotification(notification, kNotificationAckPlaying);
+    Application::GetInstance().Schedule([notification]()
+                                        {
+        auto &board = Board::GetInstance();
+        board.WakeUpScreen(true);
+        auto *display = board.GetDisplay();
+        if (display != nullptr)
+        {
+            display->SetScreensaverMode(false);
+            display->SetStatus(notification.source_title.c_str());
+            display->SetChatMessage("assistant", notification.display_text.c_str());
+        }
+    });
+
+    bool played = !notification.has_audio;
+    if (notification.has_audio)
+    {
+        std::string access_token;
+        {
+            std::lock_guard<std::mutex> lock(binding_mutex_);
+            access_token = device_access_token_;
+        }
+        const std::string audio_path =
+            "/api/device/notifications/" + notification.notification_id + "/audio";
+        const HttpResponse response = SendJsonRequest(
+            "GET",
+            audio_path.c_str(),
+            access_token,
+            "",
+            kNotificationAudioMaxBytes);
+        if (response.transport_succeeded && response.status_code == 200 &&
+            response.body.size() >= 64)
+        {
+            Application::GetInstance().PlaySound(
+                std::string_view(response.body.data(), response.body.size()));
+            Application::GetInstance().GetAudioService().WaitForPlaybackQueueEmpty();
+            played = true;
+        }
+    }
+    else
+    {
+        vTaskDelay(pdMS_TO_TICKS(3000));
+    }
+
+    AckNotification(
+        notification,
+        played ? kNotificationAckCompleted : kNotificationAckFailed);
+    {
+        std::lock_guard<std::mutex> lock(notification_mutex_);
+        if (pending_notification_.delivery_id == notification.delivery_id)
+        {
+            pending_notification_ = PendingNotification{};
+        }
+    }
+    Application::GetInstance().Schedule([]()
+                                        {
+        auto &app = Application::GetInstance();
+        auto *display = Board::GetInstance().GetDisplay();
+        if (display != nullptr && app.GetDeviceState() == kDeviceStateIdle)
+        {
+            display->SetScreensaverMode(true);
+        }
+    });
+}
+
+/**
+ * @brief 向后端确认当前通知投递状态。
+ */
+bool BackendService::AckNotification(
+    const PendingNotification &notification,
+    int ack_type)
+{
+    std::string access_token;
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        access_token = device_access_token_;
+    }
+    const std::string body = BuildNotificationAckJson(
+        notification.delivery_id,
+        ack_type);
+    const std::string path =
+        "/api/device/notifications/" + notification.notification_id + "/ack";
+    const HttpResponse response = SendJsonRequest(
+        "POST",
+        path.c_str(),
+        access_token,
+        body,
+        kNotificationResponseMaxBytes);
+    std::string response_message;
+    const bool succeeded = response.transport_succeeded &&
+        response.status_code == 200 &&
+        ParseSuccessEnvelope(response.body, response_message);
+    if (!succeeded)
+    {
+        ESP_LOGW(kTag, "主动通知状态确认失败，动作=%d，HTTP状态码=%d",
+                 ack_type, response.status_code);
+    }
+    return succeeded;
+}
+
+/**
+ * @brief 五分钟 HTTPS 通知补偿同步定时器回调。
+ * @param context 指向当前 BackendService 单例。
+ */
+void BackendService::NotificationTimerCallback(void *context)
+{
+    auto *service = static_cast<BackendService *>(context);
+    service->StartNotificationSync(true);
 }

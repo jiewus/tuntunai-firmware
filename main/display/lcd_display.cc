@@ -2151,7 +2151,7 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
 /**
  * @brief 显示仅保留表盘外圈的自定义 MCP 清单页面。
  * @param title 固定显示在顶部的清单标题。
- * @param items 按 5 秒间隔轮播的 MCP 名称和说明数组。
+ * @param items 按 5 秒间隔轮播的 MCP 中文名称和工具代码数组。
  */
 void LcdDisplay::ShowCustomMcpList(
     const std::string& title,

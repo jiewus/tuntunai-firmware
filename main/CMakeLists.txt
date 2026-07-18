@@ -109,7 +109,7 @@ add_custom_command(
     COMMAND python ${PROJECT_DIR}/scripts/gen_lang.py
             --language "${LANG_DIR}"
             --output "${LANG_HEADER}"
-    DEPENDS ${LANG_JSON} ${PROJECT_DIR}/scripts/gen_lang.py
+    DEPENDS ${LANG_JSON} ${LANG_SOUNDS} ${COMMON_SOUNDS} ${PROJECT_DIR}/scripts/gen_lang.py
     COMMENT "Generating ${LANG_DIR} language config"
 )
 add_custom_target(lang_header ALL DEPENDS ${LANG_HEADER})
