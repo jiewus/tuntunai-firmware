@@ -6,6 +6,7 @@
 #include <freertos/task.h>
 #include <mqtt.h>
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -73,7 +74,18 @@ public:
      */
     void OnScreensaverChanged(bool active);
 
+    /**
+     * @brief 用户开始主动交互时中断正在下载或播放的后台通知。
+     * @return true 表示存在通知播放任务且已经发出中断请求。
+     */
+    bool InterruptNotificationPlayback();
+
 private:
+    /** @brief 业务 EMQX 首次断线重连等待秒数。 */
+    static constexpr uint32_t kNotificationReconnectInitialSeconds = 5;
+    /** @brief MQTT 回调允许缓存的最大通知提示数量。 */
+    static constexpr size_t kNotificationHintCapacity = 4;
+
     /**
      * @brief MCP 申请绑定码完成后的轻量结果回调。
      * @param message 返回给大模型的中文结果文本。
@@ -317,6 +329,16 @@ private:
     };
 
     /**
+     * @brief 保存 MQTT 回调已经完成边界校验的一条轻量通知提示。
+     */
+    struct NotificationHint {
+        /** @brief 通知 UUID，以空字符结尾。 */
+        std::array<char, 51> notification_id{};
+        /** @brief 设备投递 UUID，以空字符结尾。 */
+        std::array<char, 51> delivery_id{};
+    };
+
+    /**
      * @brief 构造业务后端服务。
      */
     BackendService() = default;
@@ -551,15 +573,36 @@ private:
 
     /**
      * @brief 连接独立业务 EMQX 并通过 HTTPS 拉取可处理通知。
-     * @param reconnect_mqtt true 表示允许重新创建 EMQX 客户端。
      */
-    void RunNotificationSync(bool reconnect_mqtt);
+    void RunNotificationSync();
 
     /**
      * @brief 获取业务 EMQX 独立凭据并建立当前设备唯一主题订阅。
      * @return 成功连接和订阅时返回 true。
      */
     bool ConnectNotificationMqtt();
+
+    /**
+     * @brief 把合法 MQTT 通知提示写入固定容量队列并按投递标识去重。
+     * @param notification_id MQTT 消息中的通知 UUID。
+     * @param delivery_id MQTT 消息中的设备投递 UUID。
+     * @return 提示成功入队时返回 true；重复或队列已满时返回 false。
+     */
+    bool EnqueueNotificationHint(
+        const std::string& notification_id,
+        const std::string& delivery_id);
+
+    /**
+     * @brief 从固定容量队列取出最早到达的一条 MQTT 提示。
+     * @param hint 接收已经完成边界校验的提示副本。
+     * @return 队列存在提示时返回 true。
+     */
+    bool DequeueNotificationHint(NotificationHint& hint);
+
+    /**
+     * @brief 在网络可用时按当前指数退避间隔安排业务 EMQX 重连。
+     */
+    void ScheduleNotificationMqttReconnect();
 
     /**
      * @brief 显示并处理当前待通知；设备忙碌时向后端确认延迟。
@@ -584,10 +627,9 @@ private:
     void RunNotificationConfirmation();
 
     /**
-     * @brief 下载并播放当前等待通知的 Ogg/Opus 音频。
-     * @param wait_for_idle true 表示等待小智当前会话结束后再播放。
+     * @brief 创建等待设备空闲后下载并播放当前通知的独立任务。
      */
-    void StartPendingNotificationPlayback(bool wait_for_idle);
+    void StartPendingNotificationPlayback();
 
     /**
      * @brief 通知音频播放任务入口。
@@ -599,6 +641,16 @@ private:
      * @brief 下载当前通知音频、更新页面并依次确认播放状态。
      */
     void RunPendingNotificationPlayback();
+
+    /**
+     * @brief 通过单条 HTTP 连接流式下载并实时解封装通知 Ogg/Opus 音频。
+     * @param path 当前通知音频的 API 相对路径。
+     * @param access_token 当前绑定设备的 Bearer Token。
+     * @return 至少成功送入一个 Opus 包且传输未失败、未被用户中断时返回 true。
+     */
+    bool StreamNotificationAudio(
+        const std::string& path,
+        const std::string& access_token);
 
     /**
      * @brief 向后端确认当前通知投递状态。
@@ -615,6 +667,12 @@ private:
      * @param context 指向当前 BackendService 单例。
      */
     static void NotificationTimerCallback(void* context);
+
+    /**
+     * @brief 业务 EMQX 指数退避重连定时器回调。
+     * @param context 指向当前 BackendService 单例。
+     */
+    static void NotificationReconnectTimerCallback(void* context);
 
     /**
      * @brief 从 NVS 恢复当前绑定码、绑定会话 Token 和已领取设备凭据。
@@ -759,6 +817,10 @@ private:
      */
     std::unique_ptr<Mqtt> notification_mqtt_;
     /**
+     * @brief 当前有效业务 EMQX 客户端裸指针，只用于过滤旧客户端的异步回调。
+     */
+    std::atomic<Mqtt*> active_notification_mqtt_{nullptr};
+    /**
      * @brief 当前通知同步任务句柄。
      */
     TaskHandle_t notification_task_handle_ = nullptr;
@@ -767,9 +829,18 @@ private:
      */
     std::atomic<bool> notification_reconnect_requested_{false};
     /**
+     * @brief 下一次业务 EMQX 重连等待秒数，成功连接后恢复初始值。
+     */
+    std::atomic<uint32_t> notification_reconnect_delay_seconds_{
+        kNotificationReconnectInitialSeconds};
+    /**
      * @brief 当前通知音频播放任务句柄。
      */
     TaskHandle_t notification_playback_task_handle_ = nullptr;
+    /**
+     * @brief true 表示用户唤醒已经要求当前通知停止下载和播放。
+     */
+    std::atomic<bool> notification_playback_interrupted_{false};
     /**
      * @brief 当前确认模式询问和超时任务句柄。
      */
@@ -779,9 +850,23 @@ private:
      */
     esp_timer_handle_t notification_timer_ = nullptr;
     /**
+     * @brief 业务 EMQX 断线后的单次指数退避重连定时器。
+     */
+    esp_timer_handle_t notification_reconnect_timer_ = nullptr;
+    /**
      * @brief 当前等待直接播放或用户确认的通知。
      */
     PendingNotification pending_notification_;
+    /**
+     * @brief 固定容量 MQTT 提示环形队列，队列满时依赖五分钟 HTTPS 补偿。
+     */
+    std::array<NotificationHint, kNotificationHintCapacity> notification_hints_{};
+    /** @brief 环形队列最早元素下标。 */
+    size_t notification_hint_head_ = 0;
+    /** @brief 环形队列下一写入下标。 */
+    size_t notification_hint_tail_ = 0;
+    /** @brief 环形队列当前有效元素数量。 */
+    size_t notification_hint_count_ = 0;
 };
 
 #endif

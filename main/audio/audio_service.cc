@@ -718,14 +718,15 @@ void AudioService::PlaySound(const std::string_view& ogg) {
     size_t size = ogg.size();
 
     auto demuxer = std::make_unique<OggDemuxer>();
-    demuxer->OnDemuxerFinished([this](const uint8_t* data, int sample_rate, size_t size){
-        auto packet = std::make_unique<AudioStreamPacket>();
-        packet->sample_rate = sample_rate;
-        packet->frame_duration = 60;
-        packet->payload.resize(size);
-        std::memcpy(packet->payload.data(), data, size);
-        PushPacketToDecodeQueue(std::move(packet), true);
-    });
+    demuxer->OnDemuxerFinished(
+        [this](const uint8_t* data, int sample_rate, int frame_duration, size_t size){
+            auto packet = std::make_unique<AudioStreamPacket>();
+            packet->sample_rate = sample_rate;
+            packet->frame_duration = frame_duration;
+            packet->payload.resize(size);
+            std::memcpy(packet->payload.data(), data, size);
+            PushPacketToDecodeQueue(std::move(packet), true);
+        });
     demuxer->Reset();
     demuxer->Process(buf, size);
 }

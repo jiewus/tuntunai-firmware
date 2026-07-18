@@ -976,6 +976,11 @@ void Application::HandleStopListeningEvent() {
 void Application::HandleWakeWordDetectedEvent() {
     // 唤醒词命中后先恢复背光，再进行可能耗时的云端音频通道握手。
     Board::GetInstance().WakeUpScreen(true);
+    if (BackendService::GetInstance().InterruptNotificationPlayback()) {
+        // 主动通知属于后台音频，用户唤醒必须立即清空已解码内容；下载任务会观察中断标志并停止读取。
+        audio_service_.ResetDecoder();
+        ESP_LOGI(TAG, "用户唤醒已中断主动通知播放");
+    }
 
     if (!protocol_) {
         return;

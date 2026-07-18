@@ -7,7 +7,9 @@
 
 #include <cJSON.h>
 #include <esp_app_desc.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
+#include <freertos/idf_additions.h>
 #include <http.h>
 
 #include <algorithm>
@@ -25,6 +27,7 @@
 
 #include "application.h"
 #include "assets/lang_config.h"
+#include "audio/demuxer/ogg_demuxer.h"
 #include "boards/common/board.h"
 #include "display/display.h"
 #include "mcp_server.h"
@@ -95,11 +98,12 @@ namespace
     constexpr int kDeviceModelTuntunMoji2Esp32C5 = 1;
 
     /**
-     * @brief 绑定状态轮询周期和单次 HTTP 超时，单位均为毫秒。
+     * @brief 绑定状态轮询周期和 HTTP 超时，单位均为毫秒。
      */
     constexpr int kBindingPollIntervalMs = 3000;
     constexpr int kBindingRetryIntervalMs = 5000;
     constexpr int kHttpTimeoutMs = 10000;
+    constexpr int kWeatherHttpTimeoutMs = 45000;
 
     /**
      * @brief 天气缓存新鲜周期、后台检查周期和临时 Worker 资源配置。
@@ -132,11 +136,63 @@ namespace
      */
     constexpr int64_t kNotificationCheckIntervalUs = 5LL * 60LL * 1000LL * 1000LL;
     constexpr uint32_t kNotificationTaskStackSize = 10240;
+    constexpr uint32_t kNotificationPlaybackTaskStackSize = 16384;
     constexpr UBaseType_t kNotificationTaskPriority = 4;
     constexpr size_t kNotificationResponseMaxBytes = 12288;
     constexpr size_t kNotificationAudioMaxBytes = 512 * 1024;
     constexpr size_t kNotificationTextMaxBytes = 1500;
-    constexpr uint32_t kNotificationConfirmationTimeoutMs = 15000;
+    constexpr uint32_t kNotificationConfirmationTimeoutMs = 10000;
+    constexpr uint32_t kNotificationReconnectMaximumSeconds = 300;
+
+    /**
+     * @brief 创建后端临时任务，并在可用时把任务栈放入板载 PSRAM。
+     * @param task_entry FreeRTOS 任务入口函数。
+     * @param task_name 用于诊断的任务名称。
+     * @param stack_size_bytes 任务栈大小，单位为字节。
+     * @param context 传递给任务入口的上下文指针。
+     * @param priority 任务优先级。
+     * @param task_handle 接收创建成功后的任务句柄。
+     * @return 创建成功时返回 pdPASS，否则返回 FreeRTOS 创建错误码。
+     */
+    BaseType_t CreateBackendTask(
+        TaskFunction_t task_entry,
+        const char *task_name,
+        configSTACK_DEPTH_TYPE stack_size_bytes,
+        void *context,
+        UBaseType_t priority,
+        TaskHandle_t *task_handle)
+    {
+#if CONFIG_SPIRAM
+        return xTaskCreateWithCaps(
+            task_entry,
+            task_name,
+            stack_size_bytes,
+            context,
+            priority,
+            task_handle,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+        return xTaskCreate(
+            task_entry,
+            task_name,
+            stack_size_bytes,
+            context,
+            priority,
+            task_handle);
+#endif
+    }
+
+    /**
+     * @brief 删除由 CreateBackendTask 创建的当前任务并释放对应类型的任务栈。
+     */
+    void DeleteCurrentBackendTask()
+    {
+#if CONFIG_SPIRAM
+        vTaskDeleteWithCaps(nullptr);
+#else
+        vTaskDelete(nullptr);
+#endif
+    }
 
     /**
      * @brief 后端 NotificationModeEnum 和设备确认动作稳定数值。
@@ -270,13 +326,15 @@ namespace
      * @param bearer_token 可选的 Bearer Token；空字符串表示不发送 Authorization。
      * @param request_body JSON 请求正文；GET 请求传空字符串。
      * @param maximum_response_bytes 本次响应正文允许占用的最大字节数。
+     * @param timeout_ms 本次请求允许等待的最长毫秒数。
      * @return 传输状态、HTTP 状态码和响应正文。
      * @details 本方法不记录请求或响应正文，避免绑定会话 Token 和设备 Token 进入日志。
      */
     HttpResponse SendJsonRequest(const char *method, const char *path,
                                  const std::string &bearer_token,
                                  std::string request_body,
-                                 size_t maximum_response_bytes = kMaxApiResponseBytes)
+                                 size_t maximum_response_bytes = kMaxApiResponseBytes,
+                                 int timeout_ms = kHttpTimeoutMs)
     {
         std::lock_guard<std::mutex> request_lock(backend_http_mutex);
         HttpResponse response;
@@ -291,7 +349,7 @@ namespace
         {
             return response;
         }
-        http->SetTimeout(kHttpTimeoutMs);
+        http->SetTimeout(timeout_ms);
         http->SetHeader("Accept", "application/json");
         http->SetHeader("Content-Type", "application/json");
         http->SetHeader("User-Agent", SystemInfo::GetUserAgent());
@@ -962,6 +1020,23 @@ void BackendService::Start()
         }
     }
 
+    const esp_timer_create_args_t notification_reconnect_timer_args = {
+        .callback = NotificationReconnectTimerCallback,
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "notify_mqtt",
+        .skip_unhandled_events = true,
+    };
+    timer_error = esp_timer_create(
+        &notification_reconnect_timer_args,
+        &notification_reconnect_timer_);
+    if (timer_error != ESP_OK)
+    {
+        ESP_LOGE(kTag, "业务EMQX重连定时器创建失败，原因=%s",
+                 esp_err_to_name(timer_error));
+        notification_reconnect_timer_ = nullptr;
+    }
+
     ESP_LOGI(kTag, "囤囤管家后端服务已初始化，接口地址=%s，设备凭据=%s",
              CONFIG_TUNTUN_API_URL, device_access_token_.empty() ? "缺失" : "可用");
 }
@@ -1052,7 +1127,7 @@ void BackendService::RegisterMcpTools(McpServer &server)
                     return std::string("当前没有等待确认的通知。");
                 }
             }
-            StartPendingNotificationPlayback(true);
+            StartPendingNotificationPlayback();
             return std::string("好的，当前对话结束后为你播报通知。");
         });
 
@@ -1364,13 +1439,20 @@ void BackendService::OnNetworkConnected()
 void BackendService::OnNetworkDisconnected()
 {
     network_connected_.store(false);
+    if (notification_reconnect_timer_ != nullptr)
+    {
+        esp_timer_stop(notification_reconnect_timer_);
+    }
+    notification_reconnect_delay_seconds_.store(kNotificationReconnectInitialSeconds);
+    std::unique_ptr<Mqtt> mqtt;
     {
         std::lock_guard<std::mutex> lock(notification_mutex_);
-        if (notification_mqtt_ != nullptr)
-        {
-            notification_mqtt_->Disconnect();
-            notification_mqtt_.reset();
-        }
+        active_notification_mqtt_.store(nullptr);
+        mqtt = std::move(notification_mqtt_);
+    }
+    if (mqtt != nullptr)
+    {
+        mqtt->Disconnect();
     }
     ShowWeatherStatusIfUnavailable("等待网络连接");
     ShowMemoStatusIfUnavailable("等待网络连接");
@@ -1381,6 +1463,21 @@ void BackendService::OnNetworkDisconnected()
  */
 void BackendService::OnMcpDisconnected()
 {
+}
+
+/**
+ * @brief 用户开始主动交互时中断正在下载或播放的后台通知。
+ * @return true 表示存在通知播放任务且已经发出中断请求。
+ */
+bool BackendService::InterruptNotificationPlayback()
+{
+    std::lock_guard<std::mutex> lock(notification_mutex_);
+    if (notification_playback_task_handle_ == nullptr)
+    {
+        return false;
+    }
+    notification_playback_interrupted_.store(true);
+    return true;
 }
 
 /**
@@ -1405,7 +1502,7 @@ void BackendService::StartMcpManifestSync()
     {
         return;
     }
-    const BaseType_t created = xTaskCreate(
+    const BaseType_t created = CreateBackendTask(
         McpManifestTaskEntry,
         "mcp_manifest",
         kMcpTaskStackSize,
@@ -1442,7 +1539,7 @@ void BackendService::McpManifestTaskEntry(void *context)
         std::lock_guard<std::mutex> lock(service->dynamic_mcp_mutex_);
         service->mcp_manifest_task_handle_ = nullptr;
     }
-    vTaskDelete(nullptr);
+    DeleteCurrentBackendTask();
 }
 
 /**
@@ -1654,7 +1751,7 @@ void BackendService::StartDynamicToolExecution(
             }
             else
             {
-                const BaseType_t created = xTaskCreate(
+                const BaseType_t created = CreateBackendTask(
                     DynamicToolTaskEntry,
                     "mcp_execute",
                     kMcpTaskStackSize,
@@ -1719,7 +1816,7 @@ void BackendService::DynamicToolTaskEntry(void *context)
     {
         service->StartMcpManifestSync();
     }
-    vTaskDelete(nullptr);
+    DeleteCurrentBackendTask();
 }
 
 /**
@@ -1920,7 +2017,7 @@ void BackendService::StartMemoToolTask(MemoToolTaskContext *context)
         }
         else
         {
-            const BaseType_t created = xTaskCreate(
+            const BaseType_t created = CreateBackendTask(
                 MemoToolTaskEntry, "memo_tool", kMemoTaskStackSize, context,
                 kMemoTaskPriority, &memo_task_handle_);
             if (created != pdPASS)
@@ -1974,7 +2071,7 @@ void BackendService::MemoToolTaskEntry(void *context)
         std::lock_guard<std::mutex> lock(service->memo_mutex_);
         service->memo_task_handle_ = nullptr;
     }
-    vTaskDelete(nullptr);
+    DeleteCurrentBackendTask();
 }
 
 /**
@@ -2317,7 +2414,7 @@ void BackendService::StartMemoSync(bool force_refresh)
         {
             return;
         }
-        const BaseType_t created = xTaskCreate(
+        const BaseType_t created = CreateBackendTask(
             MemoSyncTaskEntry, "memo_sync", kMemoTaskStackSize, this,
             kMemoTaskPriority, &memo_task_handle_);
         if (created != pdPASS)
@@ -2358,7 +2455,7 @@ void BackendService::MemoSyncTaskEntry(void *context)
         std::lock_guard<std::mutex> lock(service->memo_mutex_);
         service->memo_task_handle_ = nullptr;
     }
-    vTaskDelete(nullptr);
+    DeleteCurrentBackendTask();
 }
 
 /**
@@ -2615,7 +2712,7 @@ void BackendService::StartWeatherSync(bool force_refresh)
         }
 
         weather_task_handle_ = nullptr;
-        const BaseType_t created = xTaskCreate(
+        const BaseType_t created = CreateBackendTask(
             WeatherTaskEntry, "weather_sync", kWeatherTaskStackSize, this,
             kWeatherTaskPriority, &weather_task_handle_);
         if (created != pdPASS)
@@ -2664,7 +2761,7 @@ void BackendService::WeatherTaskEntry(void *context)
             service->StartMemoSync(false);
         });
     }
-    vTaskDelete(nullptr);
+    DeleteCurrentBackendTask();
 }
 
 /**
@@ -2700,7 +2797,8 @@ void BackendService::RunWeatherSync()
     }
 
     const HttpResponse response = SendJsonRequest(
-        "GET", kWeatherPath, access_token, "");
+        "GET", kWeatherPath, access_token, "", kMaxApiResponseBytes,
+        kWeatherHttpTimeoutMs);
     cJSON *root = nullptr;
     cJSON *data = nullptr;
     std::string response_message;
@@ -2842,7 +2940,7 @@ void BackendService::StartWeatherLocationTask(
         }
         else
         {
-            const BaseType_t created = xTaskCreate(
+            const BaseType_t created = CreateBackendTask(
                 WeatherLocationTaskEntry,
                 "weather_location",
                 kWeatherTaskStackSize,
@@ -2906,7 +3004,7 @@ void BackendService::WeatherLocationTaskEntry(void *context)
         std::lock_guard<std::mutex> lock(service->weather_mutex_);
         service->weather_location_task_handle_ = nullptr;
     }
-    vTaskDelete(nullptr);
+    DeleteCurrentBackendTask();
 }
 
 /**
@@ -3080,7 +3178,7 @@ void BackendService::StartWeatherAnnouncementTask(
         }
         else
         {
-            const BaseType_t created = xTaskCreate(
+            const BaseType_t created = CreateBackendTask(
                 WeatherAnnouncementTaskEntry,
                 "weather_announce",
                 kWeatherTaskStackSize,
@@ -3143,7 +3241,7 @@ void BackendService::WeatherAnnouncementTaskEntry(void *context)
         std::lock_guard<std::mutex> lock(service->weather_mutex_);
         service->weather_announcement_task_handle_ = nullptr;
     }
-    vTaskDelete(nullptr);
+    DeleteCurrentBackendTask();
 }
 
 /**
@@ -3288,7 +3386,7 @@ void BackendService::StartBindingTask(bool request_new_session,
             else
             {
                 binding_task_handle_ = nullptr;
-                BaseType_t created = xTaskCreate(
+                BaseType_t created = CreateBackendTask(
                     BindingTaskEntry, "tuntun_bind", 8192, context, 3,
                     &binding_task_handle_);
                 if (created == pdPASS)
@@ -3387,7 +3485,7 @@ void BackendService::BindingTaskEntry(void *context)
             }
         });
     }
-    vTaskDelete(nullptr);
+    DeleteCurrentBackendTask();
 }
 
 /**
@@ -3662,11 +3760,13 @@ void BackendService::StartNotificationSync(bool reconnect_mqtt)
     {
         notification_reconnect_requested_.store(true);
     }
-    if (notification_task_handle_ != nullptr)
+    if (notification_task_handle_ != nullptr
+        || notification_playback_task_handle_ != nullptr
+        || notification_confirmation_task_handle_ != nullptr)
     {
         return;
     }
-    if (xTaskCreate(
+    if (CreateBackendTask(
             NotificationTaskEntry,
             "notify_sync",
             kNotificationTaskStackSize,
@@ -3686,24 +3786,58 @@ void BackendService::StartNotificationSync(bool reconnect_mqtt)
 void BackendService::NotificationTaskEntry(void *context)
 {
     auto *service = static_cast<BackendService *>(context);
-    const bool reconnect_mqtt = service->notification_reconnect_requested_.exchange(false);
-    service->RunNotificationSync(reconnect_mqtt);
+    while (true)
     {
+        service->notification_reconnect_requested_.exchange(false);
+        service->RunNotificationSync();
+
         std::lock_guard<std::mutex> lock(service->notification_mutex_);
-        service->notification_task_handle_ = nullptr;
+        const bool continue_sync = (service->notification_hint_count_ > 0
+                                    || service->notification_reconnect_requested_.load())
+            && service->notification_playback_task_handle_ == nullptr
+            && service->notification_confirmation_task_handle_ == nullptr;
+        if (!continue_sync)
+        {
+            service->notification_task_handle_ = nullptr;
+            break;
+        }
     }
-    vTaskDelete(nullptr);
+    DeleteCurrentBackendTask();
 }
 
 /**
  * @brief 按需连接业务 EMQX，并通过 HTTPS 获取第一条可处理通知。
- * @param reconnect_mqtt true 表示重新建立 EMQX 连接。
  */
-void BackendService::RunNotificationSync(bool reconnect_mqtt)
+void BackendService::RunNotificationSync()
 {
-    if (reconnect_mqtt || notification_mqtt_ == nullptr || !notification_mqtt_->IsConnected())
+    NotificationHint hint;
+    if (DequeueNotificationHint(hint))
     {
-        ConnectNotificationMqtt();
+        ESP_LOGI(kTag, "正在处理主动通知提示，通知标识=%s，投递标识=%s",
+                 hint.notification_id.data(), hint.delivery_id.data());
+    }
+
+    bool mqtt_connected = false;
+    {
+        std::lock_guard<std::mutex> lock(notification_mutex_);
+        mqtt_connected = notification_mqtt_ != nullptr && notification_mqtt_->IsConnected();
+    }
+    if (!mqtt_connected)
+    {
+        std::unique_ptr<Mqtt> disconnected_mqtt;
+        {
+            std::lock_guard<std::mutex> lock(notification_mutex_);
+            active_notification_mqtt_.store(nullptr);
+            disconnected_mqtt = std::move(notification_mqtt_);
+        }
+        if (disconnected_mqtt != nullptr)
+        {
+            disconnected_mqtt->Disconnect();
+        }
+        if (!ConnectNotificationMqtt())
+        {
+            ScheduleNotificationMqttReconnect();
+        }
     }
 
     std::string access_token;
@@ -3797,6 +3931,84 @@ void BackendService::RunNotificationSync(bool reconnect_mqtt)
 }
 
 /**
+ * @brief 把合法 MQTT 通知提示写入固定容量队列并按投递标识去重。
+ * @param notification_id MQTT 消息中的通知 UUID。
+ * @param delivery_id MQTT 消息中的设备投递 UUID。
+ * @return 提示成功入队时返回 true；重复或队列已满时返回 false。
+ */
+bool BackendService::EnqueueNotificationHint(
+    const std::string &notification_id,
+    const std::string &delivery_id)
+{
+    std::lock_guard<std::mutex> lock(notification_mutex_);
+    for (size_t offset = 0; offset < notification_hint_count_; ++offset)
+    {
+        const size_t index = (notification_hint_head_ + offset) % notification_hints_.size();
+        if (delivery_id == notification_hints_[index].delivery_id.data())
+        {
+            return false;
+        }
+    }
+    if (notification_hint_count_ >= notification_hints_.size())
+    {
+        ESP_LOGW(kTag, "主动通知提示队列已满，等待HTTPS周期补偿");
+        return false;
+    }
+
+    auto &hint = notification_hints_[notification_hint_tail_];
+    std::snprintf(hint.notification_id.data(), hint.notification_id.size(), "%s",
+                  notification_id.c_str());
+    std::snprintf(hint.delivery_id.data(), hint.delivery_id.size(), "%s",
+                  delivery_id.c_str());
+    notification_hint_tail_ = (notification_hint_tail_ + 1) % notification_hints_.size();
+    ++notification_hint_count_;
+    return true;
+}
+
+/**
+ * @brief 从固定容量队列取出最早到达的一条 MQTT 提示。
+ * @param hint 接收已经完成边界校验的提示副本。
+ * @return 队列存在提示时返回 true。
+ */
+bool BackendService::DequeueNotificationHint(NotificationHint &hint)
+{
+    std::lock_guard<std::mutex> lock(notification_mutex_);
+    if (notification_hint_count_ == 0)
+    {
+        return false;
+    }
+    hint = notification_hints_[notification_hint_head_];
+    notification_hints_[notification_hint_head_] = NotificationHint{};
+    notification_hint_head_ = (notification_hint_head_ + 1) % notification_hints_.size();
+    --notification_hint_count_;
+    return true;
+}
+
+/**
+ * @brief 在网络可用时按当前指数退避间隔安排业务 EMQX 重连。
+ */
+void BackendService::ScheduleNotificationMqttReconnect()
+{
+    if (!network_connected_.load() || notification_reconnect_timer_ == nullptr)
+    {
+        return;
+    }
+    const uint32_t delay_seconds = notification_reconnect_delay_seconds_.load();
+    esp_timer_stop(notification_reconnect_timer_);
+    const esp_err_t error = esp_timer_start_once(
+        notification_reconnect_timer_,
+        static_cast<uint64_t>(delay_seconds) * 1000ULL * 1000ULL);
+    if (error != ESP_OK)
+    {
+        ESP_LOGW(kTag, "业务EMQX重连定时器启动失败，原因=%s", esp_err_to_name(error));
+        return;
+    }
+    notification_reconnect_delay_seconds_.store(
+        std::min(delay_seconds * 2, kNotificationReconnectMaximumSeconds));
+    ESP_LOGW(kTag, "业务EMQX将在%u秒后重连", static_cast<unsigned>(delay_seconds));
+}
+
+/**
  * @brief 获取业务 EMQX 独立凭据并订阅当前设备唯一通知主题。
  * @return 连接和订阅成功时返回 true。
  */
@@ -3859,6 +4071,7 @@ bool BackendService::ConnectNotificationMqtt()
     {
         return false;
     }
+    Mqtt *mqtt_client = mqtt.get();
     mqtt->SetKeepAlive(120);
     mqtt->OnMessage([this, topic](const std::string &received_topic,
                                  const std::string &payload)
@@ -3871,17 +4084,59 @@ bool BackendService::ConnectNotificationMqtt()
         cJSON *type = message_root == nullptr
             ? nullptr
             : cJSON_GetObjectItemCaseSensitive(message_root, "type");
-        const bool notification_ready = cJSON_IsString(type) &&
-            std::strcmp(type->valuestring, "notification.ready") == 0;
+        cJSON *revision = message_root == nullptr
+            ? nullptr
+            : cJSON_GetObjectItemCaseSensitive(message_root, "revision");
+        std::string notification_id;
+        std::string delivery_id;
+        const bool notification_ready = cJSON_IsString(type)
+            && std::strcmp(type->valuestring, "notification.ready") == 0
+            && cJSON_IsNumber(revision)
+            && revision->valueint == 1
+            && ReadBoundedString(message_root, "notification_id", 50, notification_id)
+            && ReadBoundedString(message_root, "delivery_id", 50, delivery_id);
         cJSON_Delete(message_root);
-        if (notification_ready)
+        if (!notification_ready)
         {
-            ESP_LOGI(kTag, "收到主动通知就绪提示");
+            ESP_LOGW(kTag, "收到的主动通知提示格式无效，已等待HTTPS补偿");
+            return;
+        }
+        if (EnqueueNotificationHint(notification_id, delivery_id))
+        {
+            ESP_LOGI(kTag, "主动通知提示已入队，通知标识=%s，投递标识=%s",
+                     notification_id.c_str(), delivery_id.c_str());
             StartNotificationSync(false);
         }
     });
-    mqtt->OnDisconnected([]()
-                         { ESP_LOGW(kTag, "业务EMQX连接已断开，等待HTTPS补偿或下次重连"); });
+    mqtt->OnConnected([this, topic, mqtt_client]()
+                      {
+        if (active_notification_mqtt_.load() != mqtt_client)
+        {
+            return;
+        }
+        if (!mqtt_client->Subscribe(topic, 1))
+        {
+            ESP_LOGW(kTag, "业务EMQX自动重连后订阅失败");
+            ScheduleNotificationMqttReconnect();
+            return;
+        }
+        notification_reconnect_delay_seconds_.store(kNotificationReconnectInitialSeconds);
+        if (notification_reconnect_timer_ != nullptr)
+        {
+            esp_timer_stop(notification_reconnect_timer_);
+        }
+        ESP_LOGI(kTag, "业务EMQX已自动重连并恢复设备通知订阅");
+        StartNotificationSync(false);
+    });
+    mqtt->OnDisconnected([this, mqtt_client]()
+                         {
+        if (active_notification_mqtt_.load() != mqtt_client)
+        {
+            return;
+        }
+        ESP_LOGW(kTag, "业务EMQX连接已断开，准备指数退避重连");
+        ScheduleNotificationMqttReconnect();
+    });
     if (!mqtt->Connect(host, broker_port, client_id, username, password))
     {
         ESP_LOGW(kTag, "业务EMQX连接失败，错误码=0x%x", mqtt->GetLastError());
@@ -3893,13 +4148,21 @@ bool BackendService::ConnectNotificationMqtt()
         mqtt->Disconnect();
         return false;
     }
+    std::unique_ptr<Mqtt> previous_mqtt;
     {
         std::lock_guard<std::mutex> lock(notification_mutex_);
-        if (notification_mqtt_ != nullptr)
-        {
-            notification_mqtt_->Disconnect();
-        }
+        previous_mqtt = std::move(notification_mqtt_);
         notification_mqtt_ = std::move(mqtt);
+        active_notification_mqtt_.store(notification_mqtt_.get());
+    }
+    if (previous_mqtt != nullptr)
+    {
+        previous_mqtt->Disconnect();
+    }
+    notification_reconnect_delay_seconds_.store(kNotificationReconnectInitialSeconds);
+    if (notification_reconnect_timer_ != nullptr)
+    {
+        esp_timer_stop(notification_reconnect_timer_);
     }
     ESP_LOGI(kTag, "业务EMQX连接成功并已订阅当前设备通知主题");
     return true;
@@ -3925,7 +4188,7 @@ void BackendService::HandlePendingNotification(const PendingNotification &notifi
     }
     if (notification.notification_mode == kNotificationModeDirect)
     {
-        StartPendingNotificationPlayback(false);
+        StartPendingNotificationPlayback();
         return;
     }
     app.Schedule([notification]()
@@ -3953,7 +4216,7 @@ void BackendService::StartNotificationConfirmation()
     {
         return;
     }
-    if (xTaskCreate(
+    if (CreateBackendTask(
             NotificationConfirmationTaskEntry,
             "notify_confirm",
             kNotificationTaskStackSize,
@@ -3973,11 +4236,19 @@ void BackendService::NotificationConfirmationTaskEntry(void *context)
 {
     auto *service = static_cast<BackendService *>(context);
     service->RunNotificationConfirmation();
+    bool continue_sync = false;
     {
         std::lock_guard<std::mutex> lock(service->notification_mutex_);
         service->notification_confirmation_task_handle_ = nullptr;
+        continue_sync = (service->notification_hint_count_ > 0
+                         || service->notification_reconnect_requested_.load())
+            && service->notification_playback_task_handle_ == nullptr;
     }
-    vTaskDelete(nullptr);
+    if (continue_sync)
+    {
+        service->StartNotificationSync(false);
+    }
+    DeleteCurrentBackendTask();
 }
 
 /**
@@ -4005,21 +4276,20 @@ void BackendService::RunNotificationConfirmation()
 }
 
 /**
- * @brief 启动当前主动通知音频播放任务。
- * @param wait_for_idle true 表示等待小智会话结束。
+ * @brief 创建等待设备空闲后下载并播放当前通知的独立任务。
  */
-void BackendService::StartPendingNotificationPlayback(bool wait_for_idle)
+void BackendService::StartPendingNotificationPlayback()
 {
     std::lock_guard<std::mutex> lock(notification_mutex_);
     if (!pending_notification_.valid || notification_playback_task_handle_ != nullptr)
     {
         return;
     }
-    (void)wait_for_idle;
-    if (xTaskCreate(
+    notification_playback_interrupted_.store(false);
+    if (CreateBackendTask(
             NotificationPlaybackTaskEntry,
             "notify_play",
-            kNotificationTaskStackSize,
+            kNotificationPlaybackTaskStackSize,
             this,
             kNotificationTaskPriority,
             &notification_playback_task_handle_) != pdPASS)
@@ -4037,11 +4307,138 @@ void BackendService::NotificationPlaybackTaskEntry(void *context)
 {
     auto *service = static_cast<BackendService *>(context);
     service->RunPendingNotificationPlayback();
+    bool continue_sync = false;
     {
         std::lock_guard<std::mutex> lock(service->notification_mutex_);
         service->notification_playback_task_handle_ = nullptr;
+        continue_sync = !service->pending_notification_.valid
+            && Application::GetInstance().GetDeviceState() == kDeviceStateIdle;
     }
-    vTaskDelete(nullptr);
+    if (continue_sync)
+    {
+        service->StartNotificationSync(false);
+    }
+    DeleteCurrentBackendTask();
+}
+
+/**
+ * @brief 通过单条 HTTP 连接流式下载并实时解封装通知 Ogg/Opus 音频。
+ * @param path 当前通知音频的 API 相对路径。
+ * @param access_token 当前绑定设备的 Bearer Token。
+ * @return 至少成功送入一个 Opus 包且传输未失败、未被用户中断时返回 true。
+ */
+bool BackendService::StreamNotificationAudio(
+    const std::string &path,
+    const std::string &access_token)
+{
+    std::lock_guard<std::mutex> request_lock(backend_http_mutex);
+    auto *network = Board::GetInstance().GetNetwork();
+    if (network == nullptr)
+    {
+        return false;
+    }
+
+    OggDemuxer demuxer;
+    size_t packet_count = 0;
+    bool queue_succeeded = true;
+    demuxer.OnDemuxerFinished(
+        [this, &packet_count, &queue_succeeded](
+            const uint8_t *data,
+            int sample_rate,
+            int frame_duration,
+            size_t size)
+        {
+            if (notification_playback_interrupted_.load())
+            {
+                return;
+            }
+            auto packet = std::make_unique<AudioStreamPacket>();
+            packet->sample_rate = sample_rate;
+            packet->frame_duration = frame_duration;
+            packet->payload.assign(data, data + size);
+            if (Application::GetInstance().GetAudioService().PushPacketToDecodeQueue(
+                    std::move(packet), true))
+            {
+                ++packet_count;
+            }
+            else
+            {
+                queue_succeeded = false;
+            }
+        });
+
+    auto http = network->CreateHttp();
+    if (http == nullptr)
+    {
+        return false;
+    }
+    http->SetTimeout(kHttpTimeoutMs);
+    http->SetHeader("Accept", "audio/ogg");
+    http->SetHeader("Authorization", "Bearer " + access_token);
+    http->SetHeader("User-Agent", SystemInfo::GetUserAgent());
+    if (!http->Open("GET", BuildApiUrl(path.c_str())))
+    {
+        ESP_LOGW(kTag, "通知音频请求失败，错误码=0x%x", http->GetLastError());
+        return false;
+    }
+
+    const int status_code = http->GetStatusCode();
+    if (status_code != 200)
+    {
+        ESP_LOGW(kTag, "通知音频响应无效，HTTP状态码=%d", status_code);
+        http->Close();
+        return false;
+    }
+    const size_t declared_length = http->GetBodyLength();
+    if (declared_length > kNotificationAudioMaxBytes)
+    {
+        ESP_LOGW(kTag, "通知音频响应超过限制，字节数=%u",
+                 static_cast<unsigned>(declared_length));
+        http->Close();
+        return false;
+    }
+
+    size_t received_size = 0;
+    std::array<char, kHttpReadChunkBytes> read_buffer{};
+    while (true)
+    {
+        if (notification_playback_interrupted_.load())
+        {
+            http->Close();
+            return false;
+        }
+        const int read_size = http->Read(read_buffer.data(), read_buffer.size());
+        if (read_size < 0)
+        {
+            ESP_LOGW(kTag, "通知音频响应读取失败");
+            http->Close();
+            return false;
+        }
+        if (read_size == 0)
+        {
+            break;
+        }
+        received_size += static_cast<size_t>(read_size);
+        if (received_size > kNotificationAudioMaxBytes
+            || demuxer.Process(
+                reinterpret_cast<const uint8_t *>(read_buffer.data()),
+                static_cast<size_t>(read_size)) != static_cast<size_t>(read_size))
+        {
+            ESP_LOGW(kTag, "通知音频流超过限制或Ogg解析失败");
+            http->Close();
+            return false;
+        }
+    }
+    http->Close();
+    if (received_size == 0 || (declared_length != 0 && received_size != declared_length))
+    {
+        ESP_LOGW(kTag, "通知音频响应长度不完整");
+        return false;
+    }
+
+    return queue_succeeded
+        && packet_count > 0
+        && !notification_playback_interrupted_.load();
 }
 
 /**
@@ -4060,6 +4457,10 @@ void BackendService::RunPendingNotificationPlayback()
     }
     for (int attempt = 0; attempt < 120; ++attempt)
     {
+        if (notification_playback_interrupted_.load())
+        {
+            break;
+        }
         auto &app = Application::GetInstance();
         if (app.GetDeviceState() == kDeviceStateIdle && app.GetAudioService().IsIdle())
         {
@@ -4070,6 +4471,13 @@ void BackendService::RunPendingNotificationPlayback()
     if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle)
     {
         AckNotification(notification, kNotificationAckDeferred);
+        {
+            std::lock_guard<std::mutex> lock(notification_mutex_);
+            if (pending_notification_.delivery_id == notification.delivery_id)
+            {
+                pending_notification_ = PendingNotification{};
+            }
+        }
         return;
     }
 
@@ -4097,19 +4505,15 @@ void BackendService::RunPendingNotificationPlayback()
         }
         const std::string audio_path =
             "/api/device/notifications/" + notification.notification_id + "/audio";
-        const HttpResponse response = SendJsonRequest(
-            "GET",
-            audio_path.c_str(),
-            access_token,
-            "",
-            kNotificationAudioMaxBytes);
-        if (response.transport_succeeded && response.status_code == 200 &&
-            response.body.size() >= 64)
+        Application::GetInstance().GetAudioService().ResetDecoder();
+        played = StreamNotificationAudio(audio_path, access_token);
+        if (played && !notification_playback_interrupted_.load())
         {
-            Application::GetInstance().PlaySound(
-                std::string_view(response.body.data(), response.body.size()));
             Application::GetInstance().GetAudioService().WaitForPlaybackQueueEmpty();
-            played = true;
+        }
+        else if (!notification_playback_interrupted_.load())
+        {
+            Application::GetInstance().GetAudioService().ResetDecoder();
         }
     }
     else
@@ -4117,9 +4521,10 @@ void BackendService::RunPendingNotificationPlayback()
         vTaskDelay(pdMS_TO_TICKS(3000));
     }
 
-    AckNotification(
-        notification,
-        played ? kNotificationAckCompleted : kNotificationAckFailed);
+    const bool interrupted = notification_playback_interrupted_.load();
+    AckNotification(notification, played || interrupted
+        ? kNotificationAckCompleted
+        : kNotificationAckFailed);
     {
         std::lock_guard<std::mutex> lock(notification_mutex_);
         if (pending_notification_.delivery_id == notification.delivery_id)
@@ -4178,6 +4583,16 @@ bool BackendService::AckNotification(
  * @param context 指向当前 BackendService 单例。
  */
 void BackendService::NotificationTimerCallback(void *context)
+{
+    auto *service = static_cast<BackendService *>(context);
+    service->StartNotificationSync(false);
+}
+
+/**
+ * @brief 业务 EMQX 指数退避重连定时器回调。
+ * @param context 指向当前 BackendService 单例。
+ */
+void BackendService::NotificationReconnectTimerCallback(void *context)
 {
     auto *service = static_cast<BackendService *>(context);
     service->StartNotificationSync(true);

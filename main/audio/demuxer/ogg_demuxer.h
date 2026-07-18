@@ -68,16 +68,26 @@ public:
     size_t Process(const uint8_t* data, size_t size);
 
     /// @brief 设置每个完整 Opus 包解封装完成后的回调。
-    /// @param on_demuxer_finished 参数依次为包数据、Opus 采样率和包长度；数据仅在回调期间有效。
-    void OnDemuxerFinished(std::function<void(const uint8_t* data, int sample_rate, size_t len)> on_demuxer_finished) {
+    /// @param on_demuxer_finished 参数依次为包数据、Opus 采样率、包时长和包长度；数据仅在回调期间有效。
+    void OnDemuxerFinished(
+        std::function<void(const uint8_t* data, int sample_rate, int frame_duration, size_t len)>
+            on_demuxer_finished) {
         on_demuxer_finished_ = on_demuxer_finished;
     }
 private:
 
+    /**
+     * @brief 根据 Opus TOC 和帧数量计算当前完整包所需的解码时长。
+     * @param data 完整 Opus 包首地址。
+     * @param size 完整 Opus 包字节数。
+     * @return 解码器支持的最小覆盖时长，异常包回退为 60 ms。
+     */
+    static int GetPacketDurationMilliseconds(const uint8_t* data, size_t size);
+
     ParseState  state_ = ParseState::FIND_PAGE;
     context_t   ctx_;
     Opus_t      opus_info_;
-    std::function<void(const uint8_t*, int, size_t)> on_demuxer_finished_;
+    std::function<void(const uint8_t*, int, int, size_t)> on_demuxer_finished_;
 };
 
 #endif

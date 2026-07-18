@@ -7,6 +7,73 @@
 
 #define TAG "OggDemuxer"
 
+/**
+ * @brief 根据 Opus TOC 计算单帧时长，单位为微秒。
+ * @param toc Opus 包首字节。
+ * @return RFC 6716 定义的单帧时长。
+ */
+static int GetOpusFrameDurationMicroseconds(uint8_t toc)
+{
+    const uint8_t configuration = toc >> 3;
+    if (configuration < 12)
+    {
+        constexpr int silk_durations[] = {10000, 20000, 40000, 60000};
+        return silk_durations[configuration & 0x03];
+    }
+    if (configuration < 16)
+    {
+        return (configuration & 0x01) == 0 ? 10000 : 20000;
+    }
+    constexpr int celt_durations[] = {2500, 5000, 10000, 20000};
+    return celt_durations[configuration & 0x03];
+}
+
+/**
+ * @brief 计算完整 Opus 包的总时长并向上匹配 ESP 解码器支持的缓冲时长。
+ * @param data 完整 Opus 包首地址。
+ * @param size 完整 Opus 包字节数。
+ * @return 解码器支持的最小覆盖时长，异常包回退为 60 ms。
+ */
+int OggDemuxer::GetPacketDurationMilliseconds(const uint8_t* data, size_t size)
+{
+    if (data == nullptr || size == 0)
+    {
+        return 60;
+    }
+
+    const uint8_t frame_code = data[0] & 0x03;
+    int frame_count = 1;
+    if (frame_code == 1 || frame_code == 2)
+    {
+        frame_count = 2;
+    }
+    else if (frame_code == 3)
+    {
+        if (size < 2)
+        {
+            return 60;
+        }
+        frame_count = data[1] & 0x3F;
+    }
+
+    const int duration_microseconds = GetOpusFrameDurationMicroseconds(data[0]) * frame_count;
+    if (frame_count <= 0 || duration_microseconds <= 0 || duration_microseconds > 120000)
+    {
+        return 60;
+    }
+
+    const int duration_milliseconds = (duration_microseconds + 999) / 1000;
+    constexpr int supported_durations[] = {5, 10, 20, 40, 60, 80, 100, 120};
+    for (const int supported_duration : supported_durations)
+    {
+        if (duration_milliseconds <= supported_duration)
+        {
+            return supported_duration;
+        }
+    }
+    return 120;
+}
+
 /// @brief 重置解封器
 /**
  * @brief 清空解析状态、页面上下文和已识别的 Opus 信息。
@@ -281,7 +348,11 @@ size_t OggDemuxer::Process(const uint8_t* data, size_t size)
                         }
                         if (opus_info_.head_seen && opus_info_.tags_seen) {
                             if (on_demuxer_finished_) {
-                                on_demuxer_finished_(ctx_.packet_buf, opus_info_.sample_rate, ctx_.packet_len);
+                                on_demuxer_finished_(
+                                    ctx_.packet_buf,
+                                    opus_info_.sample_rate,
+                                    GetPacketDurationMilliseconds(ctx_.packet_buf, ctx_.packet_len),
+                                    ctx_.packet_len);
                             }
                         } else {
                             ESP_LOGW(TAG, "当前Ogg容器未解析到OpusHead/OpusTags，丢弃");
@@ -321,4 +392,3 @@ size_t OggDemuxer::Process(const uint8_t* data, size_t size)
     
     return processed;
 }
-

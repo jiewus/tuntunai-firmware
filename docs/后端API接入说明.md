@@ -17,7 +17,7 @@
 | 屏保备忘录查询与内存缓存 | 已实现 |
 | 动态 MCP 工具清单同步与代理执行 | 已实现 |
 | 语音查询、播报和圆屏显示自定义 MCP 清单 | 已实现 |
-| 主动提醒 | 尚未接入 |
+| MCP、天气和备忘录主动通知 | 已实现 |
 
 设备绑定不影响小智原有的配网、OTA、ASR、大模型、TTS 和语音协议。
 
@@ -340,7 +340,8 @@ Accept: application/json
 返回。固件进入屏保时立即检查缓存，成功列表
 在 RAM 中缓存 5 分钟；定时检查、网络重连和创建新备忘录后会按需刷新。空列表显示“暂无待办”，多条
 内容复用表盘已有的三行弧形裁切和纵向循环滚动。请求失败时保留最近一次成功列表，没有历史列表时
-显示加载、断网、认证失效或同步失败状态。主动到期语音提醒仍属于后续独立能力，本阶段不实现。
+显示加载、断网、认证失效或同步失败状态。备忘录到期后的主动通知由后端 Worker 创建，设备按照下节
+统一通知协议接收和播放。
 
 每条屏保备忘录固定显示三行，日期时间在第一行并使用方括号包围，正文在下面两行，超出部分使用
 省略号截断。提醒时间为今天时显示 `[HH:mm]`；属于今年但不是今天时显示 `[MM-dd]`；
@@ -350,3 +351,47 @@ Accept: application/json
 天气和备忘录到期检查使用同一个轻量定时器，但不会并发执行 TLS 握手。天气 Worker 优先运行并在释放
 HTTP 资源后触发备忘录同步；设备绑定、天气、备忘录和动态 MCP 的后端 HTTP 请求还会经过统一互斥锁
 串行执行，避免证书签名校验阶段因连续内存不足出现 `PK verify failed`。
+
+## 11. 主动通知
+
+设备绑定并联网后，通过设备 Token 获取当前设备独立的 EMQX 地址、账号、密码和唯一订阅主题：
+
+```http
+GET /api/device/mqtt/config
+Authorization: Bearer {device_token}
+```
+
+业务 EMQX 客户端与小智会话 MQTT 完全独立。设备只接受当前唯一主题中结构完整、版本为1的
+`notification.ready` 消息，并校验 `notification_id` 和 `delivery_id` 后写入固定4项提示队列。
+QoS 1 重复提示按照 `delivery_id` 去重；队列满时丢弃新提示，由 HTTPS 周期同步补偿。
+
+MQTT 断开后按照5秒、10秒、20秒逐步退避，最长等待5分钟。连接恢复后重新订阅设备主题并立即同步
+待处理通知。固定5分钟定时器只调用以下 HTTPS 接口补偿，不再周期轮换 MQTT 凭据或强制断开连接：
+
+```http
+GET /api/device/notifications/pending
+Authorization: Bearer {device_token}
+```
+
+设备只把 MQTT 当作及时唤醒信号，通知正文、模式和音频状态始终以认证 HTTPS 响应为准。设备忙碌时
+确认 `Deferred`；空闲时根据通知模式直接播放，或先播放固件内置确认提示音。确认模式只允许下面两个
+无参数本地 MCP 工具控制当前待确认通知：
+
+```text
+self.tuntun.play_pending_notification
+self.tuntun.dismiss_pending_notification
+```
+
+通知音频通过 `Range: bytes=start-end` 每16KB请求一段，每次只使用512字节读取缓冲。分段数据直接送入
+流式 Ogg 解封装器和有界 Opus 解码队列，不在内存中保存完整音频。解封装器从每个 Opus 包的 TOC
+计算实际解码时长，因此不要求豆包固定输出60毫秒帧。用户在播放期间唤醒小智时，固件立即停止下载、
+清理解码队列并进入正常对话。
+
+设备按照处理阶段调用确认接口，上报 `Received`、`Deferred`、`Playing`、`Completed`、`Failed` 或
+`Dismissed`。一条通知完成后，设备在保持空闲时立即查询下一条，不等待下一轮5分钟补偿：
+
+```http
+POST /api/device/notifications/{notification_id}/ack
+Authorization: Bearer {device_token}
+Content-Type: application/json
+```
