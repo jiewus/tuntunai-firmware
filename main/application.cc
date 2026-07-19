@@ -157,7 +157,7 @@ void Application::Initialize() {
     backend_service.Start();
 
     /**
-     * 注册囤囤管家的设备绑定工具；天气同步由 BackendService 根据屏保生命周期自动执行，
+     * 注册囤囤AI的设备绑定工具；天气同步由 BackendService 根据屏保生命周期自动执行，
      * 不暴露为需要大模型主动调用的 MCP 工具。
      */
     backend_service.RegisterMcpTools(mcp_server);

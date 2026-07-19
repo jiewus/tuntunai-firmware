@@ -19,11 +19,11 @@ class McpServer;
 
 /**
  * @file backend_service.h
- * @brief 囤囤管家业务 API 的设备绑定、天气、备忘录和动态 MCP 能力入口。
+ * @brief 囤囤AI业务 API 的设备绑定、天气、备忘录和动态 MCP 能力入口。
  */
 
 /**
- * @brief 管理固件与囤囤管家后端之间的异步业务流程。
+ * @brief 管理固件与囤囤AI后端之间的异步业务流程。
  *
  * 当前版本实现设备绑定码申请、状态轮询、设备 Token 领取、绑定页面联动、屏保天气与备忘录
  * 同步、内置和动态 MCP 工具执行，以及主动通知同步和语音播放。
@@ -96,7 +96,7 @@ private:
     /**
      * @brief MCP 设置天气位置模式完成后的轻量结果回调。
      * @param message 返回给大模型的中文设置结果。
-     * @param is_error true 表示固定城市或 IP 自动定位模式未能保存到囤囤管家平台。
+     * @param is_error true 表示固定城市或 IP 自动定位模式未能保存到囤囤AI平台。
      */
     using WeatherLocationCompletion = std::function<void(
         const std::string& message,
@@ -863,7 +863,7 @@ private:
      */
     std::mutex notification_mutex_;
     /**
-     * @brief 囤囤管家业务 EMQX 客户端，不复用小智 MQTT。
+     * @brief 囤囤AI业务 EMQX 客户端，不复用小智 MQTT。
      */
     std::unique_ptr<Mqtt> notification_mqtt_;
     /**

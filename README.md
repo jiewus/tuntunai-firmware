@@ -28,14 +28,14 @@ idf.py flash monitor
 
 硬件和固件设计说明位于 `docs/hardware` 与 `docs/firmware`。
 
-## 囤囤管家平台接入
+## 囤囤AI平台接入
 
-固件内置 MCP 工具 `self.tuntun.bind_device`。用户唤醒小智并明确提出“绑定囤囤管家平台”
-后，设备会向 `CONFIG_TUNTUN_API_URL` 申请一次性绑定码，并在圆屏上持续显示。用户在囤囤管家
+固件内置 MCP 工具 `self.tuntun.bind_device`。用户唤醒小智并明确提出“绑定囤囤AI平台”
+后，设备会向 `CONFIG_TUNTUN_API_URL` 申请一次性绑定码，并在圆屏上持续显示。用户在囤囤AI
 网页端的设备页面输入该绑定码后，设备会自动完成绑定并保存设备访问凭据。
 
 再次要求绑定时，已保存完整设备凭据的设备会直接回答“设备已绑定”，不会重复生成绑定码。用户
-要求解绑时，`self.tuntun.unbind_device` 只会提示登录囤囤管家后台完成解绑，固件不会执行语音解绑
+要求解绑时，`self.tuntun.unbind_device` 只会提示登录囤囤AI后台完成解绑，固件不会执行语音解绑
 或清除本地凭据。
 
 设备绑定后可以通过 `self.tuntun.set_weather_location` 响应“把天气城市设置为上海市松江区”等

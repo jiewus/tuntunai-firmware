@@ -1,6 +1,6 @@
 /**
  * @file backend_service.cc
- * @brief 囤囤管家设备绑定、屏保天气、备忘录和动态 MCP 实现。
+ * @brief 囤囤AI设备绑定、屏保天气、备忘录和动态 MCP 实现。
  */
 
 #include "backend_service.h"
@@ -43,7 +43,7 @@ namespace
     constexpr const char *kTag = "TuntunBackend";
 
     /**
-     * @brief 串行保护囤囤管家后端的 TLS 连接创建和完整 HTTP 请求生命周期。
+     * @brief 串行保护囤囤AI后端的 TLS 连接创建和完整 HTTP 请求生命周期。
      * @details ESP32-C5 在证书签名校验阶段需要临时申请较大的连续内存。天气、备忘录和动态 MCP
      *          同时握手会导致 PK 校验内存分配失败，因此所有自建后端请求统一串行执行。
      */
@@ -1079,7 +1079,7 @@ void BackendService::Start()
         notification_reconnect_timer_ = nullptr;
     }
 
-    ESP_LOGI(kTag, "囤囤管家后端服务已初始化，接口地址=%s，设备凭据=%s",
+    ESP_LOGI(kTag, "囤囤AI后端服务已初始化，接口地址=%s，设备凭据=%s",
              CONFIG_TUNTUN_API_URL, device_access_token_.empty() ? "缺失" : "可用");
 }
 
@@ -1157,7 +1157,7 @@ void BackendService::RegisterMcpTools(McpServer &server)
 
     server.AddTool(
         "self.tuntun.play_pending_notification",
-        "播放当前设备正在等待用户确认的囤囤管家主动通知。仅当设备刚询问是否播报，且用户明确回答播放、好的或需要时调用。调用后设备会立即结束当前确认会话并直接播放通知，不要再生成确认回复。",
+        "播放当前设备正在等待用户确认的囤囤AI主动通知。仅当设备刚询问是否播报，且用户明确回答播放、好的或需要时调用。调用后设备会立即结束当前确认会话并直接播放通知，不要再生成确认回复。",
         PropertyList(),
         [this](const PropertyList &properties) -> ReturnValue
         {
@@ -1180,7 +1180,7 @@ void BackendService::RegisterMcpTools(McpServer &server)
 
     server.AddTool(
         "self.tuntun.dismiss_pending_notification",
-        "拒绝播放当前设备正在等待用户确认的囤囤管家主动通知。仅当用户明确回答不播放、不需要或取消时调用。",
+        "拒绝播放当前设备正在等待用户确认的囤囤AI主动通知。仅当用户明确回答不播放、不需要或取消时调用。",
         PropertyList(),
         [this](const PropertyList &properties) -> ReturnValue
         {
@@ -1229,7 +1229,7 @@ void BackendService::RegisterMcpTools(McpServer &server)
         {
             (void)properties;
             return std::string(
-                "为保证设备归属安全，设备端不支持语音解绑。请登录囤囤管家后台，在设备管理中完成解绑。");
+                "为保证设备归属安全，设备端不支持语音解绑。请登录囤囤AI后台，在设备管理中完成解绑。");
         });
 
     // 天气位置设置工具在设备 MCP 服务器上注册为异步工具，确保在网络请求完成前不会阻塞语音会话。
@@ -1310,7 +1310,7 @@ void BackendService::RegisterMcpTools(McpServer &server)
     // 创建工具要求模型先通过对话补齐精确提醒日期和时间，不能把事项日期直接当作提醒时间。
     server.AddAsyncTool(
         "self.tuntun.create_memo",
-        "创建囤囤管家备忘录，不能回答没有此功能。调用前必须取得具体提醒日期和时间：用户只说事项日期时"
+        "创建囤囤AI备忘录，不能回答没有此功能。调用前必须取得具体提醒日期和时间：用户只说事项日期时"
         "询问何时提醒，只说提醒日期时继续询问几点；明确说不提醒才传空 remind_at。content 传正文，"
         "remind_at 传带 +08:00 偏移的 RFC 3339 绝对时间。",
         PropertyList({
@@ -1341,7 +1341,7 @@ void BackendService::RegisterMcpTools(McpServer &server)
     // 查询工具使用固定数值范围，避免大模型传入无法稳定解析的自然语言筛选值。
     server.AddAsyncTool(
         "self.tuntun.query_memos",
-        "查询囤囤管家备忘录详情、完成状态和备忘录 ID。用户询问有哪些备忘，或修改、删除目标的 ID 未知时调用。"
+        "查询囤囤AI备忘录详情、完成状态和备忘录 ID。用户询问有哪些备忘，或修改、删除目标的 ID 未知时调用。"
         "status：0=全部，1=未完成，2=已完成；time_range：0=不限，1=今天，2=明天，3=本周，4=未到期。",
         PropertyList({
             Property("status", kPropertyTypeInteger, 1, 0, 2),
@@ -1371,7 +1371,7 @@ void BackendService::RegisterMcpTools(McpServer &server)
     // 修改工具要求完整目标值；变更提醒时间时同样必须先通过对话补齐日期和具体时间。
     server.AddAsyncTool(
         "self.tuntun.update_memo",
-        "修改囤囤管家备忘录。先 query_memos 取得 ID 和原值；修改提醒但缺少日期或具体时间时必须继续询问，"
+        "修改囤囤AI备忘录。先 query_memos 取得 ID 和原值；修改提醒但缺少日期或具体时间时必须继续询问，"
         "不修改提醒则保留原值，明确取消提醒才传空 remind_at。传修改后的完整 content、remind_at、status，"
         "status：1=未完成，2=已完成。",
         PropertyList({
@@ -1406,7 +1406,7 @@ void BackendService::RegisterMcpTools(McpServer &server)
     // 删除工具只接受查询接口返回的 ID，不支持用正文模糊删除。
     server.AddAsyncTool(
         "self.tuntun.delete_memo",
-        "删除一条囤囤管家备忘录。仅在用户明确要求删除时调用；若 memo_id 未知，必须先调用 "
+        "删除一条囤囤AI备忘录。仅在用户明确要求删除时调用；若 memo_id 未知，必须先调用 "
         "self.tuntun.query_memos 获取准确 ID，禁止猜测或使用备忘录正文代替 ID。",
         PropertyList({Property("memo_id", kPropertyTypeString)}),
         [this](const PropertyList &properties, McpToolCompletion completion)
@@ -1432,7 +1432,7 @@ void BackendService::RegisterMcpTools(McpServer &server)
     // 统计工具直接返回后端同一时刻计算的总数和常用时间范围数量，避免模型自行统计分页结果。
     server.AddAsyncTool(
         "self.tuntun.get_memo_statistics",
-        "统计囤囤管家备忘录数量，返回全部、未到期、今天、明天和本周数量。用户询问有多少条备忘录，"
+        "统计囤囤AI备忘录数量，返回全部、未到期、今天、明天和本周数量。用户询问有多少条备忘录，"
         "或今天、明天、本周是否有备忘录时调用，不要根据分页查询结果自行计算。",
         PropertyList(),
         [this](const PropertyList &properties, McpToolCompletion completion)
@@ -1770,7 +1770,7 @@ void BackendService::StartDynamicToolExecution(
         std::lock_guard<std::mutex> lock(binding_mutex_);
         if (device_access_token_.empty())
         {
-            completion("设备尚未绑定囤囤管家，无法执行该服务。", true);
+            completion("设备尚未绑定囤囤AI，无法执行该服务。", true);
             return;
         }
     }
@@ -2049,7 +2049,7 @@ void BackendService::StartMemoToolTask(MemoToolTaskContext *context)
     }
     if (!has_device_credential)
     {
-        FinishToolRequest(context->completion, "设备尚未绑定囤囤管家，无法操作备忘录。", true);
+        FinishToolRequest(context->completion, "设备尚未绑定囤囤AI，无法操作备忘录。", true);
         delete context;
         return;
     }
@@ -2143,7 +2143,7 @@ void BackendService::RunMemoToolTask(MemoToolTaskContext &context)
     }
     if (access_token.empty())
     {
-        FinishToolRequest(context.completion, "设备尚未绑定囤囤管家，无法操作备忘录。", true);
+        FinishToolRequest(context.completion, "设备尚未绑定囤囤AI，无法操作备忘录。", true);
         return;
     }
 
@@ -2563,7 +2563,7 @@ void BackendService::RunMemoSync()
     }
     if (access_token.empty())
     {
-        ShowMemoStatusIfUnavailable("请先绑定囤囤管家");
+        ShowMemoStatusIfUnavailable("请先绑定囤囤AI");
         return;
     }
 
@@ -2723,7 +2723,7 @@ void BackendService::OnScreensaverChanged(bool active)
         }
         if (!has_device_credential)
         {
-            ShowMemoStatusIfUnavailable("请先绑定囤囤管家");
+            ShowMemoStatusIfUnavailable("请先绑定囤囤AI");
         }
         else if (!network_connected_.load())
         {
@@ -2753,7 +2753,7 @@ void BackendService::OnScreensaverChanged(bool active)
         }
         if (!has_device_credential)
         {
-            ShowWeatherStatusIfUnavailable("请先绑定囤囤管家");
+            ShowWeatherStatusIfUnavailable("请先绑定囤囤AI");
         }
         else if (!network_connected_.load())
         {
@@ -2974,7 +2974,7 @@ void BackendService::RunWeatherSync()
     }
     if (access_token.empty())
     {
-        ShowWeatherStatusIfUnavailable("请先绑定囤囤管家");
+        ShowWeatherStatusIfUnavailable("请先绑定囤囤AI");
         return;
     }
 
@@ -3099,7 +3099,7 @@ void BackendService::StartWeatherLocationTask(
     }
     if (!has_device_credential)
     {
-        completion("设备尚未绑定囤囤管家，无法保存天气城市。", true);
+        completion("设备尚未绑定囤囤AI，无法保存天气城市。", true);
         return;
     }
 
@@ -3333,7 +3333,7 @@ void BackendService::StartWeatherAnnouncementTask(
         std::lock_guard<std::mutex> lock(binding_mutex_);
         if (device_access_token_.empty())
         {
-            completion("设备尚未绑定囤囤管家，无法设置天气播报。", true);
+            completion("设备尚未绑定囤囤AI，无法设置天气播报。", true);
             return;
         }
     }
@@ -3531,7 +3531,7 @@ void BackendService::StartBindingTask(bool request_new_session,
             if (completion)
             {
                 completion(
-                    "当前设备已经绑定囤囤管家。如需解绑，请登录囤囤管家后台操作。",
+                    "当前设备已经绑定囤囤AI。如需解绑，请登录囤囤AI后台操作。",
                     false);
             }
             return;
@@ -3601,13 +3601,13 @@ void BackendService::StartBindingTask(bool request_new_session,
 
     if (!active_code.empty())
     {
-        ShowBindingPage(active_code, "请在囤囤管家网页端输入绑定码");
+        ShowBindingPage(active_code, "请在囤囤AI网页端输入绑定码");
     }
     if (completion)
     {
         completion(active_code.empty()
                        ? "设备正在生成绑定码，请稍候。"
-                       : "绑定码已经显示在设备屏幕上，请在囤囤管家网页端完成绑定。",
+                       : "绑定码已经显示在设备屏幕上，请在囤囤AI网页端完成绑定。",
                    false);
     }
 }
@@ -3733,10 +3733,10 @@ void BackendService::RunBindingTask(bool request_new_session,
         }
 
         SavePendingBinding(binding_code, session_token);
-        ShowBindingPage(binding_code, "请在囤囤管家网页端输入绑定码");
+        ShowBindingPage(binding_code, "请在囤囤AI网页端输入绑定码");
         FinishToolRequest(
             completion,
-            "绑定码已经显示在设备屏幕上，请在囤囤管家网页端完成绑定。",
+            "绑定码已经显示在设备屏幕上，请在囤囤AI网页端完成绑定。",
             false);
     }
     else
@@ -3745,7 +3745,7 @@ void BackendService::RunBindingTask(bool request_new_session,
         {
             return;
         }
-        ShowBindingPage(binding_code, "请在囤囤管家网页端输入绑定码");
+        ShowBindingPage(binding_code, "请在囤囤AI网页端输入绑定码");
     }
 
     while (true)
