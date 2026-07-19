@@ -145,7 +145,7 @@ namespace
     constexpr size_t kNotificationResponseMaxBytes = 12288;
     constexpr size_t kNotificationAudioMaxBytes = 512 * 1024;
     constexpr size_t kNotificationTextMaxBytes = 1500;
-    constexpr uint32_t kNotificationConfirmationTimeoutMs = 10000;
+    constexpr uint32_t kNotificationConfirmationTimeoutMs = 30000;
     constexpr uint32_t kNotificationReconnectMaximumSeconds = 300;
 
     /**
@@ -1157,7 +1157,7 @@ void BackendService::RegisterMcpTools(McpServer &server)
 
     server.AddTool(
         "self.tuntun.play_pending_notification",
-        "播放当前设备正在等待用户确认的囤囤管家主动通知。仅当设备刚询问是否播报，且用户明确回答播放、好的或需要时调用。",
+        "播放当前设备正在等待用户确认的囤囤管家主动通知。仅当设备刚询问是否播报，且用户明确回答播放、好的或需要时调用。调用后设备会立即结束当前确认会话并直接播放通知，不要再生成确认回复。",
         PropertyList(),
         [this](const PropertyList &properties) -> ReturnValue
         {
@@ -1169,8 +1169,13 @@ void BackendService::RegisterMcpTools(McpServer &server)
                     return std::string("当前没有等待确认的通知。");
                 }
             }
-            StartPendingNotificationPlayback();
-            return std::string("好的，当前对话结束后为你播报通知。");
+            auto &app = Application::GetInstance();
+            app.EndCurrentConversationForLocalPlayback();
+            app.Schedule([this]()
+            {
+                StartPendingNotificationPlayback();
+            });
+            return std::string("用户已确认，设备将直接播放通知。不要生成任何口头回复。");
         });
 
     server.AddTool(
@@ -2791,6 +2796,8 @@ void BackendService::StartWeatherSync(bool force_refresh)
         {
             return;
         }
+        const bool mqtt_refresh_requested = weather_refresh_requested_.exchange(false);
+        force_refresh = force_refresh || mqtt_refresh_requested;
         const int64_t now_us = esp_timer_get_time();
         if (!force_refresh && weather_snapshot_.valid && weather_last_success_us_ > 0 && now_us - weather_last_success_us_ < kWeatherRefreshIntervalUs)
         {
@@ -2804,6 +2811,10 @@ void BackendService::StartWeatherSync(bool force_refresh)
         if (created != pdPASS)
         {
             weather_task_handle_ = nullptr;
+            if (mqtt_refresh_requested)
+            {
+                weather_refresh_requested_.store(true);
+            }
             task_start_failed = true;
         }
     }
@@ -2844,7 +2855,14 @@ void BackendService::WeatherTaskEntry(void *context)
     {
         Application::GetInstance().Schedule([service]()
         {
-            service->StartMemoSync(false);
+            if (service->weather_refresh_requested_.load())
+            {
+                service->StartWeatherSync(true);
+            }
+            else
+            {
+                service->StartMemoSync(false);
+            }
         });
     }
     DeleteCurrentPsramTask();
@@ -4268,6 +4286,22 @@ bool BackendService::ConnectNotificationMqtt()
             return;
         }
 
+        const bool weather_changed = cJSON_IsString(type)
+            && std::strcmp(type->valuestring, "weather.changed") == 0
+            && cJSON_IsNumber(revision)
+            && revision->valueint == 1;
+        if (weather_changed)
+        {
+            cJSON_Delete(message_root);
+            weather_refresh_requested_.store(true);
+            ESP_LOGI(kTag, "收到天气设置变更提示，准备刷新屏保天气");
+            Application::GetInstance().Schedule([this]()
+            {
+                StartWeatherSync(true);
+            });
+            return;
+        }
+
         std::string notification_id;
         std::string delivery_id;
         const bool notification_ready = cJSON_IsString(type)
@@ -4307,6 +4341,11 @@ bool BackendService::ConnectNotificationMqtt()
             esp_timer_stop(notification_reconnect_timer_);
         }
         ESP_LOGI(kTag, "业务EMQX已自动重连并恢复设备通知订阅");
+        weather_refresh_requested_.store(true);
+        Application::GetInstance().Schedule([this]()
+        {
+            StartWeatherSync(true);
+        });
         StartNotificationSync(false);
     });
     mqtt->OnDisconnected([this, mqtt_client]()
@@ -4346,6 +4385,11 @@ bool BackendService::ConnectNotificationMqtt()
         esp_timer_stop(notification_reconnect_timer_);
     }
     ESP_LOGI(kTag, "业务EMQX连接成功并已订阅当前设备通知主题");
+    weather_refresh_requested_.store(true);
+    Application::GetInstance().Schedule([this]()
+    {
+        StartWeatherSync(true);
+    });
     return true;
 }
 
@@ -4433,14 +4477,17 @@ void BackendService::NotificationConfirmationTaskEntry(void *context)
 }
 
 /**
- * @brief 播放固件内置确认语并在用户没有调用确认工具时延迟投递。
+ * @brief 播放固件内置确认语，以自动停止模式监听回答，并在超时后结束监听和延迟投递。
  */
 void BackendService::RunNotificationConfirmation()
 {
-    Application::GetInstance().PlaySound(Lang::Sounds::OGG_NOTIFICATION_PROMPT);
-    Application::GetInstance().GetAudioService().WaitForPlaybackQueueEmpty();
-    Application::GetInstance().Schedule([]()
-                                        { Application::GetInstance().StartListening(); });
+    auto &app = Application::GetInstance();
+    app.PlaySound(Lang::Sounds::OGG_NOTIFICATION_PROMPT);
+    app.GetAudioService().WaitForPlaybackQueueEmpty();
+    app.Schedule([]()
+    {
+        Application::GetInstance().StartListening(kListeningModeAutoStop);
+    });
     vTaskDelay(pdMS_TO_TICKS(kNotificationConfirmationTimeoutMs));
 
     PendingNotification notification;
@@ -4451,9 +4498,15 @@ void BackendService::RunNotificationConfirmation()
             return;
         }
         notification = pending_notification_;
+        pending_notification_ = PendingNotification{};
+    }
+    const DeviceState state = app.GetDeviceState();
+    if (state == kDeviceStateConnecting || state == kDeviceStateListening)
+    {
+        app.StopListening();
     }
     AckNotification(notification, kNotificationAckDeferred);
-    ESP_LOGI(kTag, "主动通知确认超时，已延迟到下一次允许询问时间");
+    ESP_LOGI(kTag, "主动通知确认超时，已结束监听并延迟到下一次允许询问时间");
 }
 
 /**

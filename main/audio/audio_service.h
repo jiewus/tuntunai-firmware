@@ -152,7 +152,7 @@ public:
      */
     bool IsVoiceDetected() const { return voice_detected_; }
     /**
-     * @brief 所有编解码与播放队列为空且无处理任务运行时返回 true。
+     * @brief 所有编解码与播放队列为空且没有正在解码或输出的音频帧时返回 true。
      */
     bool IsIdle();
     /**
@@ -253,6 +253,10 @@ private:
     std::deque<std::unique_ptr<AudioStreamPacket>> audio_testing_queue_;
     std::deque<std::unique_ptr<AudioTask>> audio_encode_queue_;
     std::deque<std::unique_ptr<AudioTask>> audio_playback_queue_;
+    /** @brief true 表示编解码任务已经取出一个下行 Opus 包并正在生成待播放 PCM。 */
+    bool audio_decode_active_ = false;
+    /** @brief true 表示音频输出任务已经取出一帧并正在向 Codec 写入。 */
+    bool audio_output_active_ = false;
     bool wake_word_initialized_ = false;
     bool audio_processor_initialized_ = false;
     bool voice_detected_ = false;

@@ -129,16 +129,23 @@ public:
     void ToggleChatState();
 
     /**
-     * @brief 请求设备开始录音和上传语音。
+     * @brief 请求设备按指定停止策略开始录音和上传语音。
+     * @param mode 本轮监听使用自动停止、手动停止或实时模式；默认保持按键交互使用的手动停止模式。
      * @note 方法本身不直接操作音频硬件，可从按键回调等其他任务安全调用。
      */
-    void StartListening();
+    void StartListening(ListeningMode mode = kListeningModeManualStop);
 
     /**
      *
      * @brief 请求设备停止录音并通知云端本轮输入结束。
      */
     void StopListening();
+
+    /**
+     * @brief 结束当前云端语音会话，为设备本地音频播放释放麦克风和扬声器。
+     * @note 方法可从 MCP 工具回调调用，实际关闭动作会排到当前工具结果发送之后执行。
+     */
+    void EndCurrentConversationForLocalPlayback();
 
     /**
      * @brief 等待必要数据落盘后重启 ESP32。
@@ -209,6 +216,10 @@ private:
     bool aborted_ = false;
     bool assets_version_checked_ = false;
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
+    /**
+     * @brief 跨任务提交给下一次开始监听事件的停止策略。
+     */
+    std::atomic<ListeningMode> requested_listening_mode_{kListeningModeManualStop};
     /**
      * @brief 标记最近一次状态转移是否代表一轮对话已经结束。
      * @details 状态机监听器可能运行在协议回调任务中，因此使用原子变量把“监听或播报转为空闲”

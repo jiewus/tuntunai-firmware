@@ -346,6 +346,7 @@ void AudioService::AudioOutputTask() {
 
         auto task = std::move(audio_playback_queue_.front());
         audio_playback_queue_.pop_front();
+        audio_output_active_ = true;
         audio_queue_cv_.notify_all();
         lock.unlock();
 
@@ -361,13 +362,15 @@ void AudioService::AudioOutputTask() {
         last_output_time_ = std::chrono::steady_clock::now();
         debug_statistics_.playback_count++;
 
+        lock.lock();
 #if CONFIG_USE_SERVER_AEC
         /* 服务端 AEC 启用时保存播放时间戳，用于关联回声参考帧。 */
         if (task->timestamp > 0) {
-            lock.lock();
             timestamp_queue_.push_back(task->timestamp);
         }
 #endif
+        audio_output_active_ = false;
+        audio_queue_cv_.notify_all();
     }
 
     ESP_LOGW(TAG, "Audio output task stopped");
@@ -395,6 +398,7 @@ void AudioService::OpusCodecTask() {
         if (!audio_decode_queue_.empty() && audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE) {
             auto packet = std::move(audio_decode_queue_.front());
             audio_decode_queue_.pop_front();
+            audio_decode_active_ = true;
             audio_queue_cv_.notify_all();
             lock.unlock();
 
@@ -444,6 +448,8 @@ void AudioService::OpusCodecTask() {
                 ESP_LOGE(TAG, "Audio decoder is not configured");
                 lock.lock();
             }
+            audio_decode_active_ = false;
+            audio_queue_cv_.notify_all();
             debug_statistics_.decode_count++;
         }
         // 把麦克风处理后的 PCM 编码为 Opus，并推入协议发送队列。
@@ -732,23 +738,33 @@ void AudioService::PlaySound(const std::string_view& ogg) {
 }
 
 /**
- * @brief 所有编解码与播放队列为空且无处理任务运行时返回 true。
- * @return 编码、解码、播放和测试队列全部为空时返回 true，否则返回 false。
+ * @brief 所有编解码与播放队列为空且没有正在解码或输出的音频帧时返回 true。
+ * @return 编码、解码、播放和测试队列全部为空且下行音频处理空闲时返回 true，否则返回 false。
  * @details 判断过程受队列互斥锁保护，结果只代表调用瞬间的快照。
  */
 bool AudioService::IsIdle() {
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
-    return audio_encode_queue_.empty() && audio_decode_queue_.empty() && audio_playback_queue_.empty() && audio_testing_queue_.empty();
+    return audio_encode_queue_.empty()
+        && audio_decode_queue_.empty()
+        && audio_playback_queue_.empty()
+        && audio_testing_queue_.empty()
+        && !audio_decode_active_
+        && !audio_output_active_;
 }
 
 /**
  * @brief 阻塞等待所有待播放 PCM 消耗完，用于重启或切换音频状态。
- * @details 条件变量会在解码队列和播放队列同时为空，或服务已停止时唤醒调用者。
+ * @details 条件变量会在解码队列为空、没有正在解码的 Opus 包、播放队列为空且最后一帧已经写入
+ *          Codec，或服务已停止时唤醒调用者。
  */
 void AudioService::WaitForPlaybackQueueEmpty() {
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
     audio_queue_cv_.wait(lock, [this]() { 
-        return service_stopped_ || (audio_decode_queue_.empty() && audio_playback_queue_.empty()); 
+        return service_stopped_
+            || (audio_decode_queue_.empty()
+                && !audio_decode_active_
+                && audio_playback_queue_.empty()
+                && !audio_output_active_);
     });
 }
 

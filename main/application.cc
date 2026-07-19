@@ -822,22 +822,45 @@ void Application::ToggleChatState() {
 }
 
 /**
- * @brief 请求设备开始录音和上传语音。
+ * @brief 请求设备按指定停止策略开始录音和上传语音。
+ * @param mode 本轮监听使用的停止策略。
  * @note 方法本身不直接操作音频硬件，可从按键回调等其他任务安全调用。
- * @details 只设置 MAIN_EVENT_START_LISTENING 事件位，实际状态判断和通道连接由主循环完成。
+ * @details 先原子保存停止策略，再设置 MAIN_EVENT_START_LISTENING 事件位；实际状态判断和通道连接由
+ *          主循环完成，避免后台任务直接操作协议和音频状态。
  */
-void Application::StartListening() {
+void Application::StartListening(ListeningMode mode) {
+    requested_listening_mode_.store(mode);
     Board::GetInstance().WakeUpScreen(true);
     xEventGroupSetBits(event_group_, MAIN_EVENT_START_LISTENING);
 }
 
 /**
  * @brief 请求设备停止录音并通知云端本轮输入结束。
- * @details 只设置 MAIN_EVENT_STOP_LISTENING 事件位，可从按键或其他任务安全调用。
+ * @details 只设置 MAIN_EVENT_STOP_LISTENING 事件位，可从按键或其他任务安全调用；主循环会停止正在监听
+ *          的会话，或取消尚在建立音频通道的监听请求。
  */
 void Application::StopListening() {
     Board::GetInstance().WakeUpScreen(true);
     xEventGroupSetBits(event_group_, MAIN_EVENT_STOP_LISTENING);
+}
+
+/**
+ * @brief 结束当前云端语音会话，为设备本地音频播放释放麦克风和扬声器。
+ * @details 关闭动作通过主任务队列延迟执行，使 MCP 工具结果先发送给云端；执行时停止上行语音处理、
+ *          清除可能已经到达的云端 TTS，再关闭音频通道并直接回到空闲状态。本次状态切换不进入屏保，
+ *          避免通知页面显示前出现表盘闪烁。
+ */
+void Application::EndCurrentConversationForLocalPlayback() {
+    Schedule([this]() {
+        audio_service_.EnableVoiceProcessing(false);
+        audio_service_.ResetDecoder();
+        if (protocol_ && protocol_->IsAudioChannelOpened()) {
+            protocol_->CloseAudioChannel();
+        }
+        SetDeviceState(kDeviceStateIdle);
+        enter_screensaver_after_conversation_.store(false);
+        ESP_LOGI(TAG, "确认会话已结束，准备直接播放本地通知");
+    });
 }
 
 /**
@@ -906,16 +929,23 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
         }
     }
 
+    // 网络握手期间监听请求可能已经超时或被用户取消，不能让迟到的连接结果重新进入监听状态。
+    if (GetDeviceState() != kDeviceStateConnecting) {
+        return;
+    }
+
     SetListeningMode(mode);
 }
 
 /**
  * @brief 处理用户主动开始监听事件。
  * @details 激活状态下该事件用于退出激活等待；配网状态下用于启动音频自检；空闲状态下打开云端
- *          音频通道并进入手动停止模式；正在播报时先打断 TTS，再切换为手动监听。
+ *          音频通道并进入请求的停止模式；正在播报时先打断 TTS，再切换为请求的监听模式。
  */
 void Application::HandleStartListeningEvent() {
     auto state = GetDeviceState();
+    const ListeningMode requested_mode = requested_listening_mode_.exchange(
+        kListeningModeManualStop);
     
     if (state == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
@@ -935,22 +965,22 @@ void Application::HandleStartListeningEvent() {
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             // 先让主循环处理“连接中”界面，再执行可能阻塞的网络握手。
-            Schedule([this]() {
-                ContinueOpenAudioChannel(kListeningModeManualStop);
+            Schedule([this, requested_mode]() {
+                ContinueOpenAudioChannel(requested_mode);
             });
             return;
         }
-        SetListeningMode(kListeningModeManualStop);
+        SetListeningMode(requested_mode);
     } else if (state == kDeviceStateSpeaking) {
         AbortSpeaking(kAbortReasonNone);
-        SetListeningMode(kListeningModeManualStop);
+        SetListeningMode(requested_mode);
     }
 }
 
 /**
  * @brief 处理用户主动停止监听事件。
- * @details 音频自检状态下停止测试并返回配网状态；正常监听状态下通知云端停止接收音频，
- *          然后回到空闲状态。其他状态收到该事件时不执行操作。
+ * @details 音频自检状态下停止测试并返回配网状态；连接状态下取消尚未完成的音频通道建立；正常监听
+ *          状态下通知云端停止接收音频，然后回到空闲状态。其他状态收到该事件时不执行操作。
  */
 void Application::HandleStopListeningEvent() {
     auto state = GetDeviceState();
@@ -958,6 +988,9 @@ void Application::HandleStopListeningEvent() {
     if (state == kDeviceStateAudioTesting) {
         audio_service_.EnableAudioTesting(false);
         SetDeviceState(kDeviceStateWifiConfiguring);
+        return;
+    } else if (state == kDeviceStateConnecting) {
+        SetDeviceState(kDeviceStateIdle);
         return;
     } else if (state == kDeviceStateListening) {
         if (protocol_) {

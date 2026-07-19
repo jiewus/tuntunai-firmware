@@ -644,7 +644,7 @@ private:
     static void NotificationConfirmationTaskEntry(void* context);
 
     /**
-     * @brief 播放固定询问语、开启一次监听并在无结果时确认延迟。
+     * @brief 播放固定询问语、开启自动停止监听，并在超时后结束监听和确认延迟。
      */
     void RunNotificationConfirmation();
 
@@ -812,6 +812,10 @@ private:
      * @brief 最近一次成功同步的单调时钟时间，单位为微秒。
      */
     int64_t weather_last_success_us_ = 0;
+    /**
+     * @brief true 表示收到后端天气设置变更提示，需要忽略缓存并补做一次同步。
+     */
+    std::atomic<bool> weather_refresh_requested_{false};
 
     /**
      * @brief 串行保护备忘录任务句柄、最近快照和成功时间戳。
