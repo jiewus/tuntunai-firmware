@@ -44,6 +44,10 @@ protected:
     lv_obj_t* chat_message_label_ = nullptr;
     lv_obj_t* screensaver_container_ = nullptr;
     lv_obj_t* screensaver_scale_ = nullptr;
+    /**
+     * @brief 独立绘制的当前秒刻度，仅移动自身以避免每秒重绘整个表盘刻度控件。
+     */
+    lv_obj_t* screensaver_second_marker_ = nullptr;
     lv_obj_t* screensaver_time_group_ = nullptr;
     lv_obj_t* screensaver_time_label_ = nullptr;
     lv_obj_t* screensaver_seconds_label_ = nullptr;
@@ -137,7 +141,6 @@ protected:
      * @brief 显示绑定操作说明或流程结果的多行标签。
      */
     lv_obj_t* binding_message_label_ = nullptr;
-    lv_scale_section_t* screensaver_second_section_ = nullptr;
     esp_timer_handle_t preview_timer_ = nullptr;
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
     bool hide_subtitle_ = false;  ///< true 时不在屏幕显示对话字幕。

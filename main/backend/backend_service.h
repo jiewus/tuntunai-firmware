@@ -542,6 +542,28 @@ private:
     static void WeatherTimerCallback(void* context);
 
     /**
+     * @brief 备忘录兜底同步定时器回调，只负责尝试启动备忘录任务。
+     * @param context 指向当前 BackendService 单例。
+     */
+    static void MemoTimerCallback(void* context);
+
+    /**
+     * @brief 备忘录退避重试定时器回调。
+     * @param context 指向当前 BackendService 单例。
+     */
+    static void MemoRetryTimerCallback(void* context);
+
+    /**
+     * @brief 按 1、2、5、10、20、30 分钟退避序列安排下一次备忘录同步。
+     */
+    void ScheduleMemoRetry();
+
+    /**
+     * @brief 同步成功后清除备忘录重试状态并停止一次性重试定时器。
+     */
+    void ResetMemoRetry();
+
+    /**
      * @brief 使用设备 Token 获取、校验并缓存一组屏保天气数据。
      * @details HTTP 和 JSON 处理全部在独立任务中执行，不阻塞 LVGL、音频或应用主任务。
      */
@@ -796,6 +818,14 @@ private:
      */
     std::mutex memo_mutex_;
     /**
+     * @brief 周期检查备忘录缓存是否需要兜底更新的 esp_timer 句柄。
+     */
+    esp_timer_handle_t memo_timer_ = nullptr;
+    /**
+     * @brief 备忘录同步失败后使用的一次性退避重试定时器。
+     */
+    esp_timer_handle_t memo_retry_timer_ = nullptr;
+    /**
      * @brief 当前备忘录 HTTP 任务句柄；为空表示允许创建屏保同步或语音操作任务。
      */
     TaskHandle_t memo_task_handle_ = nullptr;
@@ -807,6 +837,22 @@ private:
      * @brief 最近一次成功同步备忘录的单调时钟时间，单位为微秒。
      */
     int64_t memo_last_success_us_ = 0;
+    /**
+     * @brief true 表示收到后端备忘录变更提示，需要忽略缓存并补做一次同步。
+     */
+    std::atomic<bool> memo_refresh_requested_{false};
+    /**
+     * @brief true 表示已经安排一次备忘录退避重试且尚未开始执行。
+     */
+    std::atomic<bool> memo_retry_pending_{false};
+    /**
+     * @brief true 表示备忘录退避时间已经到达，应在前置条件恢复后立即执行。
+     */
+    std::atomic<bool> memo_retry_due_{false};
+    /**
+     * @brief 下一次失败需要使用的备忘录重试间隔序号。
+     */
+    size_t memo_retry_index_ = 0;
 
     /**
      * @brief 串行保护业务 EMQX、通知任务和当前待确认通知。

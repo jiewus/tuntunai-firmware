@@ -107,21 +107,25 @@ namespace
 
     /**
      * @brief 天气缓存新鲜周期、后台检查周期和临时 Worker 资源配置。
-     * @details 固件每 5 分钟只检查一次缓存年龄，成功天气在 30 分钟内不会重复请求。天气 Worker
+     * @details 固件每 10 分钟只检查一次缓存年龄，成功天气在 30 分钟内不会重复请求。天气 Worker
      *          仅在真正需要 HTTPS 同步时存在，完成后立即释放 8KB 任务栈。
      */
     constexpr int64_t kWeatherRefreshIntervalUs = 30LL * 60LL * 1000LL * 1000LL;
-    constexpr int64_t kWeatherCheckIntervalUs = 5LL * 60LL * 1000LL * 1000LL;
+    constexpr int64_t kWeatherCheckIntervalUs = 10LL * 60LL * 1000LL * 1000LL;
     constexpr uint32_t kWeatherTaskStackSize = 8192;
-    constexpr UBaseType_t kWeatherTaskPriority = 3;
+    constexpr UBaseType_t kWeatherTaskPriority = 1;
 
     /**
-     * @brief 屏保备忘录缓存周期和临时 Worker 的资源配置。
-     * @details 屏保持续显示时每 5 分钟允许刷新一次；语音工具和屏保同步共用同一个 8KB 任务槽。
+     * @brief 屏保备忘录缓存周期、后台检查周期和临时 Worker 的资源配置。
+     * @details 屏保持续显示时每 30 分钟兜底刷新一次；后端增删改会通过 MQTT 提示设备立即刷新。
+     *          语音工具和屏保同步共用同一个 8KB 任务槽。
      */
-    constexpr int64_t kMemoRefreshIntervalUs = 5LL * 60LL * 1000LL * 1000LL;
+    constexpr int64_t kMemoRefreshIntervalUs = 30LL * 60LL * 1000LL * 1000LL;
+    constexpr int64_t kMemoCheckIntervalUs = 30LL * 60LL * 1000LL * 1000LL;
+    constexpr std::array<uint32_t, 8> kMemoRetryIntervalsMinutes = {
+        1, 2, 5, 10, 20, 30, 30, 30};
     constexpr uint32_t kMemoTaskStackSize = 8192;
-    constexpr UBaseType_t kMemoTaskPriority = 3;
+    constexpr UBaseType_t kMemoTaskPriority = 1;
 
     /**
      * @brief 动态 MCP 清单同步和临时 Worker 的资源配置。
@@ -129,7 +133,7 @@ namespace
      *          运行一个清单同步任务和一个动态工具执行任务，避免并发请求挤压设备可用内存。
      */
     constexpr uint32_t kMcpTaskStackSize = 8192;
-    constexpr UBaseType_t kMcpTaskPriority = 3;
+    constexpr UBaseType_t kMcpTaskPriority = 1;
 
     /**
      * @brief 主动通知 HTTPS 补偿、音频下载和任务资源限制。
@@ -137,7 +141,7 @@ namespace
     constexpr int64_t kNotificationCheckIntervalUs = 5LL * 60LL * 1000LL * 1000LL;
     constexpr uint32_t kNotificationTaskStackSize = 10240;
     constexpr uint32_t kNotificationPlaybackTaskStackSize = 16384;
-    constexpr UBaseType_t kNotificationTaskPriority = 4;
+    constexpr UBaseType_t kNotificationTaskPriority = 2;
     constexpr size_t kNotificationResponseMaxBytes = 12288;
     constexpr size_t kNotificationAudioMaxBytes = 512 * 1024;
     constexpr size_t kNotificationTextMaxBytes = 1500;
@@ -145,7 +149,7 @@ namespace
     constexpr uint32_t kNotificationReconnectMaximumSeconds = 300;
 
     /**
-     * @brief 创建后端临时任务，并在可用时把任务栈放入板载 PSRAM。
+     * @brief 创建非实时后端业务任务，并把任务栈放入板载 PSRAM。
      * @param task_entry FreeRTOS 任务入口函数。
      * @param task_name 用于诊断的任务名称。
      * @param stack_size_bytes 任务栈大小，单位为字节。
@@ -154,7 +158,7 @@ namespace
      * @param task_handle 接收创建成功后的任务句柄。
      * @return 创建成功时返回 pdPASS，否则返回 FreeRTOS 创建错误码。
      */
-    BaseType_t CreateBackendTask(
+    BaseType_t CreatePsramBackendTask(
         TaskFunction_t task_entry,
         const char *task_name,
         configSTACK_DEPTH_TYPE stack_size_bytes,
@@ -183,9 +187,9 @@ namespace
     }
 
     /**
-     * @brief 删除由 CreateBackendTask 创建的当前任务并释放对应类型的任务栈。
+     * @brief 删除由 CreatePsramBackendTask 创建的当前任务并释放 PSRAM 任务栈。
      */
-    void DeleteCurrentBackendTask()
+    void DeleteCurrentPsramTask()
     {
 #if CONFIG_SPIRAM
         vTaskDeleteWithCaps(nullptr);
@@ -996,6 +1000,44 @@ void BackendService::Start()
         }
     }
 
+    const esp_timer_create_args_t memo_timer_args = {
+        .callback = MemoTimerCallback,
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "memo_sync",
+        .skip_unhandled_events = true,
+    };
+    timer_error = esp_timer_create(&memo_timer_args, &memo_timer_);
+    if (timer_error == ESP_OK)
+    {
+        timer_error = esp_timer_start_periodic(memo_timer_, kMemoCheckIntervalUs);
+    }
+    if (timer_error != ESP_OK)
+    {
+        ESP_LOGE(kTag, "备忘录定时器启动失败，原因=%s",
+                 esp_err_to_name(timer_error));
+        if (memo_timer_ != nullptr)
+        {
+            esp_timer_delete(memo_timer_);
+            memo_timer_ = nullptr;
+        }
+    }
+
+    const esp_timer_create_args_t memo_retry_timer_args = {
+        .callback = MemoRetryTimerCallback,
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "memo_retry",
+        .skip_unhandled_events = true,
+    };
+    timer_error = esp_timer_create(&memo_retry_timer_args, &memo_retry_timer_);
+    if (timer_error != ESP_OK)
+    {
+        ESP_LOGE(kTag, "备忘录重试定时器创建失败，原因=%s",
+                 esp_err_to_name(timer_error));
+        memo_retry_timer_ = nullptr;
+    }
+
     const esp_timer_create_args_t notification_timer_args = {
         .callback = NotificationTimerCallback,
         .arg = this,
@@ -1502,7 +1544,7 @@ void BackendService::StartMcpManifestSync()
     {
         return;
     }
-    const BaseType_t created = CreateBackendTask(
+    const BaseType_t created = CreatePsramBackendTask(
         McpManifestTaskEntry,
         "mcp_manifest",
         kMcpTaskStackSize,
@@ -1539,7 +1581,7 @@ void BackendService::McpManifestTaskEntry(void *context)
         std::lock_guard<std::mutex> lock(service->dynamic_mcp_mutex_);
         service->mcp_manifest_task_handle_ = nullptr;
     }
-    DeleteCurrentBackendTask();
+    DeleteCurrentPsramTask();
 }
 
 /**
@@ -1751,7 +1793,7 @@ void BackendService::StartDynamicToolExecution(
             }
             else
             {
-                const BaseType_t created = CreateBackendTask(
+                const BaseType_t created = CreatePsramBackendTask(
                     DynamicToolTaskEntry,
                     "mcp_execute",
                     kMcpTaskStackSize,
@@ -1816,7 +1858,7 @@ void BackendService::DynamicToolTaskEntry(void *context)
     {
         service->StartMcpManifestSync();
     }
-    DeleteCurrentBackendTask();
+    DeleteCurrentPsramTask();
 }
 
 /**
@@ -2017,7 +2059,7 @@ void BackendService::StartMemoToolTask(MemoToolTaskContext *context)
         }
         else
         {
-            const BaseType_t created = CreateBackendTask(
+            const BaseType_t created = CreatePsramBackendTask(
                 MemoToolTaskEntry, "memo_tool", kMemoTaskStackSize, context,
                 kMemoTaskPriority, &memo_task_handle_);
             if (created != pdPASS)
@@ -2071,7 +2113,16 @@ void BackendService::MemoToolTaskEntry(void *context)
         std::lock_guard<std::mutex> lock(service->memo_mutex_);
         service->memo_task_handle_ = nullptr;
     }
-    DeleteCurrentBackendTask();
+    if ((service->memo_refresh_requested_.load()
+         || service->memo_retry_due_.load())
+        && service->screensaver_active_.load())
+    {
+        Application::GetInstance().Schedule([service]()
+        {
+            service->StartMemoSync(true);
+        });
+    }
+    DeleteCurrentPsramTask();
 }
 
 /**
@@ -2378,7 +2429,7 @@ void BackendService::RunMemoToolTask(MemoToolTaskContext &context)
 
 /**
  * @brief 在屏保备忘录缓存需要更新时创建一个临时 FreeRTOS Worker。
- * @param force_refresh true 忽略最近成功时间；false 遵守 5 分钟本地新鲜周期。
+ * @param force_refresh true 忽略最近成功时间；false 遵守 30 分钟本地新鲜周期。
  */
 void BackendService::StartMemoSync(bool force_refresh)
 {
@@ -2408,25 +2459,47 @@ void BackendService::StartMemoSync(bool force_refresh)
         {
             return;
         }
+        const bool mqtt_refresh_requested = memo_refresh_requested_.exchange(false);
+        const bool retry_due = memo_retry_due_.load();
+        if (!force_refresh && memo_retry_pending_.load() && !retry_due
+            && !mqtt_refresh_requested)
+        {
+            return;
+        }
+        force_refresh = force_refresh || mqtt_refresh_requested || retry_due;
         const int64_t now_us = esp_timer_get_time();
         if (!force_refresh && memo_snapshot_.valid && memo_last_success_us_ > 0
             && now_us - memo_last_success_us_ < kMemoRefreshIntervalUs)
         {
             return;
         }
-        const BaseType_t created = CreateBackendTask(
+        const BaseType_t created = CreatePsramBackendTask(
             MemoSyncTaskEntry, "memo_sync", kMemoTaskStackSize, this,
             kMemoTaskPriority, &memo_task_handle_);
         if (created != pdPASS)
         {
             memo_task_handle_ = nullptr;
+            if (mqtt_refresh_requested)
+            {
+                memo_refresh_requested_.store(true);
+            }
             task_start_failed = true;
+        }
+        else
+        {
+            memo_retry_pending_.store(false);
+            memo_retry_due_.store(false);
+            if (memo_retry_timer_ != nullptr)
+            {
+                esp_timer_stop(memo_retry_timer_);
+            }
         }
     }
     if (task_start_failed)
     {
         ESP_LOGE(kTag, "内存不足，无法启动备忘录同步任务");
         ShowMemoStatusIfUnavailable("备忘录任务启动失败");
+        ScheduleMemoRetry();
     }
 }
 
@@ -2445,17 +2518,28 @@ void BackendService::MemoSyncTaskEntry(void *context)
     {
         ESP_LOGE(kTag, "备忘录同步任务异常，原因=%s", exception.what());
         service->ShowMemoStatusIfUnavailable("备忘录同步失败");
+        service->ScheduleMemoRetry();
     }
     catch (...)
     {
         ESP_LOGE(kTag, "备忘录同步任务发生未知异常");
         service->ShowMemoStatusIfUnavailable("备忘录同步失败");
+        service->ScheduleMemoRetry();
     }
     {
         std::lock_guard<std::mutex> lock(service->memo_mutex_);
         service->memo_task_handle_ = nullptr;
     }
-    DeleteCurrentBackendTask();
+    if ((service->memo_refresh_requested_.load()
+         || service->memo_retry_due_.load())
+        && service->screensaver_active_.load())
+    {
+        Application::GetInstance().Schedule([service]()
+        {
+            service->StartMemoSync(true);
+        });
+    }
+    DeleteCurrentPsramTask();
 }
 
 /**
@@ -2539,6 +2623,7 @@ void BackendService::RunMemoSync()
             response.status_code == 401 || response.status_code == 403
                 ? "设备认证已失效"
                 : "备忘录同步失败");
+        ScheduleMemoRetry();
         return;
     }
 
@@ -2548,6 +2633,7 @@ void BackendService::RunMemoSync()
         memo_snapshot_ = snapshot;
         memo_last_success_us_ = esp_timer_get_time();
     }
+    ResetMemoRetry();
     if (screensaver_active_.load())
     {
         ShowMemoSnapshot(snapshot);
@@ -2712,7 +2798,7 @@ void BackendService::StartWeatherSync(bool force_refresh)
         }
 
         weather_task_handle_ = nullptr;
-        const BaseType_t created = CreateBackendTask(
+        const BaseType_t created = CreatePsramBackendTask(
             WeatherTaskEntry, "weather_sync", kWeatherTaskStackSize, this,
             kWeatherTaskPriority, &weather_task_handle_);
         if (created != pdPASS)
@@ -2761,7 +2847,7 @@ void BackendService::WeatherTaskEntry(void *context)
             service->StartMemoSync(false);
         });
     }
-    DeleteCurrentBackendTask();
+    DeleteCurrentPsramTask();
 }
 
 /**
@@ -2772,7 +2858,85 @@ void BackendService::WeatherTimerCallback(void *context)
 {
     auto *service = static_cast<BackendService *>(context);
     service->StartWeatherSync(false);
+}
+
+/**
+ * @brief esp_timer 周期回调，每 30 分钟为屏保备忘录执行一次兜底同步检查。
+ * @param context 指向 BackendService 单例。
+ */
+void BackendService::MemoTimerCallback(void *context)
+{
+    auto *service = static_cast<BackendService *>(context);
     service->StartMemoSync(false);
+}
+
+/**
+ * @brief 备忘录退避重试定时器回调，标记到期后尝试强制刷新一次。
+ * @param context 指向 BackendService 单例。
+ */
+void BackendService::MemoRetryTimerCallback(void *context)
+{
+    auto *service = static_cast<BackendService *>(context);
+    service->memo_retry_due_.store(true);
+    service->StartMemoSync(true);
+}
+
+/**
+ * @brief 按固定退避序列安排下一次备忘录刷新，达到 30 分钟后保持该间隔。
+ */
+void BackendService::ScheduleMemoRetry()
+{
+    uint32_t delay_minutes = 0;
+    esp_err_t timer_error = ESP_ERR_INVALID_STATE;
+    {
+        std::lock_guard<std::mutex> lock(memo_mutex_);
+        if (memo_retry_timer_ == nullptr)
+        {
+            return;
+        }
+        const size_t interval_index = std::min(
+            memo_retry_index_, kMemoRetryIntervalsMinutes.size() - 1);
+        delay_minutes = kMemoRetryIntervalsMinutes[interval_index];
+        if (memo_retry_index_ + 1 < kMemoRetryIntervalsMinutes.size())
+        {
+            ++memo_retry_index_;
+        }
+        esp_timer_stop(memo_retry_timer_);
+        memo_retry_pending_.store(true);
+        memo_retry_due_.store(false);
+        timer_error = esp_timer_start_once(
+            memo_retry_timer_,
+            static_cast<uint64_t>(delay_minutes) * 60ULL * 1000ULL * 1000ULL);
+        if (timer_error != ESP_OK)
+        {
+            memo_retry_pending_.store(false);
+        }
+    }
+    if (timer_error == ESP_OK)
+    {
+        ESP_LOGW(kTag, "备忘录将在%u分钟后重试同步",
+                 static_cast<unsigned>(delay_minutes));
+    }
+    else
+    {
+        ESP_LOGE(kTag, "备忘录重试定时器启动失败，原因=%s",
+                 esp_err_to_name(timer_error));
+    }
+}
+
+/**
+ * @brief 备忘录同步成功后停止退避定时器，并让下一轮失败重新从 1 分钟开始。
+ */
+void BackendService::ResetMemoRetry()
+{
+    std::lock_guard<std::mutex> lock(memo_mutex_);
+    memo_retry_index_ = 0;
+    memo_retry_pending_.store(false);
+    memo_retry_due_.store(false);
+    if (memo_retry_timer_ != nullptr)
+    {
+        esp_timer_stop(memo_retry_timer_);
+    }
 }
 
 /**
@@ -2940,7 +3104,7 @@ void BackendService::StartWeatherLocationTask(
         }
         else
         {
-            const BaseType_t created = CreateBackendTask(
+            const BaseType_t created = CreatePsramBackendTask(
                 WeatherLocationTaskEntry,
                 "weather_location",
                 kWeatherTaskStackSize,
@@ -3004,7 +3168,7 @@ void BackendService::WeatherLocationTaskEntry(void *context)
         std::lock_guard<std::mutex> lock(service->weather_mutex_);
         service->weather_location_task_handle_ = nullptr;
     }
-    DeleteCurrentBackendTask();
+    DeleteCurrentPsramTask();
 }
 
 /**
@@ -3178,7 +3342,7 @@ void BackendService::StartWeatherAnnouncementTask(
         }
         else
         {
-            const BaseType_t created = CreateBackendTask(
+            const BaseType_t created = CreatePsramBackendTask(
                 WeatherAnnouncementTaskEntry,
                 "weather_announce",
                 kWeatherTaskStackSize,
@@ -3241,7 +3405,7 @@ void BackendService::WeatherAnnouncementTaskEntry(void *context)
         std::lock_guard<std::mutex> lock(service->weather_mutex_);
         service->weather_announcement_task_handle_ = nullptr;
     }
-    DeleteCurrentBackendTask();
+    DeleteCurrentPsramTask();
 }
 
 /**
@@ -3386,8 +3550,8 @@ void BackendService::StartBindingTask(bool request_new_session,
             else
             {
                 binding_task_handle_ = nullptr;
-                BaseType_t created = CreateBackendTask(
-                    BindingTaskEntry, "tuntun_bind", 8192, context, 3,
+                BaseType_t created = xTaskCreate(
+                    BindingTaskEntry, "tuntun_bind", 8192, context, 1,
                     &binding_task_handle_);
                 if (created == pdPASS)
                 {
@@ -3485,7 +3649,8 @@ void BackendService::BindingTaskEntry(void *context)
             }
         });
     }
-    DeleteCurrentBackendTask();
+    // 绑定成功后会写入 NVS；Flash 缓存关闭期间任务栈必须保留在片内 SRAM。
+    vTaskDelete(nullptr);
 }
 
 /**
@@ -3766,7 +3931,7 @@ void BackendService::StartNotificationSync(bool reconnect_mqtt)
     {
         return;
     }
-    if (CreateBackendTask(
+    if (CreatePsramBackendTask(
             NotificationTaskEntry,
             "notify_sync",
             kNotificationTaskStackSize,
@@ -3802,7 +3967,7 @@ void BackendService::NotificationTaskEntry(void *context)
             break;
         }
     }
-    DeleteCurrentBackendTask();
+    DeleteCurrentPsramTask();
 }
 
 /**
@@ -4087,6 +4252,22 @@ bool BackendService::ConnectNotificationMqtt()
         cJSON *revision = message_root == nullptr
             ? nullptr
             : cJSON_GetObjectItemCaseSensitive(message_root, "revision");
+        const bool memo_changed = cJSON_IsString(type)
+            && std::strcmp(type->valuestring, "memo.changed") == 0
+            && cJSON_IsNumber(revision)
+            && revision->valueint == 1;
+        if (memo_changed)
+        {
+            cJSON_Delete(message_root);
+            memo_refresh_requested_.store(true);
+            ESP_LOGI(kTag, "收到备忘录变更提示，准备刷新屏保备忘录");
+            Application::GetInstance().Schedule([this]()
+            {
+                StartMemoSync(true);
+            });
+            return;
+        }
+
         std::string notification_id;
         std::string delivery_id;
         const bool notification_ready = cJSON_IsString(type)
@@ -4216,7 +4397,7 @@ void BackendService::StartNotificationConfirmation()
     {
         return;
     }
-    if (CreateBackendTask(
+    if (CreatePsramBackendTask(
             NotificationConfirmationTaskEntry,
             "notify_confirm",
             kNotificationTaskStackSize,
@@ -4248,7 +4429,7 @@ void BackendService::NotificationConfirmationTaskEntry(void *context)
     {
         service->StartNotificationSync(false);
     }
-    DeleteCurrentBackendTask();
+    DeleteCurrentPsramTask();
 }
 
 /**
@@ -4286,7 +4467,7 @@ void BackendService::StartPendingNotificationPlayback()
         return;
     }
     notification_playback_interrupted_.store(false);
-    if (CreateBackendTask(
+    if (CreatePsramBackendTask(
             NotificationPlaybackTaskEntry,
             "notify_play",
             kNotificationPlaybackTaskStackSize,
@@ -4318,7 +4499,7 @@ void BackendService::NotificationPlaybackTaskEntry(void *context)
     {
         service->StartNotificationSync(false);
     }
-    DeleteCurrentBackendTask();
+    DeleteCurrentPsramTask();
 }
 
 /**

@@ -122,6 +122,11 @@ constexpr int kScreensaverDialSize = 348;
 constexpr int kScreensaverScaleSize = 330;
 
 /**
+ * @brief LVGL 渲染任务优先级，高于非实时后端同步任务但低于音频输入输出任务。
+ */
+constexpr int kResponsiveLvglTaskPriority = 2;
+
+/**
  * @brief 时分秒组合容器的 LVGL 缩放比例。
  * @details LVGL 使用 256 表示原始尺寸的 100%，608/256 等于 237.5%。当前时间使用约 30px
  *          的内置字体，最终视觉高度约为 71.25px。增大该值会同时放大时分、秒数、描边和
@@ -781,7 +786,7 @@ SpiLcdDisplay::SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
 
     ESP_LOGI(TAG, "Initialize LVGL port");
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
-    port_cfg.task_priority = 1;
+    port_cfg.task_priority = kResponsiveLvglTaskPriority;
 #if CONFIG_SOC_CPU_CORES_NUM > 1
     port_cfg.task_affinity = 1;
 #endif
@@ -1455,8 +1460,7 @@ void LcdDisplay::CreateScreensaverUI() {
     /*
      * 12 点对应数值 0 和 60，6 点对应数值 30。三个透明区段从 Scale 层面隐藏原主刻度，
      * 后续创建的 Wi-Fi 与电量标签才是真正的替代内容，而不是简单覆盖在刻度上。
-     * 隐藏区段先于秒刻度区段创建，使 LVGL 的反向区段遍历始终优先采用透明样式；因此
-     * 当前秒到达 0、30 或 60 时也不会在状态图标后方重新绘制橙色刻度。
+     * 独立秒刻度对象到达 0 或 30 秒时会同步隐藏，因此不会在状态图标后方显示橙色刻度。
      */
     static lv_style_t hidden_dial_tick_style;
     static bool hidden_dial_tick_style_initialized = false;
@@ -1475,26 +1479,20 @@ void LcdDisplay::CreateScreensaverUI() {
             screensaver_scale_, hidden_section, &hidden_dial_tick_style);
     }
 
-    /* 当前秒刻度使用持久化静态样式，Section 在每秒刷新时只改变范围，不重新创建对象。 */
-    static lv_style_t second_minor_style;
-    static lv_style_t second_major_style;
-    static bool second_styles_initialized = false;
-    if (!second_styles_initialized) {
-        lv_style_init(&second_minor_style);
-        lv_style_set_line_color(&second_minor_style, lv_color_hex(kScreensaverAccentColor));
-        lv_style_set_line_width(&second_minor_style, 3);
-        lv_style_set_length(&second_minor_style, 9);
-
-        lv_style_init(&second_major_style);
-        lv_style_set_line_color(&second_major_style, lv_color_hex(kScreensaverAccentColor));
-        lv_style_set_line_width(&second_major_style, 4);
-        lv_style_set_length(&second_major_style, 14);
-        second_styles_initialized = true;
-    }
-    screensaver_second_section_ = lv_scale_add_section(screensaver_scale_);
-    lv_scale_set_section_range(screensaver_scale_, screensaver_second_section_, 0, 0);
-    lv_scale_set_section_style_items(screensaver_scale_, screensaver_second_section_, &second_minor_style);
-    lv_scale_set_section_style_indicator(screensaver_scale_, screensaver_second_section_, &second_major_style);
+    /*
+     * 秒刻度使用独立小对象。移动对象只会使旧、新位置失效，避免通过 Scale Section
+     * 每秒重绘 330x330 的完整刻度盘。
+     */
+    screensaver_second_marker_ = lv_obj_create(screensaver_container_);
+    lv_obj_set_size(screensaver_second_marker_, 3, 9);
+    lv_obj_set_style_radius(screensaver_second_marker_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(
+        screensaver_second_marker_, lv_color_hex(kScreensaverAccentColor), 0);
+    lv_obj_set_style_bg_opa(screensaver_second_marker_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(screensaver_second_marker_, 0, 0);
+    lv_obj_set_style_pad_all(screensaver_second_marker_, 0, 0);
+    lv_obj_remove_flag(screensaver_second_marker_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(screensaver_second_marker_, LV_OBJ_FLAG_HIDDEN);
 
     /* 自定义 MCP 清单根容器只负责组合固定标题和单项轮播区域。 */
     screensaver_mcp_list_viewport_ = lv_obj_create(screensaver_container_);
@@ -2030,10 +2028,33 @@ void LcdDisplay::UpdateScreensaverContent() {
     SetLabelTextIfChanged(screensaver_solar_date_label_, solar_date_text);
     SetLabelTextIfChanged(screensaver_weekday_label_, weekday_text);
 
-    if (screensaver_scale_ != nullptr && screensaver_second_section_ != nullptr) {
-        lv_scale_set_section_range(screensaver_scale_, screensaver_second_section_,
-                                   current_second, current_second);
-        lv_obj_invalidate(screensaver_scale_);
+    if (screensaver_second_marker_ != nullptr) {
+        const bool marker_visible = local_time.tm_year >= 2025 - 1900
+            && current_second != 0 && current_second != 30;
+        if (!marker_visible) {
+            lv_obj_add_flag(screensaver_second_marker_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            const bool major_tick = current_second % 5 == 0;
+            const int marker_width = major_tick ? 4 : 3;
+            const int marker_length = major_tick ? 14 : 9;
+            const int marker_radius = kScreensaverScaleSize / 2 - marker_length / 2;
+            const int angle = current_second * 6;
+            const int x_offset =
+                (marker_radius * lv_trigo_sin(angle)) >> LV_TRIGO_SHIFT;
+            const int y_offset =
+                -(marker_radius * lv_trigo_cos(angle) >> LV_TRIGO_SHIFT);
+
+            lv_obj_set_size(screensaver_second_marker_, marker_width, marker_length);
+            lv_obj_set_style_transform_pivot_x(
+                screensaver_second_marker_, marker_width / 2, 0);
+            lv_obj_set_style_transform_pivot_y(
+                screensaver_second_marker_, marker_length / 2, 0);
+            lv_obj_set_style_transform_rotation(
+                screensaver_second_marker_, angle * 10, 0);
+            lv_obj_align(
+                screensaver_second_marker_, LV_ALIGN_CENTER, x_offset, y_offset);
+            lv_obj_remove_flag(screensaver_second_marker_, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 
     int battery_level = 0;
@@ -2115,7 +2136,16 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
             lv_obj_set_style_translate_y(chat_message_label_, 0, 0);
         }
         UpdateScreensaverContent();
-        UpdateScreensaverMemo();
+        /*
+         * 结构化备忘录在数据写入时已经完成文本和三行布局，屏保隐藏不会销毁这些状态。
+         * 只有没有日期行的兼容长文本需要在动画被停止后恢复滚动布局。
+         */
+        if (screensaver_memo_labels_[0] != nullptr) {
+            const char* memo_text = lv_label_get_text(screensaver_memo_labels_[0]);
+            if (memo_text != nullptr && std::strchr(memo_text, '\n') == nullptr) {
+                UpdateScreensaverMemoScroll();
+            }
+        }
         if (screensaver_memo_timer_ != nullptr && screensaver_memos_.size() > 1) {
             lv_timer_resume(screensaver_memo_timer_);
             lv_timer_reset(screensaver_memo_timer_);
@@ -2124,7 +2154,6 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
         if (binding_active_ && binding_container_ != nullptr) {
             lv_obj_move_foreground(binding_container_);
         }
-        lv_obj_invalidate(screensaver_container_);
     } else {
         custom_mcp_list_active_.store(false);
         SetStandardScreensaverContentVisible(true);
@@ -2187,9 +2216,8 @@ void LcdDisplay::ShowCustomMcpList(
         custom_mcp_list_items_.push_back("暂无自定义 MCP");
     }
     custom_mcp_list_index_ = 0;
-    if (screensaver_scale_ != nullptr && screensaver_second_section_ != nullptr) {
-        lv_scale_set_section_range(screensaver_scale_, screensaver_second_section_, 0, 0);
-        lv_obj_invalidate(screensaver_scale_);
+    if (screensaver_second_marker_ != nullptr) {
+        lv_obj_add_flag(screensaver_second_marker_, LV_OBJ_FLAG_HIDDEN);
     }
     UpdateCustomMcpListItem();
     if (screensaver_mcp_list_switch_timer_ != nullptr) {

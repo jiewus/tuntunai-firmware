@@ -8,7 +8,8 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 
 # Tuntun Moji2 板载 Quad PSRAM。WakeNet9s 初始化会分配较大的模型工作区，
 # 如果没有启用 PSRAM，只靠 ESP32-C5 片内 RAM 会在联网后首次启用唤醒词时耗尽内存。
-# 将 PSRAM 加入默认 malloc 内存池，使 ESP-SR、LVGL 和普通 C/C++ 动态分配可以自动使用它。
+# 将 PSRAM 加入默认 malloc 内存池，并允许天气、备忘录、MCP、通知等非实时业务任务使用
+# 外部任务栈。音频、Wi-Fi、显示和涉及 Flash/NVS 写入的任务仍必须使用片内 SRAM。
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_QUAD=y
 CONFIG_SPIRAM_SPEED_80M=y
