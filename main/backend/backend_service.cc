@@ -4417,6 +4417,21 @@ bool BackendService::ConnectNotificationMqtt()
             return;
         }
 
+        const bool mcp_changed = cJSON_IsString(type)
+            && std::strcmp(type->valuestring, "mcp.changed") == 0
+            && cJSON_IsNumber(revision)
+            && revision->valueint == 1;
+        if (mcp_changed)
+        {
+            cJSON_Delete(message_root);
+            ESP_LOGI(kTag, "收到 MCP 清单变更提示，准备刷新自定义 MCP");
+            Application::GetInstance().Schedule([this]()
+            {
+                StartMcpManifestSync();
+            });
+            return;
+        }
+
         std::string notification_id;
         std::string delivery_id;
         const bool notification_ready = cJSON_IsString(type)
