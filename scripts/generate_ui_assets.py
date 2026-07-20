@@ -16,6 +16,7 @@ FONT_DIR = ROOT / "main" / "display" / "fonts"
 FONT_PATH = ROOT / "managed_components" / "78__xiaozhi-fonts" / "ttf" / "puhui-basic.ttf"
 SIZE = 360
 SCALE = 4
+TIME_GLYPH_TRACKING = 2
 
 
 def make_dial() -> Image.Image:
@@ -61,7 +62,7 @@ def font_source() -> str:
     chars = "-:0123456789"
     bitmap = bytearray()
     glyphs = []
-    digit_advance = max(round(font.getlength(ch)) for ch in "0123456789") + 6
+    digit_advance = max(round(font.getlength(ch)) for ch in "0123456789") + TIME_GLYPH_TRACKING
     for ch in chars:
         left, top, right, bottom = font.getbbox(ch, anchor="ls", stroke_width=3)
         glyph = Image.new("L", (right - left, bottom - top), 0)
@@ -70,7 +71,8 @@ def font_source() -> str:
             stroke_width=3, stroke_fill=255)
         offset = len(bitmap)
         bitmap.extend(glyph.tobytes())
-        advance = digit_advance if ch.isdigit() else round(font.getlength(ch)) + 6
+        advance = (digit_advance if ch.isdigit()
+                   else round(font.getlength(ch)) + TIME_GLYPH_TRACKING)
         glyphs.append((ord(ch), offset, advance, right - left, bottom - top, left, bottom))
 
     values = ",\n".join(
