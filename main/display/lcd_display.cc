@@ -3,6 +3,7 @@
  * @brief lcd_display.cc 中各类和辅助函数的具体实现。
  */
 #include "lcd_display.h"
+#include "fonts/ui_fonts.h"
 #include "gif/lvgl_gif.h"
 #include "settings.h"
 #include "lvgl_theme.h"
@@ -31,6 +32,27 @@ LV_FONT_DECLARE(font_puhui_basic_20_4);
 LV_FONT_DECLARE(font_awesome_30_4);
 
 namespace {
+
+extern const uint8_t screensaver_dial_rgb565_start[]
+    asm("_binary_screensaver_dial_rgb565_start");
+
+constexpr uint32_t kScreensaverDialPixelBytes = 360 * 360 * sizeof(uint16_t);
+
+const lv_image_dsc_t kScreensaverDialImage = {
+    .header = {
+        .magic = LV_IMAGE_HEADER_MAGIC,
+        .cf = LV_COLOR_FORMAT_RGB565,
+        .flags = 0,
+        .w = 360,
+        .h = 360,
+        .stride = 360 * sizeof(uint16_t),
+        .reserved_2 = 0,
+    },
+    .data_size = kScreensaverDialPixelBytes,
+    .data = screensaver_dial_rgb565_start,
+    .reserved = nullptr,
+    .reserved_2 = nullptr,
+};
 
 /**
  * @brief 360x360 圆屏中不会被圆形边缘裁切的固定布局参数。
@@ -1392,7 +1414,6 @@ void LcdDisplay::CreateScreensaverUI() {
             icon_font = lvgl_theme->icon_font()->font();
         }
     }
-    const lv_font_t* large_text_font = &BUILTIN_TEXT_FONT;
 
     /*
      * 全屏根容器始终保持不透明，确保屏保不受普通主题背景、字幕和表情影响。
@@ -1407,77 +1428,11 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_set_style_pad_all(screensaver_container_, 0, 0);
     lv_obj_remove_flag(screensaver_container_, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* 外层枪灰金属圈负责形成表壳与表盘之间的高光边缘。 */
-    lv_obj_t* outer_metal = lv_obj_create(screensaver_container_);
-    lv_obj_set_size(outer_metal, kScreensaverDialSize, kScreensaverDialSize);
-    lv_obj_set_style_radius(outer_metal, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(outer_metal, lv_color_hex(kScreensaverOuterMetalColor), 0);
-    lv_obj_set_style_bg_opa(outer_metal, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(outer_metal, lv_color_hex(kScreensaverMetalBorderColor), 0);
-    lv_obj_set_style_border_width(outer_metal, 2, 0);
-    lv_obj_set_style_pad_all(outer_metal, 0, 0);
-    lv_obj_remove_flag(outer_metal, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_center(outer_metal);
-
-    /* 内层使用更深的冷黑色，让白色刻度和大时间具有足够对比度。 */
-    lv_obj_t* inner_metal = lv_obj_create(screensaver_container_);
-    lv_obj_set_size(inner_metal, 326, 326);
-    lv_obj_set_style_radius(inner_metal, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(inner_metal, lv_color_hex(kScreensaverInnerMetalColor), 0);
-    lv_obj_set_style_bg_opa(inner_metal, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(inner_metal, lv_color_hex(0x272C31), 0);
-    lv_obj_set_style_border_width(inner_metal, 1, 0);
-    lv_obj_set_style_pad_all(inner_metal, 0, 0);
-    lv_obj_remove_flag(inner_metal, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_center(inner_metal);
-
-    /*
-     * Scale 只保存一个控件即可绘制全部 60 个分钟刻度，比创建 60 个 Line 对象更节省 SRAM。
-     * 第 5 个刻度作为主刻度加长，形成与参考表盘接近的机械刻度层次。
-     */
-    screensaver_scale_ = lv_scale_create(screensaver_container_);
-    lv_obj_set_size(screensaver_scale_, kScreensaverScaleSize, kScreensaverScaleSize);
-    lv_scale_set_mode(screensaver_scale_, LV_SCALE_MODE_ROUND_INNER);
-    lv_scale_set_label_show(screensaver_scale_, false);
-    lv_scale_set_total_tick_count(screensaver_scale_, 61);
-    lv_scale_set_major_tick_every(screensaver_scale_, 5);
-    lv_scale_set_range(screensaver_scale_, 0, 60);
-    lv_scale_set_angle_range(screensaver_scale_, 360);
-    lv_scale_set_rotation(screensaver_scale_, 270);
-    lv_obj_set_style_bg_opa(screensaver_scale_, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(screensaver_scale_, 0, 0);
-    lv_obj_set_style_arc_color(screensaver_scale_, lv_color_hex(0x31363B), LV_PART_MAIN);
-    lv_obj_set_style_arc_width(screensaver_scale_, 1, LV_PART_MAIN);
-    lv_obj_set_style_line_color(screensaver_scale_, lv_color_hex(kScreensaverTickColor), LV_PART_ITEMS);
-    lv_obj_set_style_line_width(screensaver_scale_, 1, LV_PART_ITEMS);
-    lv_obj_set_style_length(screensaver_scale_, 6, LV_PART_ITEMS);
-    lv_obj_set_style_line_color(screensaver_scale_, lv_color_white(), LV_PART_INDICATOR);
-    lv_obj_set_style_line_width(screensaver_scale_, 3, LV_PART_INDICATOR);
-    lv_obj_set_style_length(screensaver_scale_, 12, LV_PART_INDICATOR);
-    lv_obj_remove_flag(screensaver_scale_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_center(screensaver_scale_);
-
-    /*
-     * 12 点对应数值 0 和 60，6 点对应数值 30。三个透明区段从 Scale 层面隐藏原主刻度，
-     * 后续创建的 Wi-Fi 与电量标签才是真正的替代内容，而不是简单覆盖在刻度上。
-     * 独立秒刻度对象到达 0 或 30 秒时会同步隐藏，因此不会在状态图标后方显示橙色刻度。
-     */
-    static lv_style_t hidden_dial_tick_style;
-    static bool hidden_dial_tick_style_initialized = false;
-    if (!hidden_dial_tick_style_initialized) {
-        lv_style_init(&hidden_dial_tick_style);
-        lv_style_set_line_opa(&hidden_dial_tick_style, LV_OPA_TRANSP);
-        hidden_dial_tick_style_initialized = true;
-    }
-    constexpr int hidden_dial_tick_values[] = {0, 30, 60};
-    for (const int tick_value : hidden_dial_tick_values) {
-        lv_scale_section_t* hidden_section = lv_scale_add_section(screensaver_scale_);
-        lv_scale_set_section_range(screensaver_scale_, hidden_section, tick_value, tick_value);
-        lv_scale_set_section_style_items(
-            screensaver_scale_, hidden_section, &hidden_dial_tick_style);
-        lv_scale_set_section_style_indicator(
-            screensaver_scale_, hidden_section, &hidden_dial_tick_style);
-    }
+    /* 金属圆盘、内层和固定刻度在构建期预渲染，运行时只需复制 RGB565 像素。 */
+    screensaver_dial_image_ = lv_image_create(screensaver_container_);
+    lv_image_set_src(screensaver_dial_image_, &kScreensaverDialImage);
+    lv_obj_center(screensaver_dial_image_);
+    lv_obj_remove_flag(screensaver_dial_image_, LV_OBJ_FLAG_SCROLLABLE);
 
     /*
      * 秒刻度使用独立小对象。移动对象只会使旧、新位置失效，避免通过 Scale Section
@@ -1670,32 +1625,25 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_set_style_bg_opa(screensaver_time_group_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(screensaver_time_group_, 0, 0);
     lv_obj_set_style_pad_all(screensaver_time_group_, 0, 0);
-    const int time_logical_gap =
-        (kScreensaverTimeColumnGap * 256 + kScreensaverTimeScale / 2) / kScreensaverTimeScale;
-    lv_obj_set_style_pad_column(screensaver_time_group_, time_logical_gap, 0);
+    lv_obj_set_style_pad_column(screensaver_time_group_, kScreensaverTimeColumnGap, 0);
     lv_obj_set_flex_flow(screensaver_time_group_, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(screensaver_time_group_, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_remove_flag(screensaver_time_group_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_transform_scale(screensaver_time_group_, kScreensaverTimeScale, 0);
-    lv_obj_set_style_transform_pivot_x(screensaver_time_group_, LV_PCT(50), 0);
-    lv_obj_set_style_transform_pivot_y(screensaver_time_group_, LV_PCT(50), 0);
     lv_obj_align(screensaver_time_group_, LV_ALIGN_CENTER, 0, 4);
 
     screensaver_time_label_ = lv_label_create(screensaver_time_group_);
     lv_obj_set_size(screensaver_time_label_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_text_font(screensaver_time_label_, large_text_font, 0);
+    lv_obj_set_style_text_font(screensaver_time_label_, &font_puhui_time_64, 0);
     lv_obj_set_style_text_color(screensaver_time_label_, lv_color_white(), 0);
     lv_obj_set_style_text_align(screensaver_time_label_, LV_TEXT_ALIGN_CENTER, 0);
-    EnableBitmapTextBold(screensaver_time_label_);
     lv_label_set_text(screensaver_time_label_, "--:--");
 
     screensaver_seconds_label_ = lv_label_create(screensaver_time_group_);
     lv_obj_set_size(screensaver_seconds_label_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_text_font(screensaver_seconds_label_, large_text_font, 0);
+    lv_obj_set_style_text_font(screensaver_seconds_label_, &font_puhui_time_64, 0);
     lv_obj_set_style_text_color(screensaver_seconds_label_, lv_color_hex(kScreensaverAccentColor), 0);
     lv_obj_set_style_text_align(screensaver_seconds_label_, LV_TEXT_ALIGN_CENTER, 0);
-    EnableBitmapTextBold(screensaver_seconds_label_);
     lv_label_set_text(screensaver_seconds_label_, "--");
 
     /*
@@ -1810,7 +1758,6 @@ void LcdDisplay::ApplyDeviceBindingFont(const lv_font_t* font) {
     }
 
     const int title_scale = kBindingTitleTextPixelSize * 256 / font->line_height;
-    const int code_scale = kBindingCodeTextPixelSize * 256 / font->line_height;
     const int message_scale = kBindingMessageTextPixelSize * 256 / font->line_height;
 
     if (binding_title_label_ != nullptr) {
@@ -1824,10 +1771,8 @@ void LcdDisplay::ApplyDeviceBindingFont(const lv_font_t* font) {
                      kBindingTitleOffsetY);
     }
     if (binding_code_label_ != nullptr) {
-        lv_obj_set_style_text_font(binding_code_label_, font, 0);
-        lv_obj_set_style_transform_scale(binding_code_label_, code_scale, 0);
-        lv_obj_set_style_transform_pivot_x(binding_code_label_, LV_PCT(50), 0);
-        lv_obj_set_style_transform_pivot_y(binding_code_label_, LV_PCT(50), 0);
+        lv_obj_set_style_text_font(binding_code_label_, &font_puhui_time_64, 0);
+        lv_obj_set_style_transform_scale(binding_code_label_, 256, 0);
         lv_obj_center(binding_code_label_);
     }
     if (binding_message_label_ != nullptr) {

@@ -43,7 +43,8 @@ protected:
     lv_obj_t* emoji_box_ = nullptr;
     lv_obj_t* chat_message_label_ = nullptr;
     lv_obj_t* screensaver_container_ = nullptr;
-    lv_obj_t* screensaver_scale_ = nullptr;
+    /** 预渲染的金属表盘、圆环和固定刻度背景。 */
+    lv_obj_t* screensaver_dial_image_ = nullptr;
     /**
      * @brief 独立绘制的当前秒刻度，仅移动自身以避免每秒重绘整个表盘刻度控件。
      */

@@ -17,6 +17,7 @@ set(SOURCES
     "display/lvgl_display/lvgl_theme.cc"
     "display/lvgl_display/lvgl_font.cc"
     "display/lvgl_display/lvgl_image.cc"
+    "display/fonts/font_puhui_time_64.cc"
     "display/lvgl_display/gif/lvgl_gif.cc"
     "display/lvgl_display/gif/gifdec.c"
     "display/lvgl_display/jpg/image_to_jpeg.cpp"
@@ -79,7 +80,7 @@ file(GLOB COMMON_SOUNDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/common/*.ogg)
 # 注册 main 组件。WHOLE_ARCHIVE 确保 DECLARE_BOARD 创建函数不会被链接器裁剪。
 idf_component_register(
     SRCS ${SOURCES}
-    EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
+    EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS} "display/assets/screensaver_dial.rgb565"
     INCLUDE_DIRS ${INCLUDE_DIRS}
     WHOLE_ARCHIVE
     PRIV_REQUIRES

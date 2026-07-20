@@ -391,7 +391,7 @@ private:
         ESP_LOGI(TAG, "Install panel IO");
         
         esp_lcd_panel_io_spi_config_t io_config = ST77916_PANEL_IO_QSPI_CONFIG(DISPLAY_QSPI_CS_PIN, NULL, NULL);
-        // 面板驱动提供默认像素时钟；需要超频或降频时可在此显式设置 pclk_hz。
+        io_config.pclk_hz = DISPLAY_QSPI_PIXEL_CLOCK_HZ;
         ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)DISPLAY_QSPI_HOST, &io_config, &panel_io));
 
     
