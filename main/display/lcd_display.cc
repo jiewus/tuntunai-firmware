@@ -14,7 +14,6 @@
 #include <array>
 #include <vector>
 #include <algorithm>
-#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
@@ -112,16 +111,12 @@ constexpr int kRoundSubtitleScrollRepeatDelayMs = 1600;
 constexpr int kRoundSubtitleScale = 205;
 // 中央表情相对屏幕正中心的 Y 轴偏移。0 严格居中、-16 向上移动16px、+16 向下移动16px
 constexpr int kRoundEmojiOffsetY = -16;
-/**
- * @brief 对话中心光环的固定尺寸和刷新周期。
- * @details 光环仅覆盖屏幕中心约 150px 区域，动画不触发布局计算，适合圆屏和 ESP32-C5。
- */
-constexpr int kConversationOrbOuterSize = 136;
-constexpr int kConversationOrbMiddleSize = 106;
-constexpr int kConversationOrbCoreSize = 72;
-constexpr int kConversationOrbDotSize = 10;
-constexpr int kConversationOrbTimerPeriodMs = 80;
-constexpr int kConversationOrbCenterOffsetY = -16;
+/** NOMI 风格双眼的固定布局和刷新参数。 */
+constexpr int kConversationFaceTimerPeriodMs = 100;
+constexpr int kConversationFaceCenterOffsetY = -18;
+constexpr int kConversationFaceEyeCenterOffsetX = 52;
+constexpr uint32_t kConversationFaceBackgroundColor = 0x000000;
+constexpr uint32_t kConversationFaceEyeColor = 0xFFFFFF;
 // 低电量等提示弹窗的宽度。
 // 弹窗水平居中，因此当前范围大约是：X = (360 - 220) / 2 = 70，范围：70～290
 constexpr int kRoundPopupWidth = 220;
@@ -955,25 +950,15 @@ LcdDisplay::~LcdDisplay() {
         esp_timer_delete(preview_timer_);
     }
 
-    if (conversation_orb_timer_ != nullptr) {
-        lv_timer_delete(conversation_orb_timer_);
-        conversation_orb_timer_ = nullptr;
+    if (conversation_face_timer_ != nullptr) {
+        lv_timer_delete(conversation_face_timer_);
+        conversation_face_timer_ = nullptr;
     }
-    if (conversation_orb_dot_ != nullptr) {
-        lv_obj_del(conversation_orb_dot_);
-        conversation_orb_dot_ = nullptr;
-    }
-    if (conversation_orb_core_ != nullptr) {
-        lv_obj_del(conversation_orb_core_);
-        conversation_orb_core_ = nullptr;
-    }
-    if (conversation_orb_middle_ != nullptr) {
-        lv_obj_del(conversation_orb_middle_);
-        conversation_orb_middle_ = nullptr;
-    }
-    if (conversation_orb_outer_ != nullptr) {
-        lv_obj_del(conversation_orb_outer_);
-        conversation_orb_outer_ = nullptr;
+    if (conversation_face_ != nullptr) {
+        lv_obj_del(conversation_face_);
+        conversation_face_ = nullptr;
+        conversation_left_eye_ = nullptr;
+        conversation_right_eye_ = nullptr;
     }
 
     lv_anim_delete(this, ScreensaverMemoScrollAnimationCallback);
@@ -1910,6 +1895,9 @@ void LcdDisplay::ShowDeviceBinding(const std::string& binding_code,
     }
 
     binding_active_ = true;
+    if (conversation_face_timer_ != nullptr) {
+        lv_timer_pause(conversation_face_timer_);
+    }
     SetLabelTextIfChanged(binding_code_label_, binding_code.c_str());
     SetLabelTextIfChanged(binding_message_label_, message.c_str());
     if (binding_code.empty()) {
@@ -1933,6 +1921,12 @@ void LcdDisplay::HideDeviceBinding() {
     binding_active_ = false;
     if (binding_container_ != nullptr) {
         lv_obj_add_flag(binding_container_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (!screensaver_active_ && conversation_face_timer_ != nullptr) {
+        lv_timer_resume(conversation_face_timer_);
+        lv_timer_reset(conversation_face_timer_);
+        conversation_face_last_frame_key_ = UINT32_MAX;
+        UpdateConversationFaceFrame();
     }
 }
 
@@ -2101,8 +2095,8 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
 
     screensaver_active_ = enabled;
     if (enabled) {
-        if (conversation_orb_timer_ != nullptr) {
-            lv_timer_pause(conversation_orb_timer_);
+        if (conversation_face_timer_ != nullptr) {
+            lv_timer_pause(conversation_face_timer_);
         }
         screensaver_last_rendered_second_ = -2;
         SetStandardScreensaverContentVisible(true);
@@ -2148,11 +2142,11 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
             }
         }
         lv_obj_add_flag(screensaver_container_, LV_OBJ_FLAG_HIDDEN);
-        if (conversation_orb_timer_ != nullptr) {
-            lv_timer_resume(conversation_orb_timer_);
-            lv_timer_reset(conversation_orb_timer_);
+        if (conversation_face_timer_ != nullptr) {
+            lv_timer_resume(conversation_face_timer_);
+            lv_timer_reset(conversation_face_timer_);
         }
-        UpdateConversationOrbFrame();
+        UpdateConversationFaceFrame();
         if (gif_controller_) {
             gif_controller_->Start();
         }
@@ -2178,8 +2172,8 @@ void LcdDisplay::ShowCustomMcpList(
 
     custom_mcp_list_active_.store(true);
     screensaver_active_ = true;
-    if (conversation_orb_timer_ != nullptr) {
-        lv_timer_pause(conversation_orb_timer_);
+    if (conversation_face_timer_ != nullptr) {
+        lv_timer_pause(conversation_face_timer_);
     }
     if (gif_controller_) {
         gif_controller_->Stop();
@@ -2583,198 +2577,294 @@ void LcdDisplay::ScreensaverMemoTimerCallback(lv_timer_t* timer) {
 }
 
 /**
- * @brief 创建对话界面的中心光环和轻量动画定时器。
- * @details 使用三层圆形控件和一个环绕光点表达待机、聆听和播报状态，避免加载大尺寸动画资源。
+ * @brief 创建黑色背景上的 NOMI 风格双眼表情和低频动画定时器。
  */
-void LcdDisplay::CreateConversationOrbUI() {
-    if (conversation_orb_outer_ != nullptr) {
+void LcdDisplay::CreateConversationFaceUI() {
+    if (conversation_face_ != nullptr) {
         return;
     }
 
-    auto* screen = lv_screen_active();
-    auto create_ring = [screen](int size, int border_width) {
-        auto* ring = lv_obj_create(screen);
-        lv_obj_set_size(ring, size, size);
-        lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(ring, border_width, 0);
-        lv_obj_set_style_pad_all(ring, 0, 0);
-        lv_obj_set_style_shadow_width(ring, 0, 0);
-        lv_obj_remove_flag(ring, LV_OBJ_FLAG_SCROLLABLE);
-        return ring;
+    conversation_face_ = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(conversation_face_, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_pos(conversation_face_, 0, 0);
+    lv_obj_set_style_radius(conversation_face_, 0, 0);
+    lv_obj_set_style_bg_color(
+        conversation_face_, lv_color_hex(kConversationFaceBackgroundColor), 0);
+    lv_obj_set_style_bg_opa(conversation_face_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(conversation_face_, 0, 0);
+    lv_obj_set_style_pad_all(conversation_face_, 0, 0);
+    lv_obj_remove_flag(conversation_face_, LV_OBJ_FLAG_SCROLLABLE);
+
+    auto create_eye = [this]() {
+        auto* eye = lv_obj_create(conversation_face_);
+        lv_obj_set_style_bg_opa(eye, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(eye, 0, 0);
+        lv_obj_set_style_pad_all(eye, 0, 0);
+        lv_obj_set_style_shadow_width(eye, 0, 0);
+        lv_obj_set_style_transform_pivot_x(eye, LV_PCT(50), 0);
+        lv_obj_set_style_transform_pivot_y(eye, LV_PCT(50), 0);
+        lv_obj_remove_flag(eye, LV_OBJ_FLAG_SCROLLABLE);
+        return eye;
     };
+    conversation_left_eye_ = create_eye();
+    conversation_right_eye_ = create_eye();
 
-    conversation_orb_outer_ = create_ring(kConversationOrbOuterSize, 3);
-    conversation_orb_middle_ = create_ring(kConversationOrbMiddleSize, 2);
-
-    conversation_orb_core_ = lv_obj_create(screen);
-    lv_obj_set_size(
-        conversation_orb_core_,
-        kConversationOrbCoreSize,
-        kConversationOrbCoreSize);
-    lv_obj_set_style_radius(conversation_orb_core_, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_border_width(conversation_orb_core_, 0, 0);
-    lv_obj_set_style_pad_all(conversation_orb_core_, 0, 0);
-    lv_obj_set_style_shadow_width(conversation_orb_core_, 0, 0);
-    lv_obj_remove_flag(conversation_orb_core_, LV_OBJ_FLAG_SCROLLABLE);
-
-    conversation_orb_dot_ = lv_obj_create(screen);
-    lv_obj_set_size(
-        conversation_orb_dot_,
-        kConversationOrbDotSize,
-        kConversationOrbDotSize);
-    lv_obj_set_style_radius(conversation_orb_dot_, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_border_width(conversation_orb_dot_, 0, 0);
-    lv_obj_set_style_pad_all(conversation_orb_dot_, 0, 0);
-    lv_obj_set_style_shadow_width(conversation_orb_dot_, 0, 0);
-    lv_obj_remove_flag(conversation_orb_dot_, LV_OBJ_FLAG_SCROLLABLE);
-
-    conversation_orb_timer_ = lv_timer_create(
-        ConversationOrbTimerCallback,
-        kConversationOrbTimerPeriodMs,
+    conversation_face_timer_ = lv_timer_create(
+        ConversationFaceTimerCallback,
+        kConversationFaceTimerPeriodMs,
         this);
-    lv_timer_pause(conversation_orb_timer_);
-    UpdateConversationOrbMode(Lang::Strings::STANDBY);
+    conversation_face_tick_ = 2;
+    UpdateConversationFaceMode(Lang::Strings::STANDBY);
 }
 
 /**
- * @brief 根据状态文字切换中心光环动画模式。
+ * @brief 根据设备状态切换双眼的聆听、连接和播报动画。
  * @param status 当前设备状态文字。
  */
-void LcdDisplay::UpdateConversationOrbMode(const char* status) {
-    if (conversation_orb_outer_ == nullptr || status == nullptr) {
+void LcdDisplay::UpdateConversationFaceMode(const char* status) {
+    if (conversation_face_ == nullptr || status == nullptr) {
         return;
     }
 
     if (std::strcmp(status, Lang::Strings::LISTENING) == 0) {
-        conversation_orb_mode_ = ConversationOrbMode::Listening;
+        conversation_face_mode_ = ConversationFaceMode::Listening;
     } else if (std::strcmp(status, Lang::Strings::SPEAKING) == 0) {
-        conversation_orb_mode_ = ConversationOrbMode::Speaking;
+        conversation_face_mode_ = ConversationFaceMode::Speaking;
     } else if (std::strcmp(status, Lang::Strings::CONNECTING) == 0
                || std::strcmp(status, Lang::Strings::PLEASE_WAIT) == 0) {
-        conversation_orb_mode_ = ConversationOrbMode::Connecting;
+        conversation_face_mode_ = ConversationFaceMode::Connecting;
     } else {
-        conversation_orb_mode_ = ConversationOrbMode::Idle;
+        conversation_face_mode_ = ConversationFaceMode::Idle;
     }
 
-    const lv_color_t accent = conversation_orb_mode_ == ConversationOrbMode::Listening
-        ? lv_color_hex(0x54D6FF)
-        : lv_color_hex(0x165DFF);
-    const lv_color_t secondary = conversation_orb_mode_ == ConversationOrbMode::Speaking
-        ? lv_color_hex(0x8B7CFF)
-        : lv_color_hex(0x2BA8FF);
-    lv_obj_set_style_border_color(conversation_orb_outer_, accent, 0);
-    lv_obj_set_style_border_color(conversation_orb_middle_, secondary, 0);
-    lv_obj_set_style_bg_color(conversation_orb_core_, accent, 0);
-    lv_obj_set_style_bg_color(conversation_orb_dot_, secondary, 0);
-    conversation_orb_tick_ = 0;
-
-    if (conversation_orb_timer_ != nullptr) {
+    conversation_face_tick_ = 2;
+    conversation_face_last_frame_key_ = UINT32_MAX;
+    if (conversation_face_timer_ != nullptr) {
         if (screensaver_active_) {
-            lv_timer_pause(conversation_orb_timer_);
+            lv_timer_pause(conversation_face_timer_);
         } else {
-            lv_timer_resume(conversation_orb_timer_);
-            lv_timer_reset(conversation_orb_timer_);
+            lv_timer_resume(conversation_face_timer_);
+            lv_timer_reset(conversation_face_timer_);
         }
     }
-    UpdateConversationOrbFrame();
+    UpdateConversationFaceFrame();
 }
 
 /**
- * @brief 更新中心光环当前动画帧。
- * @details 只修改中心四个对象的几何和透明度，保持动画区域固定并避免整屏布局计算。
+ * @brief 根据云端情绪名称切换双眼表情。
+ * @param emotion 云端下发的情绪名称。
  */
-void LcdDisplay::UpdateConversationOrbFrame() {
-    if (conversation_orb_outer_ == nullptr || conversation_orb_middle_ == nullptr
-        || conversation_orb_core_ == nullptr || conversation_orb_dot_ == nullptr
-        || screensaver_active_) {
+void LcdDisplay::UpdateConversationFaceExpression(const char* emotion) {
+    if (emotion == nullptr) {
+        conversation_face_expression_ = ConversationFaceExpression::Neutral;
+    } else if (std::strcmp(emotion, "happy") == 0
+               || std::strcmp(emotion, "laughing") == 0
+               || std::strcmp(emotion, "loving") == 0
+               || std::strcmp(emotion, "delicious") == 0
+               || std::strcmp(emotion, "confident") == 0) {
+        conversation_face_expression_ = ConversationFaceExpression::Happy;
+    } else if (std::strcmp(emotion, "sad") == 0
+               || std::strcmp(emotion, "crying") == 0
+               || std::strcmp(emotion, "embarrassed") == 0) {
+        conversation_face_expression_ = ConversationFaceExpression::Sad;
+    } else if (std::strcmp(emotion, "angry") == 0) {
+        conversation_face_expression_ = ConversationFaceExpression::Angry;
+    } else if (std::strcmp(emotion, "thinking") == 0
+               || std::strcmp(emotion, "confused") == 0) {
+        conversation_face_expression_ = ConversationFaceExpression::Thinking;
+    } else if (std::strcmp(emotion, "surprised") == 0
+               || std::strcmp(emotion, "shocked") == 0) {
+        conversation_face_expression_ = ConversationFaceExpression::Surprised;
+    } else if (std::strcmp(emotion, "relaxed") == 0) {
+        conversation_face_expression_ = ConversationFaceExpression::Relaxed;
+    } else if (std::strcmp(emotion, "sleepy") == 0) {
+        conversation_face_expression_ = ConversationFaceExpression::Sleepy;
+    } else {
+        conversation_face_expression_ = ConversationFaceExpression::Neutral;
+    }
+
+    conversation_face_tick_ = 2;
+    conversation_face_last_frame_key_ = UINT32_MAX;
+    UpdateConversationFaceFrame();
+}
+
+/**
+ * @brief 更新 NOMI 风格双眼的当前动画帧。
+ * @details 仅在形态发生变化时更新两个眼睛对象，避免持续触发布局和整屏刷新。
+ */
+void LcdDisplay::UpdateConversationFaceFrame() {
+    if (conversation_face_ == nullptr || conversation_left_eye_ == nullptr
+        || conversation_right_eye_ == nullptr || screensaver_active_
+        || lv_obj_has_flag(conversation_face_, LV_OBJ_FLAG_HIDDEN)) {
         return;
     }
 
-    const float seconds = static_cast<float>(conversation_orb_tick_)
-        * static_cast<float>(kConversationOrbTimerPeriodMs) / 1000.0F;
-    float pulse = 0.0F;
-    float orbit_speed = 0.0F;
-    lv_opa_t outer_opa = LV_OPA_20;
-    lv_opa_t middle_opa = LV_OPA_30;
-    lv_opa_t core_opa = LV_OPA_20;
-    lv_opa_t dot_opa = LV_OPA_0;
+    int left_width = 64;
+    int left_height = 50;
+    int right_width = 64;
+    int right_height = 50;
+    int left_y = 0;
+    int right_y = 0;
+    int left_rotation = 0;
+    int right_rotation = 0;
+    int horizontal_shift = 0;
+    uint32_t phase = 0;
+    uint32_t eye_color = kConversationFaceEyeColor;
 
-    switch (conversation_orb_mode_) {
-        case ConversationOrbMode::Connecting:
-            pulse = std::sin(seconds * 2.4F) * 7.0F;
-            orbit_speed = 2.4F;
-            outer_opa = LV_OPA_60;
-            middle_opa = LV_OPA_70;
-            core_opa = LV_OPA_40;
-            dot_opa = LV_OPA_90;
+    switch (conversation_face_expression_) {
+        case ConversationFaceExpression::Happy:
+            left_width = 68;
+            right_width = 68;
+            left_height = 40;
+            right_height = 40;
+            left_y = 3;
+            right_y = 3;
+            left_rotation = -50;
+            right_rotation = 50;
             break;
-        case ConversationOrbMode::Listening:
-            pulse = std::sin(seconds * 5.0F) * 10.0F;
-            orbit_speed = 3.0F;
-            outer_opa = LV_OPA_80;
-            middle_opa = LV_OPA_90;
-            core_opa = LV_OPA_50;
-            dot_opa = LV_OPA_COVER;
+        case ConversationFaceExpression::Sad:
+            left_width = 62;
+            right_width = 62;
+            left_height = 36;
+            right_height = 36;
+            left_y = 6;
+            right_y = 6;
+            left_rotation = 70;
+            right_rotation = -70;
             break;
-        case ConversationOrbMode::Speaking:
-            pulse = std::sin(seconds * 9.0F) * 14.0F;
-            orbit_speed = 4.5F;
-            outer_opa = LV_OPA_90;
-            middle_opa = LV_OPA_80;
-            core_opa = LV_OPA_60;
-            dot_opa = LV_OPA_COVER;
+        case ConversationFaceExpression::Angry:
+            left_width = 62;
+            right_width = 62;
+            left_height = 36;
+            right_height = 36;
+            left_rotation = -80;
+            right_rotation = 80;
             break;
-        case ConversationOrbMode::Idle:
+        case ConversationFaceExpression::Thinking:
+            left_width = 66;
+            left_height = 52;
+            right_width = 46;
+            right_height = 36;
+            right_y = -5;
+            break;
+        case ConversationFaceExpression::Surprised:
+            left_width = 52;
+            right_width = 52;
+            left_height = 66;
+            right_height = 66;
+            break;
+        case ConversationFaceExpression::Relaxed:
+            left_width = 66;
+            right_width = 66;
+            left_height = 34;
+            right_height = 34;
+            left_y = 3;
+            right_y = 3;
+            break;
+        case ConversationFaceExpression::Sleepy:
+            left_width = 58;
+            right_width = 58;
+            left_height = 8;
+            right_height = 8;
+            left_y = 5;
+            right_y = 5;
+            break;
+        case ConversationFaceExpression::Neutral:
         default:
-            pulse = std::sin(seconds * 1.5F) * 3.0F;
-            orbit_speed = 0.0F;
-            outer_opa = LV_OPA_20;
-            middle_opa = LV_OPA_30;
-            core_opa = LV_OPA_20;
-            dot_opa = LV_OPA_0;
             break;
     }
 
-    const int outer_size = std::max(96, kConversationOrbOuterSize + static_cast<int>(pulse));
-    const int middle_size = std::max(78, kConversationOrbMiddleSize + static_cast<int>(pulse * 0.7F));
-    const int core_size = std::max(58, kConversationOrbCoreSize + static_cast<int>(pulse * 0.35F));
-    const int center_x = LV_HOR_RES / 2;
-    const int center_y = LV_VER_RES / 2 + kConversationOrbCenterOffsetY;
-    const auto place_centered = [center_x, center_y](lv_obj_t* object, int size) {
-        lv_obj_set_size(object, size, size);
-        lv_obj_set_pos(object, center_x - size / 2, center_y - size / 2);
-    };
-    place_centered(conversation_orb_outer_, outer_size);
-    place_centered(conversation_orb_middle_, middle_size);
-    place_centered(conversation_orb_core_, core_size);
-    lv_obj_set_style_border_opa(conversation_orb_outer_, outer_opa, 0);
-    lv_obj_set_style_border_opa(conversation_orb_middle_, middle_opa, 0);
-    lv_obj_set_style_bg_opa(conversation_orb_core_, core_opa, 0);
-    lv_obj_set_style_bg_opa(conversation_orb_dot_, dot_opa, 0);
-
-    if (dot_opa != LV_OPA_0) {
-        const float angle = seconds * orbit_speed;
-        const int radius = outer_size / 2 - kConversationOrbDotSize / 2 - 3;
-        const int dot_x = center_x + static_cast<int>(std::cos(angle) * radius)
-            - kConversationOrbDotSize / 2;
-        const int dot_y = center_y + static_cast<int>(std::sin(angle) * radius)
-            - kConversationOrbDotSize / 2;
-        lv_obj_set_pos(conversation_orb_dot_, dot_x, dot_y);
+    switch (conversation_face_mode_) {
+        case ConversationFaceMode::Connecting:
+            phase = (conversation_face_tick_ / 6U) % 3U;
+            horizontal_shift = phase == 0U ? -8 : (phase == 2U ? 8 : 0);
+            left_width = 60;
+            right_width = 60;
+            left_height = 46;
+            right_height = 46;
+            left_rotation = 0;
+            right_rotation = 0;
+            break;
+        case ConversationFaceMode::Listening:
+            phase = (conversation_face_tick_ / 5U) % 2U;
+            left_width = phase == 0U ? 66 : 72;
+            right_width = left_width;
+            left_height = phase == 0U ? 58 : 64;
+            right_height = left_height;
+            left_y = -2;
+            right_y = -2;
+            left_rotation = 0;
+            right_rotation = 0;
+            break;
+        case ConversationFaceMode::Speaking: {
+            phase = (conversation_face_tick_ / 2U) % 4U;
+            left_width = phase == 2U ? 66 : 62;
+            right_width = left_width;
+            left_height = phase == 0U ? 44 : (phase == 2U ? 56 : 50);
+            right_height = left_height;
+            left_y = 0;
+            right_y = 0;
+            left_rotation = 0;
+            right_rotation = 0;
+            break;
+        }
+        case ConversationFaceMode::Idle:
+        default: {
+            const uint32_t blink_phase = conversation_face_tick_ % 48U;
+            const bool blinking = conversation_face_tick_ > 2U && blink_phase <= 1U;
+            phase = blinking ? 1U : 0U;
+            if (blinking) {
+                left_height = 5;
+                right_height = 5;
+                left_rotation = 0;
+                right_rotation = 0;
+            }
+            break;
+        }
     }
-    ++conversation_orb_tick_;
+
+    const uint32_t frame_key =
+        (static_cast<uint32_t>(conversation_face_mode_) << 24U)
+        | (static_cast<uint32_t>(conversation_face_expression_) << 16U)
+        | (phase << 8U)
+        | static_cast<uint32_t>(horizontal_shift + 8);
+    ++conversation_face_tick_;
+    if (frame_key == conversation_face_last_frame_key_) {
+        return;
+    }
+    conversation_face_last_frame_key_ = frame_key;
+
+    const int center_x = LV_HOR_RES / 2;
+    const int center_y = LV_VER_RES / 2 + kConversationFaceCenterOffsetY;
+    const lv_color_t color = lv_color_hex(eye_color);
+    const auto configure_eye = [center_y, color](lv_obj_t* eye, int width, int height,
+                                                  int center_x_position, int y_offset,
+                                                  int rotation) {
+        lv_obj_set_size(eye, width, height);
+        lv_obj_set_pos(eye, center_x_position - width / 2, center_y + y_offset - height / 2);
+        lv_obj_set_style_radius(eye, height / 2, 0);
+        lv_obj_set_style_bg_color(eye, color, 0);
+        lv_obj_set_style_transform_rotation(eye, rotation, 0);
+    };
+    configure_eye(
+        conversation_left_eye_, left_width, left_height,
+        center_x - kConversationFaceEyeCenterOffsetX + horizontal_shift,
+        left_y, left_rotation);
+    configure_eye(
+        conversation_right_eye_, right_width, right_height,
+        center_x + kConversationFaceEyeCenterOffsetX + horizontal_shift,
+        right_y, right_rotation);
 }
 
 /**
- * @brief LVGL 定时器回调，刷新中心光环动画帧。
+ * @brief LVGL 定时器回调，刷新双眼的眨眼和状态动画。
  * @param timer user_data 指向当前 LcdDisplay 实例。
  */
-void LcdDisplay::ConversationOrbTimerCallback(lv_timer_t* timer) {
+void LcdDisplay::ConversationFaceTimerCallback(lv_timer_t* timer) {
     auto* display = static_cast<LcdDisplay*>(lv_timer_get_user_data(timer));
-    if (display == nullptr) {
-        return;
+    if (display != nullptr) {
+        display->UpdateConversationFaceFrame();
     }
-    display->UpdateConversationOrbFrame();
 }
 
 #if CONFIG_USE_WECHAT_MESSAGE_STYLE
@@ -3269,8 +3359,8 @@ void LcdDisplay::SetupUI() {
 
     auto screen = lv_screen_active();
     lv_obj_set_style_text_font(screen, text_font, 0);
-    lv_obj_set_style_text_color(screen, lvgl_theme->text_color(), 0);
-    lv_obj_set_style_bg_color(screen, lvgl_theme->background_color(), 0);
+    lv_obj_set_style_text_color(screen, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(screen, lv_color_hex(kConversationFaceBackgroundColor), 0);
 
     /* Container - used as background */
     container_ = lv_obj_create(screen);
@@ -3278,10 +3368,11 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_radius(container_, 0, 0);
     lv_obj_set_style_pad_all(container_, 0, 0);
     lv_obj_set_style_border_width(container_, 0, 0);
-    lv_obj_set_style_bg_color(container_, lvgl_theme->background_color(), 0);
-    lv_obj_set_style_border_color(container_, lvgl_theme->border_color(), 0);
+    lv_obj_set_style_bg_color(container_, lv_color_hex(kConversationFaceBackgroundColor), 0);
+    lv_obj_set_style_bg_opa(container_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(container_, lv_color_hex(kConversationFaceBackgroundColor), 0);
 
-    CreateConversationOrbUI();
+    CreateConversationFaceUI();
 
     /* Bottom layer: emoji_box_ - centered display */
     emoji_box_ = lv_obj_create(screen);
@@ -3299,6 +3390,7 @@ void LcdDisplay::SetupUI() {
     emoji_image_ = lv_img_create(emoji_box_);
     lv_obj_center(emoji_image_);
     lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
 
     /* Middle layer: preview_image_ - centered display */
     preview_image_ = lv_image_create(screen);
@@ -3313,7 +3405,7 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_size(top_bar_, kRoundTopBarWidth, kRoundTopBarHeight);
     lv_obj_set_style_radius(top_bar_, kRoundTopBarHeight / 2, 0);
     lv_obj_set_style_bg_opa(top_bar_, LV_OPA_50, 0);
-    lv_obj_set_style_bg_color(top_bar_, lvgl_theme->background_color(), 0);
+    lv_obj_set_style_bg_color(top_bar_, lv_color_hex(kConversationFaceBackgroundColor), 0);
     lv_obj_set_style_border_width(top_bar_, 0, 0);
     lv_obj_set_style_pad_all(top_bar_, 0, 0);
     lv_obj_set_style_pad_top(top_bar_, lvgl_theme->spacing(2), 0);
@@ -3335,7 +3427,7 @@ void LcdDisplay::SetupUI() {
     lv_label_set_text(network_label_, "");
     lv_obj_set_style_text_font(network_label_, icon_font, 0);
     lv_obj_set_style_text_align(network_label_, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_style_text_color(network_label_, lvgl_theme->text_color(), 0);
+    lv_obj_set_style_text_color(network_label_, lv_color_white(), 0);
 
     /*
      * 中间时间标签占用顶部栏的全部剩余宽度，并始终保持居中。
@@ -3346,7 +3438,7 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_flex_grow(time_label_, 1);
     lv_obj_set_style_text_font(time_label_, status_font, 0);
     lv_obj_set_style_text_align(time_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(time_label_, lvgl_theme->text_color(), 0);
+    lv_obj_set_style_text_color(time_label_, lv_color_white(), 0);
     lv_label_set_text(time_label_, "--:--");
 
     /*
@@ -3358,7 +3450,7 @@ void LcdDisplay::SetupUI() {
     lv_label_set_text(battery_label_, "");
     lv_obj_set_style_text_font(battery_label_, icon_font, 0);
     lv_obj_set_style_text_align(battery_label_, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_style_text_color(battery_label_, lvgl_theme->text_color(), 0);
+    lv_obj_set_style_text_color(battery_label_, lv_color_white(), 0);
 
     /*
      * 设备运行状态和临时通知保留在顶部栏下方的独立区域中。
@@ -3380,7 +3472,7 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_text_font(notification_label_, status_font, 0);
     lv_label_set_long_mode(notification_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_text_align(notification_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(notification_label_, lvgl_theme->text_color(), 0);
+    lv_obj_set_style_text_color(notification_label_, lv_color_white(), 0);
     lv_label_set_text(notification_label_, "");
     lv_obj_align(notification_label_, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
@@ -3390,7 +3482,7 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_text_font(status_label_, status_font, 0);
     lv_label_set_long_mode(status_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_text_align(status_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(status_label_, lvgl_theme->text_color(), 0);
+    lv_obj_set_style_text_color(status_label_, lv_color_white(), 0);
     lv_label_set_text(status_label_, Lang::Strings::INITIALIZING);
     lv_obj_align(status_label_, LV_ALIGN_CENTER, 0, 0);
 
@@ -3403,9 +3495,9 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_size(bottom_bar_, kRoundSubtitleWidth,
                     ScaleSubtitleSize(subtitle_text_height) + lvgl_theme->spacing(8));
     lv_obj_set_style_radius(bottom_bar_, lvgl_theme->spacing(10), 0);
-    lv_obj_set_style_bg_color(bottom_bar_, lvgl_theme->background_color(), 0);
+    lv_obj_set_style_bg_color(bottom_bar_, lv_color_hex(kConversationFaceBackgroundColor), 0);
     lv_obj_set_style_bg_opa(bottom_bar_, LV_OPA_80, 0);
-    lv_obj_set_style_text_color(bottom_bar_, lvgl_theme->text_color(), 0);
+    lv_obj_set_style_text_color(bottom_bar_, lv_color_white(), 0);
     lv_obj_set_style_pad_all(bottom_bar_, lvgl_theme->spacing(4), 0);
     lv_obj_set_style_border_width(bottom_bar_, 0, 0);
     lv_obj_set_scrollbar_mode(bottom_bar_, LV_SCROLLBAR_MODE_OFF);
@@ -3426,7 +3518,7 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_transform_pivot_y(chat_message_label_, 0, 0);
     lv_label_set_long_mode(chat_message_label_, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(chat_message_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(chat_message_label_, lvgl_theme->text_color(), 0);
+    lv_obj_set_style_text_color(chat_message_label_, lv_color_white(), 0);
     lv_obj_align(chat_message_label_, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
 
@@ -3461,12 +3553,17 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
 
     if (image == nullptr) {
         esp_timer_stop(preview_timer_);
-        lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+        if (conversation_face_ != nullptr) {
+            lv_obj_remove_flag(conversation_face_, LV_OBJ_FLAG_HIDDEN);
+            conversation_face_last_frame_key_ = UINT32_MAX;
+            UpdateConversationFaceFrame();
+        }
+        if (!screensaver_active_ && conversation_face_timer_ != nullptr) {
+            lv_timer_resume(conversation_face_timer_);
+            lv_timer_reset(conversation_face_timer_);
+        }
         lv_obj_add_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
         preview_image_cached_.reset();
-        if (gif_controller_) {
-            gif_controller_->Start();
-        }
         return;
     }
 
@@ -3478,11 +3575,12 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
         lv_image_set_scale(preview_image_, 128 * width_ / img_dsc->header.w);
     }
 
-    // Hide emoji_box_
-    if (gif_controller_) {
-        gif_controller_->Stop();
+    if (conversation_face_ != nullptr) {
+        lv_obj_add_flag(conversation_face_, LV_OBJ_FLAG_HIDDEN);
     }
-    lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+    if (conversation_face_timer_ != nullptr) {
+        lv_timer_pause(conversation_face_timer_);
+    }
     lv_obj_remove_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
     esp_timer_stop(preview_timer_);
     ESP_ERROR_CHECK(esp_timer_start_once(preview_timer_, PREVIEW_IMAGE_DURATION_MS * 1000));
@@ -3551,23 +3649,31 @@ void LcdDisplay::ClearChatMessages() {
 #endif
 
 /**
- * @brief 更新顶部状态并同步对话中心光环动画模式。
+ * @brief 更新顶部状态并同步 NOMI 风格双眼动画模式。
  * @param status UTF-8 状态文字。
  */
 void LcdDisplay::SetStatus(const char* status) {
     LvglDisplay::SetStatus(status);
     DisplayLockGuard lock(this);
-    UpdateConversationOrbMode(status);
+    UpdateConversationFaceMode(status);
 }
 
 /**
- * @brief 在静态 PNG 和 GIF 控制器之间切换表情。
- * @details 本实现完成实际资源操作和状态同步；失败路径会保留可恢复状态并输出诊断日志。
+ * @brief 根据云端情绪更新当前对话表情。
+ * @param emotion 云端下发的情绪名称。
+ * @details 默认圆屏布局把情绪映射为 NOMI 风格双眼形态；微信气泡布局继续兼容静态图片和 GIF。
  */
 void LcdDisplay::SetEmotion(const char* emotion) {
     if (!setup_ui_called_) {
         ESP_LOGW(TAG, "SetupUI() 尚未完成，表情无法显示，表情=%s", emotion);
     }
+#if !CONFIG_USE_WECHAT_MESSAGE_STYLE
+    {
+        DisplayLockGuard lock(this);
+        UpdateConversationFaceExpression(emotion);
+    }
+    return;
+#endif
     if (emoji_image_ == nullptr) {
         if (setup_ui_called_) {
             ESP_LOGW(TAG, "表情显示失败，表情图片为空，表情=%s", emotion);
@@ -3812,7 +3918,33 @@ void LcdDisplay::SetTheme(Theme* theme) {
         }
     }
 #else
-    // Simple UI mode - just update the main chat message
+    // 默认圆屏对话界面固定使用 NOMI 风格黑色背景，不跟随浅色主题切换。
+    lv_obj_set_style_bg_color(screen, lv_color_hex(kConversationFaceBackgroundColor), 0);
+    lv_obj_set_style_text_color(screen, lv_color_white(), 0);
+    if (container_ != nullptr) {
+        lv_obj_set_style_bg_image_src(container_, nullptr, 0);
+        lv_obj_set_style_bg_color(container_, lv_color_hex(kConversationFaceBackgroundColor), 0);
+        lv_obj_set_style_bg_opa(container_, LV_OPA_COVER, 0);
+    }
+    if (top_bar_ != nullptr) {
+        lv_obj_set_style_bg_color(top_bar_, lv_color_hex(kConversationFaceBackgroundColor), 0);
+    }
+    if (network_label_ != nullptr) {
+        lv_obj_set_style_text_color(network_label_, lv_color_white(), 0);
+    }
+    if (time_label_ != nullptr) {
+        lv_obj_set_style_text_color(time_label_, lv_color_white(), 0);
+    }
+    if (battery_label_ != nullptr) {
+        lv_obj_set_style_text_color(battery_label_, lv_color_white(), 0);
+    }
+    if (status_label_ != nullptr) {
+        lv_obj_set_style_text_color(status_label_, lv_color_white(), 0);
+    }
+    if (notification_label_ != nullptr) {
+        lv_obj_set_style_text_color(notification_label_, lv_color_white(), 0);
+    }
+
     if (chat_message_label_ != nullptr) {
         const int subtitle_text_height = text_font->line_height * 2 + kRoundSubtitleLineSpacing;
         lv_obj_set_size(chat_message_label_, kRoundSubtitleLogicalTextWidth, LV_SIZE_CONTENT);
@@ -3822,7 +3954,7 @@ void LcdDisplay::SetTheme(Theme* theme) {
         lv_obj_set_style_transform_pivot_x(chat_message_label_, LV_PCT(50), 0);
         lv_obj_set_style_transform_pivot_y(chat_message_label_, 0, 0);
         lv_label_set_long_mode(chat_message_label_, LV_LABEL_LONG_WRAP);
-        lv_obj_set_style_text_color(chat_message_label_, lvgl_theme->text_color(), 0);
+        lv_obj_set_style_text_color(chat_message_label_, lv_color_white(), 0);
         if (bottom_bar_ != nullptr) {
             lv_obj_set_size(bottom_bar_, kRoundSubtitleWidth,
                             ScaleSubtitleSize(subtitle_text_height) + lvgl_theme->spacing(8));
@@ -3835,10 +3967,11 @@ void LcdDisplay::SetTheme(Theme* theme) {
         lv_obj_set_style_text_color(emoji_label_, lvgl_theme->text_color(), 0);
     }
     
-    // 字幕背景保持 80% 不透明度，避免表情图干扰大字字幕的可读性。
+    // 字幕背景与主界面保持纯黑，避免出现主题色块。
     if (bottom_bar_ != nullptr) {
         lv_obj_set_style_bg_opa(bottom_bar_, LV_OPA_80, 0);
-        lv_obj_set_style_bg_color(bottom_bar_, lvgl_theme->background_color(), 0);
+        lv_obj_set_style_bg_color(bottom_bar_, lv_color_hex(kConversationFaceBackgroundColor), 0);
+        lv_obj_set_style_text_color(bottom_bar_, lv_color_white(), 0);
     }
 #endif
     

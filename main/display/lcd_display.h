@@ -28,12 +28,23 @@ class LvglFont;
  */
 class LcdDisplay : public LvglDisplay {
 protected:
-    /** @brief 对话中心光环当前使用的低成本动画模式。 */
-    enum class ConversationOrbMode : uint8_t {
+    /** @brief NOMI 风格对话表情当前使用的运行状态。 */
+    enum class ConversationFaceMode : uint8_t {
         Idle,
         Connecting,
         Listening,
         Speaking
+    };
+    /** @brief NOMI 风格双眼当前表达的情绪。 */
+    enum class ConversationFaceExpression : uint8_t {
+        Neutral,
+        Happy,
+        Sad,
+        Angry,
+        Thinking,
+        Surprised,
+        Relaxed,
+        Sleepy
     };
 
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
@@ -51,15 +62,16 @@ protected:
     lv_obj_t* emoji_image_ = nullptr;
     std::unique_ptr<LvglGif> gif_controller_ = nullptr;
     lv_obj_t* emoji_box_ = nullptr;
-    /** @brief 对话界面中心光环的外层、内层、核心和环绕光点。 */
-    lv_obj_t* conversation_orb_outer_ = nullptr;
-    lv_obj_t* conversation_orb_middle_ = nullptr;
-    lv_obj_t* conversation_orb_core_ = nullptr;
-    lv_obj_t* conversation_orb_dot_ = nullptr;
-    /** @brief 驱动对话中心光环局部刷新的 LVGL 定时器。 */
-    lv_timer_t* conversation_orb_timer_ = nullptr;
-    ConversationOrbMode conversation_orb_mode_ = ConversationOrbMode::Idle;
-    uint32_t conversation_orb_tick_ = 0;
+    /** @brief NOMI 风格对话表情的黑色面板和左右眼。 */
+    lv_obj_t* conversation_face_ = nullptr;
+    lv_obj_t* conversation_left_eye_ = nullptr;
+    lv_obj_t* conversation_right_eye_ = nullptr;
+    /** @brief 驱动眨眼和状态表情切换的低频 LVGL 定时器。 */
+    lv_timer_t* conversation_face_timer_ = nullptr;
+    ConversationFaceMode conversation_face_mode_ = ConversationFaceMode::Idle;
+    ConversationFaceExpression conversation_face_expression_ = ConversationFaceExpression::Neutral;
+    uint32_t conversation_face_tick_ = 0;
+    uint32_t conversation_face_last_frame_key_ = UINT32_MAX;
     lv_obj_t* chat_message_label_ = nullptr;
     lv_obj_t* screensaver_container_ = nullptr;
     /** 预渲染的金属表盘、圆环和固定刻度背景。 */
@@ -222,25 +234,29 @@ protected:
      */
     void CreateDeviceBindingUI();
     /**
-     * @brief 创建对话界面的中心光环和轻量动画定时器。
-     * @details 光环使用固定圆形控件组合，不加载额外位图，便于在 ESP32-C5 上保持局部刷新。
+     * @brief 创建黑色背景上的 NOMI 风格双眼表情和低频动画定时器。
      */
-    void CreateConversationOrbUI();
+    void CreateConversationFaceUI();
     /**
-     * @brief 根据状态文字切换中心光环动画模式。
+     * @brief 根据设备状态切换双眼的聆听、连接和播报动画。
      * @param status 当前设备状态文字。
      */
-    void UpdateConversationOrbMode(const char* status);
+    void UpdateConversationFaceMode(const char* status);
     /**
-     * @brief 更新中心光环当前动画帧。
-     * @details 只调整四个小控件的尺寸、位置和透明度，不触发布局树重排。
+     * @brief 根据云端情绪名称切换双眼表情。
+     * @param emotion 云端下发的情绪名称。
      */
-    void UpdateConversationOrbFrame();
+    void UpdateConversationFaceExpression(const char* emotion);
     /**
-     * @brief LVGL 定时器回调，刷新中心光环动画帧。
+     * @brief 更新 NOMI 风格双眼的当前动画帧。
+     * @details 仅在形态发生变化时更新两个眼睛对象，避免持续触发布局和整屏刷新。
+     */
+    void UpdateConversationFaceFrame();
+    /**
+     * @brief LVGL 定时器回调，刷新双眼的眨眼和状态动画。
      * @param timer user_data 指向当前 LcdDisplay 实例。
      */
-    static void ConversationOrbTimerCallback(lv_timer_t* timer);
+    static void ConversationFaceTimerCallback(lv_timer_t* timer);
     /**
      * @brief 从资源分区加载屏保天气和日期专用字体。
      */
