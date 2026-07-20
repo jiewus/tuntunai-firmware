@@ -1346,7 +1346,7 @@ void LcdDisplay::ApplyScreensaverDateFont(const lv_font_t* font) {
 
     lv_obj_set_style_pad_column(screensaver_date_group_, kScreensaverDateColumnGap, 0);
     lv_obj_update_layout(screensaver_date_group_);
-    lv_obj_align(screensaver_date_group_, LV_ALIGN_CENTER, 0, -64);
+    lv_obj_align(screensaver_date_group_, LV_ALIGN_CENTER, 0, -60);
 }
 
 /**
@@ -1567,7 +1567,7 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_set_flex_align(screensaver_date_group_, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_remove_flag(screensaver_date_group_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(screensaver_date_group_, LV_ALIGN_CENTER, 0, -64);
+    lv_obj_align(screensaver_date_group_, LV_ALIGN_CENTER, 0, -60);
 
     screensaver_lunar_date_label_ = lv_label_create(screensaver_date_group_);
     lv_obj_set_size(screensaver_lunar_date_label_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
