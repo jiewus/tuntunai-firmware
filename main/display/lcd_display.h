@@ -15,6 +15,7 @@
 
 #define PREVIEW_IMAGE_DURATION_MS 5000
 
+class LvglFont;
 
 /**
  * @file lcd_display.h
@@ -75,6 +76,8 @@ protected:
     lv_obj_t* screensaver_weather_temperature_label_ = nullptr;
     lv_obj_t* screensaver_weather_description_label_ = nullptr;
     lv_obj_t* screensaver_weather_range_label_ = nullptr;
+    /** @brief 屏保天气与日期专用的普惠体 Heavy 24px 字体。 */
+    std::shared_ptr<LvglFont> screensaver_weather_font_;
     /**
      * @brief 位于时间下方、容纳三条弧形安全裁切带的透明固定视口。
      */
@@ -201,6 +204,10 @@ protected:
      */
     void CreateDeviceBindingUI();
     /**
+     * @brief 从资源分区加载屏保天气和日期专用字体。
+     */
+    void LoadScreensaverWeatherFont();
+    /**
      * @brief 将当前主题的中文字体按绑定页面的信息层级应用到各标签。
      * @param font LVGL 字体对象；为空时保持现有字体不变。
      * @details 标题、六位码和说明文字分别换算为固定视觉字号，避免资源字体切换后页面
@@ -217,21 +224,24 @@ protected:
     /**
      * @brief 将主题字体应用到天气位置名称，并保持单行水平居中。
      * @param font LVGL 字体对象；为空时保持现有字体不变。
-     * @details 位置名称使用独立缩放，避免天气三列整体缩放影响其居中位置。
+     * @details 位置名称优先使用资源分区中的普惠体 Heavy 24px，资源不可用时回退到主题字体。
+     *          字体不使用 LVGL 变换缩放。
      *          调用者必须已经持有 LVGL 锁。
      */
     void ApplyScreensaverLocationFont(const lv_font_t* font);
     /**
-     * @brief 将主题字体应用到天气三列，并保持 29px 字号与 12px 可见列间距。
+     * @brief 将屏保天气三列设置为普惠体 Heavy 24px，并保持固定列间距。
      * @param font LVGL 字体对象；为空时保持现有字体不变。
-     * @details 天气组以整体方式缩放和居中，三个子标签不单独缩放，避免列间距受文字长度影响。
+     * @details 天气三列优先使用资源分区中的普惠体 Heavy 24px，直接按原生字形绘制；
+     *          三个子标签不单独缩放，避免列间距受文字长度影响。
      *          调用者必须已经持有 LVGL 锁。
      */
     void ApplyScreensaverWeatherFont(const lv_font_t* font);
     /**
-     * @brief 将主题字体应用到日期三列，并保持 26px 字号与 16px 可见列间距。
+     * @brief 将屏保日期三列设置为普惠体 Heavy 24px，并保持固定列间距。
      * @param font LVGL 字体对象；为空时保持现有字体不变。
-     * @details 农历、公历和星期始终单行显示，并由日期组作为整体水平居中。
+     * @details 农历、公历和星期优先使用资源分区中的普惠体 Heavy 24px，直接按原生字形绘制，
+     *          并由日期组作为整体水平居中。
      *          调用者必须已经持有 LVGL 锁。
      */
     void ApplyScreensaverDateFont(const lv_font_t* font);
@@ -336,6 +346,10 @@ public:
      * @brief 将主题颜色、字体、背景和表情集合应用到已创建控件。
      */
     virtual void SetTheme(Theme* theme) override;
+    /**
+     * @brief 在资源分区即将重新映射前释放屏保专用字体并回退到主题字体。
+     */
+    void ReleaseScreensaverWeatherFontForAssetsReload();
     /**
      * @brief 刷新普通状态栏，并在屏保显示期间同步刷新表盘时间和电量。
      * @param update_all true 强制刷新网络等全部状态；false 使用周期刷新策略。

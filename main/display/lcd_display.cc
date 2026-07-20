@@ -7,7 +7,9 @@
 #include "gif/lvgl_gif.h"
 #include "settings.h"
 #include "lvgl_theme.h"
+#include "lvgl_font.h"
 #include "assets/lang_config.h"
+#include "assets.h"
 
 #include <array>
 #include <vector>
@@ -36,7 +38,6 @@ namespace {
 
 extern const uint8_t screensaver_dial_rgb565_start[]
     asm("_binary_screensaver_dial_rgb565_start");
-
 constexpr uint32_t kScreensaverDialPixelBytes = 360 * 360 * sizeof(uint16_t);
 
 const lv_image_dsc_t kScreensaverDialImage = {
@@ -315,7 +316,7 @@ constexpr int kScreensaverWeatherColumnGap = 15;
  * @brief 日期三列相邻内容之间的最终可见间距，单位为像素。
  * @details 该值控制农历与公历、公历与星期之间的距离，并直接使用原生像素间距。
  */
-constexpr int kScreensaverDateColumnGap = 20;
+constexpr int kScreensaverDateColumnGap = 10;
 
 /**
  * @brief 备忘录区域相对屏幕中心的 Y 轴偏移，单位为物理像素。
@@ -1088,11 +1089,11 @@ void LcdDisplay::UpdateSubtitleScroll() {
 }
 
 /**
- * @brief 将主题中的完整字体应用到表盘所有小号文字标签。
+ * @brief 将主题字体应用到备忘录正文，并将备忘录日期设置为 Heavy24 原生字体。
  * @param font 需要使用的 LVGL 字体对象；为空时不执行任何修改。
- * @details 默认资源分区提供 30px 完整中文字库，本方法根据字体实际行高计算缩放比例，
- *          将其视觉高度保持在约 28px，并同步反算标签宽度与行间距，使三行视口的物理
- *          尺寸不随主题字体变化。
+ * @details 默认资源分区提供 30px 完整中文字库，正文根据字体实际行高计算缩放比例，
+ *          将视觉高度保持在约 28px；日期标签优先使用普惠体 Heavy 24px，直接按原生字形
+ *          绘制，不使用变换缩放。
  */
 void LcdDisplay::ApplyScreensaverTextFont(const lv_font_t* font) {
     if (font == nullptr || font->line_height <= 0) {
@@ -1107,6 +1108,15 @@ void LcdDisplay::ApplyScreensaverTextFont(const lv_font_t* font) {
     const int todo_logical_width = kScreensaverMemoWidth * 256 / text_scale;
     const int logical_line_spacing =
         (kScreensaverMemoLineSpacing * 256 + text_scale - 1) / text_scale;
+    const lv_font_t* memo_date_font = font;
+    int memo_date_scale = text_scale;
+    int memo_date_width = todo_logical_width;
+    if (screensaver_weather_font_ != nullptr
+        && screensaver_weather_font_->font() != nullptr) {
+        memo_date_font = screensaver_weather_font_->font();
+        memo_date_scale = 256;
+        memo_date_width = kScreensaverMemoWidth;
+    }
     for (lv_obj_t* label : screensaver_memo_labels_) {
         if (label == nullptr) {
             continue;
@@ -1121,8 +1131,8 @@ void LcdDisplay::ApplyScreensaverTextFont(const lv_font_t* font) {
         if (label == nullptr) {
             continue;
         }
-        lv_obj_set_style_text_font(label, font, 0);
-        lv_obj_set_style_transform_scale(label, text_scale, 0);
+        lv_obj_set_style_text_font(label, memo_date_font, 0);
+        lv_obj_set_style_transform_scale(label, memo_date_scale, 0);
         lv_obj_set_style_transform_pivot_x(label, LV_PCT(50), 0);
         lv_obj_set_style_transform_pivot_y(label, 0, 0);
     }
@@ -1145,7 +1155,7 @@ void LcdDisplay::ApplyScreensaverTextFont(const lv_font_t* font) {
                          -row * kScreensaverMemoRowHeight);
         }
         if (screensaver_memo_date_labels_[row] != nullptr) {
-            lv_obj_set_width(screensaver_memo_date_labels_[row], todo_logical_width);
+            lv_obj_set_width(screensaver_memo_date_labels_[row], memo_date_width);
             lv_obj_align(screensaver_memo_date_labels_[row], LV_ALIGN_TOP_MID, 0,
                          -row * kScreensaverMemoRowHeight);
         }
@@ -1230,29 +1240,66 @@ void LcdDisplay::SetStandardScreensaverContentVisible(bool visible) {
 /**
  * @brief 将完整主题字体应用到天气位置名称标签。
  * @param font 需要使用的 LVGL 字体对象；为空时不执行任何修改。
- * @details 位置名称固定使用 220px 可见宽度和单行裁切模式，直接使用主题字体的原生字号。
- *          完整省市区名称仍能保持视觉居中。
+ * @details 位置名称优先使用资源分区中的普惠体 Heavy 24px，资源不可用时使用传入主题字体；
+ *          固定 220px 可见宽度和单行裁切模式，不使用 LVGL 变换缩放。
  */
 void LcdDisplay::ApplyScreensaverLocationFont(const lv_font_t* font) {
     if (font == nullptr || font->line_height <= 0 || screensaver_weather_location_label_ == nullptr) {
         return;
     }
 
+    if (screensaver_weather_font_ != nullptr
+        && screensaver_weather_font_->font() != nullptr) {
+        font = screensaver_weather_font_->font();
+    }
     lv_obj_set_width(screensaver_weather_location_label_, kScreensaverLocationWidth);
     lv_obj_set_style_text_font(screensaver_weather_location_label_, font, 0);
     lv_obj_align(screensaver_weather_location_label_, LV_ALIGN_CENTER, 0, -130);
 }
 
 /**
+ * @brief 从资源分区加载屏保天气和日期专用的普惠体 Heavy 24px 字体。
+ * @details 字体数据通过 assets 分区映射，不复制 700KB 字形数据到应用固件或运行内存；
+ *          只为 LVGL 字体描述符和字形索引分配少量运行时内存。
+ */
+void LcdDisplay::LoadScreensaverWeatherFont() {
+    if (screensaver_weather_font_ != nullptr) {
+        return;
+    }
+
+    void* font_data = nullptr;
+    size_t font_size = 0;
+    if (!Assets::GetInstance().GetAssetData(
+            "puhui3_heavy_24_2.bin", font_data, font_size)) {
+        ESP_LOGW(TAG, "屏保 Heavy 24px 字体资源不存在，天气和日期使用主题字体");
+        return;
+    }
+
+    auto heavy_font = std::make_shared<LvglCBinFont>(font_data);
+    if (heavy_font->font() == nullptr) {
+        ESP_LOGW(TAG, "屏保 Heavy 24px 字体加载失败，天气和日期使用主题字体");
+        return;
+    }
+    screensaver_weather_font_ = std::move(heavy_font);
+    ESP_LOGI(TAG, "屏保天气和日期已加载普惠体 Heavy 24px，资源大小=%u字节",
+             static_cast<unsigned>(font_size));
+}
+
+/**
  * @brief 将完整主题字体应用到天气三列，并统一计算视觉字号和列间距。
  * @param font 需要使用的 LVGL 字体对象；为空时不执行任何修改。
- * @details 天气三列继续使用主题字体的原生字号；本方法只设置字体和列间距，不改变字形大小。
+ * @details 天气三列优先使用资源分区中的普惠体 Heavy 24px；本方法只设置字体和列间距，
+ *          不改变字形大小。
  */
 void LcdDisplay::ApplyScreensaverWeatherFont(const lv_font_t* font) {
     if (font == nullptr || font->line_height <= 0 || screensaver_weather_group_ == nullptr) {
         return;
     }
 
+    if (screensaver_weather_font_ != nullptr
+        && screensaver_weather_font_->font() != nullptr) {
+        font = screensaver_weather_font_->font();
+    }
     lv_obj_t* labels[] = {
         screensaver_weather_temperature_label_,
         screensaver_weather_description_label_,
@@ -1273,14 +1320,18 @@ void LcdDisplay::ApplyScreensaverWeatherFont(const lv_font_t* font) {
 /**
  * @brief 将完整主题字体应用到农历、公历和星期三列。
  * @param font 需要使用的 LVGL 字体对象；为空时不执行任何修改。
- * @details 日期标签直接使用主题字体的原生字号，三个标签使用自动内容宽度和裁切模式，
- *          不会自动换行。
+ * @details 日期标签优先使用资源分区中的普惠体 Heavy 24px，三个标签使用自动内容宽度和裁切
+ *          模式，不会自动换行。
  */
 void LcdDisplay::ApplyScreensaverDateFont(const lv_font_t* font) {
     if (font == nullptr || font->line_height <= 0 || screensaver_date_group_ == nullptr) {
         return;
     }
 
+    if (screensaver_weather_font_ != nullptr
+        && screensaver_weather_font_->font() != nullptr) {
+        font = screensaver_weather_font_->font();
+    }
     lv_obj_t* labels[] = {
         screensaver_lunar_date_label_,
         screensaver_solar_date_label_,
@@ -1295,7 +1346,7 @@ void LcdDisplay::ApplyScreensaverDateFont(const lv_font_t* font) {
 
     lv_obj_set_style_pad_column(screensaver_date_group_, kScreensaverDateColumnGap, 0);
     lv_obj_update_layout(screensaver_date_group_);
-    lv_obj_align(screensaver_date_group_, LV_ALIGN_CENTER, 0, -56);
+    lv_obj_align(screensaver_date_group_, LV_ALIGN_CENTER, 0, -64);
 }
 
 /**
@@ -1349,6 +1400,8 @@ void LcdDisplay::CreateScreensaverUI() {
             icon_font = lvgl_theme->icon_font()->font();
         }
     }
+
+    const lv_font_t* screensaver_weather_font = text_font;
 
     /*
      * 全屏根容器始终保持不透明，确保屏保不受普通主题背景、字幕和表情影响。
@@ -1455,7 +1508,7 @@ void LcdDisplay::CreateScreensaverUI() {
     /* 当前天气位置独占一行并位于天气三列上方，固定宽度保证文本始终以圆屏中心对齐。 */
     screensaver_weather_location_label_ = lv_label_create(screensaver_container_);
     lv_obj_set_width(screensaver_weather_location_label_, kScreensaverLocationWidth);
-    lv_obj_set_style_text_font(screensaver_weather_location_label_, text_font, 0);
+    lv_obj_set_style_text_font(screensaver_weather_location_label_, screensaver_weather_font, 0);
     lv_obj_set_style_text_color(screensaver_weather_location_label_,
                                 lv_color_hex(kScreensaverSecondaryTextColor), 0);
     lv_obj_set_style_text_opa(screensaver_weather_location_label_, LV_OPA_80, 0);
@@ -1481,14 +1534,14 @@ void LcdDisplay::CreateScreensaverUI() {
 
     screensaver_weather_temperature_label_ = lv_label_create(screensaver_weather_group_);
     lv_obj_set_size(screensaver_weather_temperature_label_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_text_font(screensaver_weather_temperature_label_, text_font, 0);
+    lv_obj_set_style_text_font(screensaver_weather_temperature_label_, screensaver_weather_font, 0);
     lv_obj_set_style_text_color(screensaver_weather_temperature_label_, lv_color_white(), 0);
     lv_obj_set_style_text_align(screensaver_weather_temperature_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(screensaver_weather_temperature_label_, "--℃");
 
     screensaver_weather_description_label_ = lv_label_create(screensaver_weather_group_);
     lv_obj_set_size(screensaver_weather_description_label_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_text_font(screensaver_weather_description_label_, text_font, 0);
+    lv_obj_set_style_text_font(screensaver_weather_description_label_, screensaver_weather_font, 0);
     lv_obj_set_style_text_color(screensaver_weather_description_label_,
                                 lv_color_hex(kScreensaverSecondaryTextColor), 0);
     lv_obj_set_style_text_align(screensaver_weather_description_label_, LV_TEXT_ALIGN_CENTER, 0);
@@ -1496,7 +1549,7 @@ void LcdDisplay::CreateScreensaverUI() {
 
     screensaver_weather_range_label_ = lv_label_create(screensaver_weather_group_);
     lv_obj_set_size(screensaver_weather_range_label_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_text_font(screensaver_weather_range_label_, text_font, 0);
+    lv_obj_set_style_text_font(screensaver_weather_range_label_, screensaver_weather_font, 0);
     lv_obj_set_style_text_color(screensaver_weather_range_label_, lv_color_white(), 0);
     lv_obj_set_style_text_align(screensaver_weather_range_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(screensaver_weather_range_label_, "--/--");
@@ -1514,11 +1567,11 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_set_flex_align(screensaver_date_group_, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_remove_flag(screensaver_date_group_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(screensaver_date_group_, LV_ALIGN_CENTER, 0, -56);
+    lv_obj_align(screensaver_date_group_, LV_ALIGN_CENTER, 0, -64);
 
     screensaver_lunar_date_label_ = lv_label_create(screensaver_date_group_);
     lv_obj_set_size(screensaver_lunar_date_label_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_text_font(screensaver_lunar_date_label_, text_font, 0);
+    lv_obj_set_style_text_font(screensaver_lunar_date_label_, screensaver_weather_font, 0);
     lv_obj_set_style_text_color(screensaver_lunar_date_label_, lv_color_white(), 0);
     lv_obj_set_style_text_opa(screensaver_lunar_date_label_, LV_OPA_80, 0);
     lv_obj_set_style_text_align(screensaver_lunar_date_label_, LV_TEXT_ALIGN_CENTER, 0);
@@ -1527,7 +1580,7 @@ void LcdDisplay::CreateScreensaverUI() {
 
     screensaver_solar_date_label_ = lv_label_create(screensaver_date_group_);
     lv_obj_set_size(screensaver_solar_date_label_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_text_font(screensaver_solar_date_label_, text_font, 0);
+    lv_obj_set_style_text_font(screensaver_solar_date_label_, screensaver_weather_font, 0);
     lv_obj_set_style_text_color(screensaver_solar_date_label_, lv_color_white(), 0);
     lv_obj_set_style_text_opa(screensaver_solar_date_label_, LV_OPA_80, 0);
     lv_obj_set_style_text_align(screensaver_solar_date_label_, LV_TEXT_ALIGN_CENTER, 0);
@@ -1536,7 +1589,7 @@ void LcdDisplay::CreateScreensaverUI() {
 
     screensaver_weekday_label_ = lv_label_create(screensaver_date_group_);
     lv_obj_set_size(screensaver_weekday_label_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_text_font(screensaver_weekday_label_, text_font, 0);
+    lv_obj_set_style_text_font(screensaver_weekday_label_, screensaver_weather_font, 0);
     lv_obj_set_style_text_color(screensaver_weekday_label_, lv_color_white(), 0);
     lv_obj_set_style_text_opa(screensaver_weekday_label_, LV_OPA_80, 0);
     lv_obj_set_style_text_align(screensaver_weekday_label_, LV_TEXT_ALIGN_CENTER, 0);
@@ -2272,6 +2325,25 @@ void LcdDisplay::SetScreensaverMemos(const std::vector<std::string>& memos) {
 void LcdDisplay::UpdateScreensaverMemo() {
     if (screensaver_memo_labels_[0] == nullptr) {
         return;
+    }
+    const bool showing_empty_state = screensaver_memos_.empty();
+    if (showing_empty_state && screensaver_weather_font_ != nullptr
+        && screensaver_weather_font_->font() != nullptr) {
+        const lv_font_t* heavy_font = screensaver_weather_font_->font();
+        for (lv_obj_t* memo_label : screensaver_memo_labels_) {
+            if (memo_label == nullptr) {
+                continue;
+            }
+            lv_obj_set_style_text_font(memo_label, heavy_font, 0);
+            lv_obj_set_style_transform_scale(memo_label, 256, 0);
+            lv_obj_set_width(memo_label, kScreensaverMemoWidth);
+            lv_obj_set_style_text_line_space(memo_label, kScreensaverMemoLineSpacing, 0);
+        }
+    } else if (!showing_empty_state && current_theme_ != nullptr) {
+        auto* theme = static_cast<LvglTheme*>(current_theme_);
+        if (theme->text_font() != nullptr && theme->text_font()->font() != nullptr) {
+            ApplyScreensaverTextFont(theme->text_font()->font());
+        }
     }
     const char* visible_text = "暂无待办";
     if (screensaver_memos_.empty()) {
@@ -3338,6 +3410,8 @@ void LcdDisplay::SetTheme(Theme* theme) {
     auto icon_font = lvgl_theme->icon_font()->font();
     auto large_icon_font = lvgl_theme->large_icon_font()->font();
 
+    LoadScreensaverWeatherFont();
+
     if (text_font->line_height >= 40) {
         if (mute_label_ != nullptr) {
             lv_obj_set_style_text_font(mute_label_, large_icon_font, 0);
@@ -3524,6 +3598,30 @@ void LcdDisplay::SetTheme(Theme* theme) {
 
     // No errors occurred. Save theme to settings
     Display::SetTheme(lvgl_theme);
+}
+
+/**
+ * @brief 在 assets 分区解除映射前释放屏保天气字体。
+ * @details 先在 LVGL 锁内将天气和日期标签切换回主题字体，再释放指向旧 mmap 区域的
+ *          cbin 字体描述符，避免资源下载后继续访问失效的字形数据。
+ */
+void LcdDisplay::ReleaseScreensaverWeatherFontForAssetsReload() {
+    if (screensaver_weather_font_ == nullptr) {
+        return;
+    }
+
+    DisplayLockGuard lock(this);
+    const lv_font_t* fallback_font = &font_puhui_basic_20_4;
+    if (current_theme_ != nullptr) {
+        auto* theme = static_cast<LvglTheme*>(current_theme_);
+        if (theme->text_font() != nullptr && theme->text_font()->font() != nullptr) {
+            fallback_font = theme->text_font()->font();
+        }
+    }
+    screensaver_weather_font_.reset();
+    ApplyScreensaverLocationFont(fallback_font);
+    ApplyScreensaverWeatherFont(fallback_font);
+    ApplyScreensaverDateFont(fallback_font);
 }
 
 /**

@@ -472,6 +472,11 @@ bool Assets::Download(std::string url, std::function<void(int progress, size_t s
     }
 
     // Unapply the partition
+    #if HAVE_LVGL
+    if (auto* lcd_display = dynamic_cast<LcdDisplay*>(Board::GetInstance().GetDisplay())) {
+        lcd_display->ReleaseScreensaverWeatherFontForAssetsReload();
+    }
+    #endif
     UnApplyPartition();
 
     size_t sectors_to_erase = (content_length + SECTOR_SIZE - 1) / SECTOR_SIZE;

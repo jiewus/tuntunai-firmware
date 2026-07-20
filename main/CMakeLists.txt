@@ -80,7 +80,10 @@ file(GLOB COMMON_SOUNDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/common/*.ogg)
 # 注册 main 组件。WHOLE_ARCHIVE 确保 DECLARE_BOARD 创建函数不会被链接器裁剪。
 idf_component_register(
     SRCS ${SOURCES}
-    EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS} "display/assets/screensaver_dial.rgb565"
+    EMBED_FILES
+        ${LANG_SOUNDS}
+        ${COMMON_SOUNDS}
+        "display/assets/screensaver_dial.rgb565"
     INCLUDE_DIRS ${INCLUDE_DIRS}
     WHOLE_ARCHIVE
     PRIV_REQUIRES
@@ -146,6 +149,12 @@ endif()
 function(build_default_assets_bin)
     # 根据 sdkconfig 中的唤醒模型、字体和表情生成可直接烧录的 assets.bin。
     set(GENERATED_ASSETS_BIN "${CMAKE_BINARY_DIR}/generated_assets.bin")
+    set(SCREENSAVER_FONT_ASSET_DIR "${CMAKE_CURRENT_BINARY_DIR}/screensaver_font_asset")
+    file(MAKE_DIRECTORY "${SCREENSAVER_FONT_ASSET_DIR}")
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/display/fonts/puhui3_heavy_24_2.bin"
+        "${SCREENSAVER_FONT_ASSET_DIR}/puhui3_heavy_24_2.bin"
+        COPYONLY)
     add_custom_command(
         OUTPUT ${GENERATED_ASSETS_BIN}
         COMMAND python ${PROJECT_DIR}/scripts/build_default_assets.py
@@ -155,7 +164,9 @@ function(build_default_assets_bin)
                 --emoji_collection "${DEFAULT_EMOJI_COLLECTION}"
                 --esp_sr_model_path "${ESP_SR_COMPONENT_PATH}/model"
                 --xiaozhi_fonts_path "${XIAOZHI_FONTS_PATH}"
+                --extra_files "${SCREENSAVER_FONT_ASSET_DIR}"
         DEPENDS ${SDKCONFIG} ${PROJECT_DIR}/scripts/build_default_assets.py
+                "${CMAKE_CURRENT_SOURCE_DIR}/display/fonts/puhui3_heavy_24_2.bin"
         COMMENT "Building default assets.bin"
         VERBATIM
     )
