@@ -9,6 +9,7 @@
 #include "lvgl_theme.h"
 #include "assets/lang_config.h"
 
+#include <array>
 #include <vector>
 #include <algorithm>
 #include <cstdint>
@@ -144,9 +145,64 @@ constexpr int kScreensaverDialSize = 348;
 constexpr int kScreensaverScaleSize = 330;
 
 /**
+ * @brief 单个秒刻度在表盘中的预计算布局。
+ */
+struct SecondMarkerLayout {
+    int16_t x;
+    int16_t y;
+    int16_t rotation;
+    uint8_t width;
+    uint8_t height;
+    bool major;
+    bool visible;
+};
+
+/**
+ * @brief 获取 60 个秒刻度预计算布局。
+ * @return 按秒数索引的固定布局数组。
+ * @details 坐标、尺寸和角度只在首次调用时计算一次，后续每秒刷新不再执行三角函数、
+ *          半径换算和中心对齐计算。
+ */
+const std::array<SecondMarkerLayout, 60>& GetSecondMarkerLayouts() {
+    static const std::array<SecondMarkerLayout, 60> layouts = [] {
+        std::array<SecondMarkerLayout, 60> result = {};
+        for (int second = 0; second < static_cast<int>(result.size()); ++second) {
+            const bool major = second % 5 == 0;
+            const int width = major ? 4 : 3;
+            const int height = major ? 14 : 9;
+            const int radius = kScreensaverScaleSize / 2 - height / 2;
+            const int angle = second * 6;
+            const int x_offset =
+                (radius * lv_trigo_sin(angle)) >> LV_TRIGO_SHIFT;
+            const int y_offset =
+                -(radius * lv_trigo_cos(angle) >> LV_TRIGO_SHIFT);
+
+            result[second] = {
+                .x = static_cast<int16_t>((LV_HOR_RES - width) / 2 + x_offset),
+                .y = static_cast<int16_t>((LV_VER_RES - height) / 2 + y_offset),
+                .rotation = static_cast<int16_t>(angle * 10),
+                .width = static_cast<uint8_t>(width),
+                .height = static_cast<uint8_t>(height),
+                .major = major,
+                .visible = second != 0 && second != 30,
+            };
+        }
+        return result;
+    }();
+    return layouts;
+}
+
+/**
  * @brief LVGL 渲染任务优先级，高于非实时后端同步任务但低于音频输入输出任务。
  */
 constexpr int kResponsiveLvglTaskPriority = 2;
+
+/**
+ * @brief QSPI 屏幕单个 DMA 绘制缓冲包含的行数。
+ * @details 24 行约占 17.3KB 内部 DMA SRAM，可在保留 TLS 内存余量的同时减少 40MHz QSPI
+ *          下的 flush 次数；仍然使用单缓冲，避免双缓冲在当前硬件上的稳定性问题。
+ */
+constexpr uint32_t kSpiLcdDrawBufferLines = 24;
 
 /**
  * @brief 时分秒组合容器的 LVGL 缩放比例。
@@ -689,17 +745,17 @@ SpiLcdDisplay::SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
     }
 
     // Set the display to on
-    ESP_LOGI(TAG, "Turning display on");
+    ESP_LOGI(TAG, "正在打开显示屏");
     {
         esp_err_t __err = esp_lcd_panel_disp_on_off(panel_, true);
         if (__err == ESP_ERR_NOT_SUPPORTED) {
-            ESP_LOGW(TAG, "Panel does not support disp_on_off; assuming ON");
+            ESP_LOGW(TAG, "屏幕面板不支持开关控制，按已打开处理");
         } else {
             ESP_ERROR_CHECK(__err);
         }
     }
 
-    ESP_LOGI(TAG, "Initialize LVGL library");
+    ESP_LOGI(TAG, "正在初始化 LVGL 图形库");
     lv_init();
 
 #if CONFIG_SPIRAM
@@ -707,14 +763,14 @@ SpiLcdDisplay::SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
     size_t psram_size_mb = esp_psram_get_size() / 1024 / 1024;
     if (psram_size_mb >= 8) {
         lv_image_cache_resize(2 * 1024 * 1024, true);
-        ESP_LOGI(TAG, "Use 2MB of PSRAM for image cache");
+        ESP_LOGI(TAG, "图像缓存使用 2MB PSRAM");
     } else if (psram_size_mb >= 2) {
         lv_image_cache_resize(512 * 1024, true);
-        ESP_LOGI(TAG, "Use 512KB of PSRAM for image cache");
+        ESP_LOGI(TAG, "图像缓存使用 512KB PSRAM");
     }
 #endif
 
-    ESP_LOGI(TAG, "Initialize LVGL port");
+    ESP_LOGI(TAG, "正在初始化 LVGL 端口");
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     port_cfg.task_priority = kResponsiveLvglTaskPriority;
 #if CONFIG_SOC_CPU_CORES_NUM > 1
@@ -722,12 +778,12 @@ SpiLcdDisplay::SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
 #endif
     lvgl_port_init(&port_cfg);
 
-    ESP_LOGI(TAG, "Adding LCD display");
+    ESP_LOGI(TAG, "正在添加 LCD 显示设备");
     const lvgl_port_display_cfg_t display_cfg = {
         .io_handle = panel_io_,
         .panel_handle = panel_,
         .control_handle = nullptr,
-        .buffer_size = static_cast<uint32_t>(width_ * 20),
+        .buffer_size = static_cast<uint32_t>(width_ * kSpiLcdDrawBufferLines),
         .double_buffer = false,
         .trans_size = 0,
         .hres = static_cast<uint32_t>(width_),
@@ -751,7 +807,7 @@ SpiLcdDisplay::SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
 
     display_ = lvgl_port_add_disp(&display_cfg);
     if (display_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to add display");
+        ESP_LOGE(TAG, "添加 LCD 显示设备失败");
         return;
     }
 
@@ -777,16 +833,16 @@ RgbLcdDisplay::RgbLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
         esp_lcd_panel_draw_bitmap(panel_, 0, y, width_, y + 1, buffer.data());
     }
 
-    ESP_LOGI(TAG, "Initialize LVGL library");
+    ESP_LOGI(TAG, "正在初始化 LVGL 图形库");
     lv_init();
 
-    ESP_LOGI(TAG, "Initialize LVGL port");
+    ESP_LOGI(TAG, "正在初始化 LVGL 端口");
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     port_cfg.task_priority = 1;
     port_cfg.timer_period_ms = 50;
     lvgl_port_init(&port_cfg);
 
-    ESP_LOGI(TAG, "Adding LCD display");
+    ESP_LOGI(TAG, "正在添加 LCD 显示设备");
     const lvgl_port_display_cfg_t display_cfg = {
         .io_handle = panel_io_,
         .panel_handle = panel_,
@@ -816,7 +872,7 @@ RgbLcdDisplay::RgbLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
     
     display_ = lvgl_port_add_disp_rgb(&display_cfg, &rgb_cfg);
     if (display_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to add RGB display");
+        ESP_LOGE(TAG, "添加 RGB 显示设备失败");
         return;
     }
     
@@ -834,14 +890,14 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
                             bool mirror_x, bool mirror_y, bool swap_xy)
     : LcdDisplay(panel_io, panel, width, height) {
 
-    ESP_LOGI(TAG, "Initialize LVGL library");
+    ESP_LOGI(TAG, "正在初始化 LVGL 图形库");
     lv_init();
 
-    ESP_LOGI(TAG, "Initialize LVGL port");
+    ESP_LOGI(TAG, "正在初始化 LVGL 端口");
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     lvgl_port_init(&port_cfg);
 
-    ESP_LOGI(TAG, "Adding LCD display");
+    ESP_LOGI(TAG, "正在添加 LCD 显示设备");
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = panel_io,
         .panel_handle = panel,
@@ -871,7 +927,7 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
     };
     display_ = lvgl_port_add_disp_dsi(&disp_cfg, &dpi_cfg);
     if (display_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to add display");
+        ESP_LOGE(TAG, "添加 LCD 显示设备失败");
         return;
     }
 
@@ -1793,7 +1849,7 @@ void LcdDisplay::ShowDeviceBinding(const std::string& binding_code,
     DisplayLockGuard lock(this);
     if (binding_container_ == nullptr || binding_code_panel_ == nullptr
         || binding_code_label_ == nullptr || binding_message_label_ == nullptr) {
-        ESP_LOGW(TAG, "Device binding UI is not initialized");
+        ESP_LOGW(TAG, "设备绑定界面尚未初始化");
         return;
     }
 
@@ -1867,36 +1923,45 @@ void LcdDisplay::UpdateScreensaverContent() {
 
     SetLabelTextIfChanged(screensaver_time_label_, time_text);
     SetLabelTextIfChanged(screensaver_seconds_label_, seconds_text);
-    SetLabelTextIfChanged(screensaver_lunar_date_label_, lunar_date_text);
-    SetLabelTextIfChanged(screensaver_solar_date_label_, solar_date_text);
-    SetLabelTextIfChanged(screensaver_weekday_label_, weekday_text);
+    const int date_key = local_time.tm_year >= 2025 - 1900
+        ? (local_time.tm_year + 1900) * 10000
+            + (local_time.tm_mon + 1) * 100
+            + local_time.tm_mday
+        : 0;
+    if (date_key != screensaver_last_date_key_) {
+        SetLabelTextIfChanged(screensaver_lunar_date_label_, lunar_date_text);
+        SetLabelTextIfChanged(screensaver_solar_date_label_, solar_date_text);
+        SetLabelTextIfChanged(screensaver_weekday_label_, weekday_text);
+        screensaver_last_date_key_ = date_key;
+    }
 
     if (screensaver_second_marker_ != nullptr) {
-        const bool marker_visible = local_time.tm_year >= 2025 - 1900
-            && current_second != 0 && current_second != 30;
-        if (!marker_visible) {
-            lv_obj_add_flag(screensaver_second_marker_, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            const bool major_tick = current_second % 5 == 0;
-            const int marker_width = major_tick ? 4 : 3;
-            const int marker_length = major_tick ? 14 : 9;
-            const int marker_radius = kScreensaverScaleSize / 2 - marker_length / 2;
-            const int angle = current_second * 6;
-            const int x_offset =
-                (marker_radius * lv_trigo_sin(angle)) >> LV_TRIGO_SHIFT;
-            const int y_offset =
-                -(marker_radius * lv_trigo_cos(angle) >> LV_TRIGO_SHIFT);
-
-            lv_obj_set_size(screensaver_second_marker_, marker_width, marker_length);
-            lv_obj_set_style_transform_pivot_x(
-                screensaver_second_marker_, marker_width / 2, 0);
-            lv_obj_set_style_transform_pivot_y(
-                screensaver_second_marker_, marker_length / 2, 0);
-            lv_obj_set_style_transform_rotation(
-                screensaver_second_marker_, angle * 10, 0);
-            lv_obj_align(
-                screensaver_second_marker_, LV_ALIGN_CENTER, x_offset, y_offset);
-            lv_obj_remove_flag(screensaver_second_marker_, LV_OBJ_FLAG_HIDDEN);
+        const auto& marker_layout = GetSecondMarkerLayouts()[current_second];
+        const bool marker_visible =
+            local_time.tm_year >= 2025 - 1900 && marker_layout.visible;
+        const int rendered_second = local_time.tm_year >= 2025 - 1900
+            ? current_second : -1;
+        if (rendered_second != screensaver_last_rendered_second_) {
+            if (!marker_visible) {
+                lv_obj_add_flag(screensaver_second_marker_, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                const int marker_style = marker_layout.major ? 1 : 0;
+                if (screensaver_second_marker_style_ != marker_style) {
+                    lv_obj_set_size(
+                        screensaver_second_marker_, marker_layout.width, marker_layout.height);
+                    lv_obj_set_style_transform_pivot_x(
+                        screensaver_second_marker_, marker_layout.width / 2, 0);
+                    lv_obj_set_style_transform_pivot_y(
+                        screensaver_second_marker_, marker_layout.height / 2, 0);
+                    screensaver_second_marker_style_ = marker_style;
+                }
+                lv_obj_set_style_transform_rotation(
+                    screensaver_second_marker_, marker_layout.rotation, 0);
+                lv_obj_set_pos(
+                    screensaver_second_marker_, marker_layout.x, marker_layout.y);
+                lv_obj_remove_flag(screensaver_second_marker_, LV_OBJ_FLAG_HIDDEN);
+            }
+            screensaver_last_rendered_second_ = rendered_second;
         }
     }
 
@@ -1924,9 +1989,14 @@ void LcdDisplay::UpdateScreensaverContent() {
     if (screensaver_battery_label_ != nullptr) {
         const bool battery_needs_attention =
             battery_available && (charging || battery_level < 20);
-        lv_obj_set_style_text_color(
-            screensaver_battery_label_,
-            lv_color_hex(battery_needs_attention ? kScreensaverAccentColor : 0xDDE1E4), 0);
+        if (!screensaver_battery_attention_valid_
+            || screensaver_battery_attention_ != battery_needs_attention) {
+            lv_obj_set_style_text_color(
+                screensaver_battery_label_,
+                lv_color_hex(battery_needs_attention ? kScreensaverAccentColor : 0xDDE1E4), 0);
+            screensaver_battery_attention_ = battery_needs_attention;
+            screensaver_battery_attention_valid_ = true;
+        }
     }
 
     /*
@@ -1940,9 +2010,14 @@ void LcdDisplay::UpdateScreensaverContent() {
     if (screensaver_network_label_ != nullptr) {
         const bool network_disconnected =
             strcmp(visible_network_icon, FONT_AWESOME_WIFI_SLASH) == 0;
-        lv_obj_set_style_text_color(
-            screensaver_network_label_,
-            lv_color_hex(network_disconnected ? kScreensaverAccentColor : 0xDDE1E4), 0);
+        if (!screensaver_network_disconnected_valid_
+            || screensaver_network_disconnected_ != network_disconnected) {
+            lv_obj_set_style_text_color(
+                screensaver_network_label_,
+                lv_color_hex(network_disconnected ? kScreensaverAccentColor : 0xDDE1E4), 0);
+            screensaver_network_disconnected_ = network_disconnected;
+            screensaver_network_disconnected_valid_ = true;
+        }
     }
 }
 
@@ -1970,6 +2045,7 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
 
     screensaver_active_ = enabled;
     if (enabled) {
+        screensaver_last_rendered_second_ = -2;
         SetStandardScreensaverContentVisible(true);
         if (gif_controller_) {
             gif_controller_->Stop();
@@ -2200,6 +2276,10 @@ void LcdDisplay::SetScreensaverWeatherText(
 void LcdDisplay::SetScreensaverMemos(const std::vector<std::string>& memos) {
     DisplayLockGuard lock(this);
     const size_t count = std::min<size_t>(memos.size(), 5);
+    if (screensaver_memos_.size() == count
+        && std::equal(screensaver_memos_.begin(), screensaver_memos_.end(), memos.begin())) {
+        return;
+    }
     screensaver_memos_.assign(memos.begin(), memos.begin() + count);
     screensaver_memo_index_ = 0;
     UpdateScreensaverMemo();
@@ -2411,7 +2491,7 @@ void LcdDisplay::ScreensaverMemoTimerCallback(lv_timer_t* timer) {
 void LcdDisplay::SetupUI() {
     // Prevent duplicate calls - if already called, return early
     if (setup_ui_called_) {
-        ESP_LOGW(TAG, "SetupUI() called multiple times, skipping duplicate call");
+        ESP_LOGW(TAG, "SetupUI() 被重复调用，已跳过重复初始化");
         return;
     }
     
@@ -2567,12 +2647,12 @@ void LcdDisplay::SetupUI() {
  */
 void LcdDisplay::SetChatMessage(const char* role, const char* content) {
     if (!setup_ui_called_) {
-        ESP_LOGW(TAG, "SetChatMessage('%s', '%s') called before SetupUI() - message will be lost!", role, content);
+        ESP_LOGW(TAG, "SetupUI() 尚未完成，聊天消息将无法显示，角色=%s，内容=%s", role, content);
     }
     DisplayLockGuard lock(this);
     if (content_ == nullptr) {
         if (setup_ui_called_) {
-            ESP_LOGW(TAG, "SetChatMessage('%s', '%s') failed: content_ is nullptr (SetupUI() was called but container not created)", role, content);
+            ESP_LOGW(TAG, "聊天消息显示失败，内容容器为空，角色=%s，内容=%s", role, content);
         }
         return;
     }
@@ -2804,7 +2884,7 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
     if (img_width == 0 || img_height == 0) {
         img_width = max_width;
         img_height = max_height;
-        ESP_LOGW(TAG, "Invalid image dimensions: %ld x %ld, using default dimensions: %ld x %ld", img_width, img_height, max_width, max_height);
+        ESP_LOGW(TAG, "图片尺寸无效：%ld x %ld，改用默认尺寸：%ld x %ld", img_width, img_height, max_width, max_height);
     }
     
     lv_coord_t zoom_w = (max_width * 256) / img_width;
@@ -2870,7 +2950,7 @@ void LcdDisplay::ClearChatMessages() {
         lv_obj_remove_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
     }
     
-    ESP_LOGI(TAG, "Chat messages cleared");
+    ESP_LOGI(TAG, "聊天消息已清除");
 }
 #else
 /**
@@ -2881,7 +2961,7 @@ void LcdDisplay::ClearChatMessages() {
 void LcdDisplay::SetupUI() {
     // Prevent duplicate calls - if already called, return early
     if (setup_ui_called_) {
-        ESP_LOGW(TAG, "SetupUI() called multiple times, skipping duplicate call");
+        ESP_LOGW(TAG, "SetupUI() 被重复调用，已跳过重复初始化");
         return;
     }
     
@@ -3079,7 +3159,7 @@ void LcdDisplay::SetupUI() {
 void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
     DisplayLockGuard lock(this);
     if (preview_image_ == nullptr) {
-        ESP_LOGE(TAG, "Preview image is not initialized");
+        ESP_LOGE(TAG, "预览图片尚未初始化");
         return;
     }
 
@@ -3121,12 +3201,12 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
  */
 void LcdDisplay::SetChatMessage(const char* role, const char* content) {
     if (!setup_ui_called_) {
-        ESP_LOGW(TAG, "SetChatMessage('%s', '%s') called before SetupUI() - message will be lost!", role, content);
+        ESP_LOGW(TAG, "SetupUI() 尚未完成，聊天消息将无法显示，角色=%s，内容=%s", role, content);
     }
     DisplayLockGuard lock(this);
     if (chat_message_label_ == nullptr) {
         if (setup_ui_called_) {
-            ESP_LOGW(TAG, "SetChatMessage('%s', '%s') failed: chat_message_label_ is nullptr (SetupUI() was called but label not created)", role, content);
+            ESP_LOGW(TAG, "聊天消息显示失败，消息标签为空，角色=%s，内容=%s", role, content);
         }
         return;
     }
@@ -3180,11 +3260,11 @@ void LcdDisplay::ClearChatMessages() {
  */
 void LcdDisplay::SetEmotion(const char* emotion) {
     if (!setup_ui_called_) {
-        ESP_LOGW(TAG, "SetEmotion('%s') called before SetupUI() - emotion will not be displayed!", emotion);
+        ESP_LOGW(TAG, "SetupUI() 尚未完成，表情无法显示，表情=%s", emotion);
     }
     if (emoji_image_ == nullptr) {
         if (setup_ui_called_) {
-            ESP_LOGW(TAG, "SetEmotion('%s') failed: emoji_image_ is nullptr (SetupUI() was called but emoji image not created)", emotion);
+            ESP_LOGW(TAG, "表情显示失败，表情图片为空，表情=%s", emotion);
         }
         return;
     }
@@ -3231,7 +3311,7 @@ void LcdDisplay::SetEmotion(const char* emotion) {
             lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
             lv_obj_remove_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
         } else {
-            ESP_LOGE(TAG, "Failed to load GIF for emotion: %s", emotion);
+            ESP_LOGE(TAG, "表情 GIF 加载失败：%s", emotion);
             gif_controller_.reset();
         }
     } else {
@@ -3420,7 +3500,7 @@ void LcdDisplay::SetTheme(Theme* theme) {
                 }
             }
         } else {
-            ESP_LOGW(TAG, "child[%lu] Bubble type is not found", i);
+            ESP_LOGW(TAG, "未找到子消息气泡类型，下标=%lu", i);
         }
     }
 #else

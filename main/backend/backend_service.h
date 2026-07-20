@@ -26,7 +26,8 @@ class McpServer;
  * @brief 管理固件与囤囤AI后端之间的异步业务流程。
  *
  * 当前版本实现设备绑定码申请、状态轮询、设备 Token 领取、绑定页面联动、屏保天气与备忘录
- * 同步、内置和动态 MCP 工具执行，以及主动通知同步和语音播放。
+ * 同步、内置和动态 MCP 工具执行，以及主动通知同步和语音播放。天气、备忘录、MCP 和通知
+ * 的非实时后端请求统一由一个常驻 Worker 串行调度。
  */
 class BackendService {
 public:
@@ -69,8 +70,8 @@ public:
     /**
      * @brief 根据屏保可见状态启停按需天气和备忘录同步。
      * @param active true 表示屏保已经显示；false 表示屏保已经退出。
-     * @details 进入屏保后优先显示内存中的最近天气；缓存过期且网络与设备凭据可用时创建
-     *          单次天气任务。退出屏保后不再创建请求，已经发出的请求允许安全收尾并缓存结果。
+     * @details 进入屏保后优先显示内存中的最近天气；缓存过期且网络与设备凭据可用时把请求
+     *          加入常驻 Worker。退出屏保后不再创建请求，已经发出的请求允许安全收尾并缓存结果。
      */
     void OnScreensaverChanged(bool active);
 
@@ -81,6 +82,19 @@ public:
     bool InterruptNotificationPlayback();
 
 private:
+    /**
+     * @brief 后端常驻 Worker 任务栈大小，单位为字节。
+     */
+    static constexpr uint32_t kBackendWorkerStackSize = 16384;
+    /**
+     * @brief 常驻后端 Worker 优先级。
+     */
+    static constexpr UBaseType_t kBackendWorkerPriority = 1;
+    /**
+     * @brief 后端 Worker 固定环形队列最大任务数。
+     */
+    static constexpr size_t kBackendWorkerQueueCapacity = 12;
+
     /** @brief 业务 EMQX 首次断线重连等待秒数。 */
     static constexpr uint32_t kNotificationReconnectInitialSeconds = 5;
     /** @brief MQTT 回调允许缓存的最大通知提示数量。 */
@@ -129,6 +143,18 @@ private:
         Update,
         Delete,
         Statistics
+    };
+
+    /** @brief 常驻后端 Worker 支持的固定任务类型。 */
+    enum class BackendJobType : uint8_t {
+        McpManifest,
+        DynamicTool,
+        MemoTool,
+        MemoSync,
+        WeatherSync,
+        WeatherLocation,
+        WeatherAnnouncement,
+        NotificationSync
     };
 
     /**
@@ -186,28 +212,6 @@ private:
     };
 
     /**
-     * @brief 传递给独立动态工具执行任务的不可变调用参数。
-     */
-    struct DynamicToolTaskContext {
-        /**
-         * @brief 指向固件生命周期内唯一的后端服务实例。
-         */
-        BackendService* service = nullptr;
-        /**
-         * @brief 后端清单中包含 custom. 前缀的完整工具名称。
-         */
-        std::string tool_name;
-        /**
-         * @brief 本次调用固定使用的已发布工具版本号。
-         */
-        uint32_t tool_revision = 0;
-        /**
-         * @brief HTTP 请求结束后回复原始 MCP tools/call 的一次性回调。
-         */
-        DynamicToolCompletion completion;
-    };
-
-    /**
      * @brief 传递给备忘录语音工具 Worker 的强类型调用参数。
      */
     struct MemoToolTaskContext {
@@ -243,6 +247,28 @@ private:
          * @brief HTTP 操作结束后回复原始 MCP tools/call 的一次性回调。
          */
         MemoCompletion completion;
+    };
+
+    /**
+     * @brief 传递给动态 MCP 执行任务的固定上下文。
+     */
+    struct DynamicToolTaskContext {
+        /** @brief 动态 MCP 工具代码。 */
+        std::string tool_name;
+        /** @brief 动态 MCP 工具清单修订号。 */
+        uint32_t tool_revision = 0;
+        /** @brief 工具执行完成后回复 MCP 调用的一次性回调。 */
+        DynamicToolCompletion completion;
+    };
+
+    /**
+     * @brief 一个固定环形队列中的后端任务描述。
+     */
+    struct BackendJob {
+        /** @brief 后端任务类型。 */
+        BackendJobType type = BackendJobType::McpManifest;
+        /** @brief 可选的强类型任务上下文，任务执行后由 Worker 释放。 */
+        void* context = nullptr;
     };
 
     /**
@@ -352,6 +378,43 @@ private:
     BackendService& operator=(const BackendService&) = delete;
 
     /**
+     * @brief 常驻后端 Worker 任务入口。
+     * @param context 指向 BackendService 单例。
+     */
+    static void BackendWorkerTaskEntry(void* context);
+
+    /**
+     * @brief 把一个非实时后端操作加入固定环形 Worker 队列。
+     * @param type 要执行的后端任务类型。
+     * @param context 任务上下文；无上下文任务传入空指针。
+     * @return 成功入队时返回 true；Worker 不可用或队列已满时返回 false。
+     */
+    bool EnqueueBackendJob(BackendJobType type, void* context = nullptr);
+
+    /**
+     * @brief 执行一个已经从固定队列取出的后端任务。
+     * @param job 固定队列中的任务描述。
+     */
+    void ExecuteBackendJob(const BackendJob& job);
+
+    /** @brief 执行动态 MCP 清单同步任务并释放任务状态。 */
+    void ExecuteMcpManifestJob();
+    /** @brief 执行动态 MCP 工具任务并释放任务上下文。 */
+    void ExecuteDynamicToolJob(DynamicToolTaskContext* context);
+    /** @brief 执行备忘录语音任务并释放任务上下文。 */
+    void ExecuteMemoToolJob(MemoToolTaskContext* context);
+    /** @brief 执行备忘录屏保同步任务。 */
+    void ExecuteMemoSyncJob();
+    /** @brief 执行天气屏保同步任务。 */
+    void ExecuteWeatherSyncJob();
+    /** @brief 执行天气城市设置任务并释放任务上下文。 */
+    void ExecuteWeatherLocationJob(WeatherLocationTaskContext* context);
+    /** @brief 执行天气播报设置任务并释放任务上下文。 */
+    void ExecuteWeatherAnnouncementJob(WeatherAnnouncementTaskContext* context);
+    /** @brief 执行主动通知同步任务。 */
+    void ExecuteNotificationSyncJob();
+
+    /**
      * @brief 检查已有绑定状态，并按需启动申请新会话或恢复旧会话的独立任务。
      * @param request_new_session true 先向后端申请新绑定码；false 使用 NVS 中的现有会话。
      * @param completion 新申请由 MCP 触发时返回结果的回调；自动恢复时为空。
@@ -374,7 +437,7 @@ private:
     void RunBindingTask(bool request_new_session, BindingCompletion& completion);
 
     /**
-     * @brief 启动修改固定城市或 IP 自动定位模式的独立任务。
+     * @brief 把修改固定城市或 IP 自动定位模式的请求加入常驻后端 Worker。
      * @param location_name 固定模式下由用户提供的城市或区县名称；IP 模式下为空。
      * @param use_ip_auto true 切换为设备公网 IP 自动定位；false 设置固定城市。
      * @param completion 保存结果的一次性回调。
@@ -383,12 +446,6 @@ private:
         const std::string& location_name,
         bool use_ip_auto,
         WeatherLocationCompletion completion);
-
-    /**
-     * @brief FreeRTOS 天气城市设置任务入口。
-     * @param context 指向由 StartWeatherLocationTask 分配的 WeatherLocationTaskContext。
-     */
-    static void WeatherLocationTaskEntry(void* context);
 
     /**
      * @brief 调用设备天气设置接口并使旧天气缓存立即失效。
@@ -402,17 +459,12 @@ private:
         WeatherLocationCompletion& completion);
 
     /**
-     * @brief 启动开启、修改或关闭每日天气播报的独立任务。
+     * @brief 把开启、修改或关闭每日天气播报的请求加入常驻后端 Worker。
      */
     void StartWeatherAnnouncementTask(
         bool enabled,
         const std::string& announcement_time,
         WeatherLocationCompletion completion);
-
-    /**
-     * @brief FreeRTOS 天气播报设置任务入口。
-     */
-    static void WeatherAnnouncementTaskEntry(void* context);
 
     /**
      * @brief 读取当前天气位置并只更新每日播报配置。
@@ -423,16 +475,10 @@ private:
         WeatherLocationCompletion& completion);
 
     /**
-     * @brief 在网络和设备凭据可用时创建单次动态 MCP 清单同步任务。
-     * @details 同一时间最多存在一个清单任务；临时网络失败不会清除最近一次成功清单。
+     * @brief 在网络和设备凭据可用时把动态 MCP 清单同步加入常驻后端 Worker。
+     * @details 同一时间最多存在一个清单请求；临时网络失败不会清除最近一次成功清单。
      */
     void StartMcpManifestSync();
-
-    /**
-     * @brief FreeRTOS 动态 MCP 清单同步任务入口。
-     * @param context 指向当前 BackendService 单例。
-     */
-    static void McpManifestTaskEntry(void* context);
 
     /**
      * @brief 获取并严格校验当前设备的权威动态 MCP 工具清单。
@@ -441,7 +487,7 @@ private:
     void RunMcpManifestSync();
 
     /**
-     * @brief 创建代理执行单个已发布动态 MCP 工具的独立任务。
+     * @brief 把单个已发布动态 MCP 工具执行请求加入常驻后端 Worker。
      * @param tool_name 后端清单中的完整工具名称。
      * @param tool_revision 清单固定的工具版本号。
      * @param completion 执行结束后回复小智的一次性回调。
@@ -450,12 +496,6 @@ private:
         const std::string& tool_name,
         uint32_t tool_revision,
         DynamicToolCompletion completion);
-
-    /**
-     * @brief FreeRTOS 动态工具执行任务入口。
-     * @param context 指向由 StartDynamicToolExecution 分配的 DynamicToolTaskContext。
-     */
-    static void DynamicToolTaskEntry(void* context);
 
     /**
      * @brief 调用平台执行接口并把 ServiceExecutionResult v1 转为 MCP 文本结果。
@@ -475,17 +515,11 @@ private:
     void ClearDynamicTools();
 
     /**
-     * @brief 创建一个异步备忘录语音操作任务。
+     * @brief 把一个备忘录语音操作加入常驻后端 Worker。
      * @param context 包含操作类型、输入参数和最终结果回调的任务上下文。
      * @details 屏保同步和语音操作共用一个任务槽，避免多个备忘录 HTTPS 请求同时占用内存。
      */
     void StartMemoToolTask(MemoToolTaskContext* context);
-
-    /**
-     * @brief FreeRTOS 备忘录语音工具任务入口。
-     * @param context 指向由工具回调分配的 MemoToolTaskContext。
-     */
-    static void MemoToolTaskEntry(void* context);
 
     /**
      * @brief 根据任务操作调用创建、列表、修改、删除或统计接口，并生成中文结果。
@@ -494,16 +528,10 @@ private:
     void RunMemoToolTask(MemoToolTaskContext& context);
 
     /**
-     * @brief 在满足屏保、网络、凭据和缓存条件时创建单次备忘录同步任务。
+     * @brief 在满足屏保、网络、凭据和缓存条件时把备忘录同步加入常驻后端 Worker。
      * @param force_refresh true 忽略最近成功时间；false 遵守本地缓存新鲜周期。
      */
     void StartMemoSync(bool force_refresh);
-
-    /**
-     * @brief FreeRTOS 屏保备忘录同步任务入口。
-     * @param context 指向当前 BackendService 单例。
-     */
-    static void MemoSyncTaskEntry(void* context);
 
     /**
      * @brief 使用设备 Token 获取前 5 条未完成备忘录并更新运行内存快照。
@@ -523,17 +551,11 @@ private:
     void ShowMemoStatusIfUnavailable(const std::string& message);
 
     /**
-     * @brief 在满足屏保、网络、凭据和缓存条件时创建单次天气同步任务。
+     * @brief 在满足屏保、网络、凭据和缓存条件时把天气同步加入常驻后端 Worker。
      * @param force_refresh true 忽略本地缓存有效期，用于网络重连或刚完成设备绑定；
      *                      false 仅在缓存缺失或超过刷新周期时请求。
      */
     void StartWeatherSync(bool force_refresh);
-
-    /**
-     * @brief FreeRTOS 天气同步任务入口。
-     * @param context 指向当前 BackendService 单例。
-     */
-    static void WeatherTaskEntry(void* context);
 
     /**
      * @brief 周期检查定时器回调，只负责尝试启动天气任务，不直接执行网络请求。
@@ -565,7 +587,7 @@ private:
 
     /**
      * @brief 使用设备 Token 获取、校验并缓存一组屏保天气数据。
-     * @details HTTP 和 JSON 处理全部在独立任务中执行，不阻塞 LVGL、音频或应用主任务。
+     * @details HTTP 和 JSON 处理全部在常驻后端 Worker 中执行，不阻塞 LVGL、音频或应用主任务。
      */
     void RunWeatherSync();
 
@@ -582,16 +604,10 @@ private:
     void ShowWeatherStatusIfUnavailable(const std::string& message);
 
     /**
-     * @brief 在设备已绑定且联网时启动一次通知同步任务。
+     * @brief 在设备已绑定且联网时把通知同步加入常驻后端 Worker。
      * @param reconnect_mqtt true 表示同时按需获取配置并连接业务 EMQX。
      */
     void StartNotificationSync(bool reconnect_mqtt);
-
-    /**
-     * @brief FreeRTOS 主动通知同步任务入口。
-     * @param context 指向当前 BackendService 单例。
-     */
-    static void NotificationTaskEntry(void* context);
 
     /**
      * @brief 连接独立业务 EMQX 并通过 HTTPS 拉取可处理通知。
@@ -725,6 +741,22 @@ private:
      */
     bool started_ = false;
     /**
+     * @brief 常驻后端 Worker 任务句柄；整个固件生命周期内保持运行。
+     */
+    TaskHandle_t backend_worker_task_handle_ = nullptr;
+    /**
+     * @brief 保护常驻 Worker 待处理任务队列。
+     */
+    std::mutex backend_job_mutex_;
+    /** @brief 常驻 Worker 的固定任务环形队列，避免闭包和队列节点反复分配。 */
+    std::array<BackendJob, kBackendWorkerQueueCapacity> backend_jobs_{};
+    /** @brief 环形队列下一次取出的下标。 */
+    size_t backend_job_head_ = 0;
+    /** @brief 环形队列下一次写入的下标。 */
+    size_t backend_job_tail_ = 0;
+    /** @brief 环形队列当前任务数量。 */
+    size_t backend_job_count_ = 0;
+    /**
      * @brief true 表示板级网络已经取得可用连接，允许发起 HTTPS 请求。
      */
     std::atomic<bool> network_connected_{false};
@@ -757,11 +789,11 @@ private:
      */
     std::mutex dynamic_mcp_mutex_;
     /**
-     * @brief 当前动态 MCP 清单同步任务句柄；为空表示允许创建新的同步任务。
+     * @brief 当前动态 MCP 清单请求占用标记；非空表示请求已排队或正在执行。
      */
     TaskHandle_t mcp_manifest_task_handle_ = nullptr;
     /**
-     * @brief 当前动态 MCP 工具执行任务句柄；第一版同一时间只执行一个自定义工具。
+     * @brief 当前动态 MCP 工具执行占用标记；第一版同一时间只执行一个自定义工具。
      */
     TaskHandle_t dynamic_tool_task_handle_ = nullptr;
     /**
@@ -789,15 +821,15 @@ private:
      */
     std::mutex weather_mutex_;
     /**
-     * @brief 当前单次天气任务句柄；为空表示没有天气 HTTP 请求正在执行。
+     * @brief 当前天气同步占用标记；非空表示请求已排队或正在执行。
      */
     TaskHandle_t weather_task_handle_ = nullptr;
     /**
-     * @brief 当前天气城市设置任务句柄；为空表示允许接受新的语音设置请求。
+     * @brief 当前天气城市设置占用标记；非空表示请求已排队或正在执行。
      */
     TaskHandle_t weather_location_task_handle_ = nullptr;
     /**
-     * @brief 当前天气播报设置任务句柄。
+     * @brief 当前天气播报设置占用标记。
      */
     TaskHandle_t weather_announcement_task_handle_ = nullptr;
     /**
@@ -830,7 +862,7 @@ private:
      */
     esp_timer_handle_t memo_retry_timer_ = nullptr;
     /**
-     * @brief 当前备忘录 HTTP 任务句柄；为空表示允许创建屏保同步或语音操作任务。
+     * @brief 当前备忘录操作占用标记；非空表示同步或语音操作已排队/正在执行。
      */
     TaskHandle_t memo_task_handle_ = nullptr;
     /**
@@ -871,7 +903,7 @@ private:
      */
     std::atomic<Mqtt*> active_notification_mqtt_{nullptr};
     /**
-     * @brief 当前通知同步任务句柄。
+     * @brief 当前通知同步占用标记；非空表示请求已排队或正在执行。
      */
     TaskHandle_t notification_task_handle_ = nullptr;
     /**

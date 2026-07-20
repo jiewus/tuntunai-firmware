@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -43,11 +44,57 @@ namespace
     constexpr const char *kTag = "TuntunBackend";
 
     /**
-     * @brief 串行保护囤囤AI后端的 TLS 连接创建和完整 HTTP 请求生命周期。
-     * @details ESP32-C5 在证书签名校验阶段需要临时申请较大的连续内存。天气、备忘录和动态 MCP
-     *          同时握手会导致 PK 校验内存分配失败，因此所有自建后端请求统一串行执行。
+     * @brief 串行调度囤囤AI后端的 TLS 连接，并让通知音频优先于普通业务请求。
+     * @details ESP32-C5 在证书校验阶段需要较大的连续内存，因此仍然只允许一个 HTTP/TLS
+     *          连接活动；通知音频等待网络时会优先获得连接，普通请求继续排队而不并发握手。
      */
-    std::mutex backend_http_mutex;
+    class BackendHttpGate {
+    public:
+        /** @brief 获取普通 JSON 请求或通知音频请求的网络使用权。 */
+        void Lock(bool notification_audio) {
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (notification_audio) {
+                ++waiting_audio_count_;
+                condition_.wait(lock, [this]() { return !active_; });
+                --waiting_audio_count_;
+            } else {
+                condition_.wait(lock, [this]() {
+                    return !active_ && waiting_audio_count_ == 0;
+                });
+            }
+            active_ = true;
+        }
+
+        /** @brief 释放当前 HTTP/TLS 网络使用权并唤醒排队请求。 */
+        void Unlock() {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                active_ = false;
+            }
+            condition_.notify_all();
+        }
+
+    private:
+        std::mutex mutex_;
+        std::condition_variable condition_;
+        bool active_ = false;
+        size_t waiting_audio_count_ = 0;
+    } backend_http_gate;
+
+    /**
+     * @brief BackendHttpGate 的异常安全使用守卫。
+     */
+    class BackendHttpLease {
+    public:
+        explicit BackendHttpLease(bool notification_audio) {
+            backend_http_gate.Lock(notification_audio);
+        }
+        ~BackendHttpLease() {
+            backend_http_gate.Unlock();
+        }
+        BackendHttpLease(const BackendHttpLease&) = delete;
+        BackendHttpLease& operator=(const BackendHttpLease&) = delete;
+    };
 
     /**
      * @brief 保存绑定会话和最终设备凭据的 NVS 命名空间。
@@ -106,42 +153,39 @@ namespace
     constexpr int kWeatherHttpTimeoutMs = 45000;
 
     /**
-     * @brief 天气缓存新鲜周期、后台检查周期和临时 Worker 资源配置。
-     * @details 固件每 10 分钟只检查一次缓存年龄，成功天气在 30 分钟内不会重复请求。天气 Worker
-     *          仅在真正需要 HTTPS 同步时存在，完成后立即释放 8KB 任务栈。
+     * @brief 天气缓存新鲜周期和后台检查周期。
+     * @details 固件每 10 分钟只检查一次缓存年龄，成功天气在 30 分钟内不会重复请求；真正的
+     *          HTTPS 请求统一由 BackendService 常驻 Worker 串行处理。
      */
     constexpr int64_t kWeatherRefreshIntervalUs = 30LL * 60LL * 1000LL * 1000LL;
     constexpr int64_t kWeatherCheckIntervalUs = 10LL * 60LL * 1000LL * 1000LL;
-    constexpr uint32_t kWeatherTaskStackSize = 8192;
-    constexpr UBaseType_t kWeatherTaskPriority = 1;
 
     /**
-     * @brief 屏保备忘录缓存周期、后台检查周期和临时 Worker 的资源配置。
-     * @details 屏保持续显示时每 30 分钟兜底刷新一次；后端增删改会通过 MQTT 提示设备立即刷新。
-     *          语音工具和屏保同步共用同一个 8KB 任务槽。
+     * @brief 屏保备忘录缓存周期和后台检查周期。
+     * @details 屏保持续显示时每 30 分钟兜底刷新一次；后端增删改会通过 MQTT 提示设备立即刷新，
+     *          请求统一排入常驻 BackendService Worker。
      */
     constexpr int64_t kMemoRefreshIntervalUs = 30LL * 60LL * 1000LL * 1000LL;
     constexpr int64_t kMemoCheckIntervalUs = 30LL * 60LL * 1000LL * 1000LL;
     constexpr std::array<uint32_t, 8> kMemoRetryIntervalsMinutes = {
         1, 2, 5, 10, 20, 30, 30, 30};
-    constexpr uint32_t kMemoTaskStackSize = 8192;
-    constexpr UBaseType_t kMemoTaskPriority = 1;
 
     /**
-     * @brief 动态 MCP 清单同步和临时 Worker 的资源配置。
-     * @details 清单同步与工具执行都涉及 HTTPS 和 cJSON，因此使用独立 8KB 任务栈。第一版同时只
-     *          运行一个清单同步任务和一个动态工具执行任务，避免并发请求挤压设备可用内存。
+     * @brief 动态 MCP 清单和工具执行的调度配置。
+     * @details 清单同步与工具执行都涉及 HTTPS 和 cJSON，统一由常驻 BackendService Worker
+     *          串行运行，避免反复申请 8KB 任务栈。
      */
-    constexpr uint32_t kMcpTaskStackSize = 8192;
-    constexpr UBaseType_t kMcpTaskPriority = 1;
 
     /**
      * @brief 主动通知 HTTPS 补偿、音频下载和任务资源限制。
      */
     constexpr int64_t kNotificationCheckIntervalUs = 5LL * 60LL * 1000LL * 1000LL;
+    /**
+     * @brief 通知确认任务的专用栈大小，单位为字节；通知同步本身使用常驻 Worker。
+     */
     constexpr uint32_t kNotificationTaskStackSize = 10240;
-    constexpr uint32_t kNotificationPlaybackTaskStackSize = 16384;
     constexpr UBaseType_t kNotificationTaskPriority = 2;
+    constexpr uint32_t kNotificationPlaybackTaskStackSize = 16384;
     constexpr size_t kNotificationResponseMaxBytes = 12288;
     constexpr size_t kNotificationAudioMaxBytes = 512 * 1024;
     constexpr size_t kNotificationTextMaxBytes = 1500;
@@ -340,7 +384,7 @@ namespace
                                  size_t maximum_response_bytes = kMaxApiResponseBytes,
                                  int timeout_ms = kHttpTimeoutMs)
     {
-        std::lock_guard<std::mutex> request_lock(backend_http_mutex);
+        BackendHttpLease request_lock(false);
         HttpResponse response;
         auto *network = Board::GetInstance().GetNetwork();
         if (network == nullptr)
@@ -961,6 +1005,369 @@ BackendService &BackendService::GetInstance()
 }
 
 /**
+ * @brief 把排队的后端操作逐个取出并执行。
+ * @param context 指向 BackendService 单例。
+ * @details Worker 常驻运行并通过任务通知休眠；单个任务异常只记录日志，不会退出 Worker，
+ *          从而保证后续天气、备忘录、MCP 和通知请求仍能继续处理。
+ */
+void BackendService::BackendWorkerTaskEntry(void *context)
+{
+    auto *service = static_cast<BackendService *>(context);
+    while (true)
+    {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        while (true)
+        {
+            BackendJob job;
+            {
+                std::lock_guard<std::mutex> lock(service->backend_job_mutex_);
+                if (service->backend_job_count_ == 0)
+                {
+                    break;
+                }
+                job = service->backend_jobs_[service->backend_job_head_];
+                service->backend_jobs_[service->backend_job_head_] = {};
+                service->backend_job_head_ =
+                    (service->backend_job_head_ + 1) % kBackendWorkerQueueCapacity;
+                --service->backend_job_count_;
+            }
+            try
+            {
+                service->ExecuteBackendJob(job);
+            }
+            catch (const std::exception &exception)
+            {
+                ESP_LOGE(kTag, "后端常驻 Worker 任务异常，原因=%s", exception.what());
+            }
+            catch (...)
+            {
+                ESP_LOGE(kTag, "后端常驻 Worker 任务发生未知异常");
+            }
+        }
+    }
+}
+
+/**
+ * @brief 把一个非实时后端操作加入常驻 Worker 的固定环形队列。
+ * @param type 要执行的后端任务类型。
+ * @param context 任务上下文；无上下文任务传入空指针。
+ * @return 成功入队时返回 true；Worker 不可用或队列已满时返回 false。
+ */
+bool BackendService::EnqueueBackendJob(BackendJobType type, void* context)
+{
+    if (backend_worker_task_handle_ == nullptr)
+    {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(backend_job_mutex_);
+        if (backend_job_count_ >= kBackendWorkerQueueCapacity)
+        {
+            return false;
+        }
+        backend_jobs_[backend_job_tail_] = {type, context};
+        backend_job_tail_ = (backend_job_tail_ + 1) % kBackendWorkerQueueCapacity;
+        ++backend_job_count_;
+    }
+    xTaskNotifyGive(backend_worker_task_handle_);
+    return true;
+}
+
+/**
+ * @brief 执行动态 MCP 清单同步任务并释放调度标记。
+ */
+void BackendService::ExecuteMcpManifestJob()
+{
+    try
+    {
+        RunMcpManifestSync();
+    }
+    catch (const std::exception &exception)
+    {
+        ESP_LOGE(kTag, "MCP 清单同步任务异常，原因=%s", exception.what());
+    }
+    catch (...)
+    {
+        ESP_LOGE(kTag, "MCP 清单同步任务发生未知异常");
+    }
+    std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
+    mcp_manifest_task_handle_ = nullptr;
+}
+
+/**
+ * @brief 执行动态 MCP 工具并释放任务上下文和调度标记。
+ * @param context 动态 MCP 工具执行上下文。
+ */
+void BackendService::ExecuteDynamicToolJob(DynamicToolTaskContext* context)
+{
+    std::unique_ptr<DynamicToolTaskContext> task_context(context);
+    try
+    {
+        RunDynamicToolExecution(
+            task_context->tool_name,
+            task_context->tool_revision,
+            task_context->completion);
+    }
+    catch (const std::exception &exception)
+    {
+        ESP_LOGE(kTag, "动态 MCP 工具执行异常，原因=%s", exception.what());
+        FinishToolRequest(task_context->completion, kDynamicToolFallbackError, true);
+    }
+    catch (...)
+    {
+        ESP_LOGE(kTag, "动态 MCP 工具执行发生未知异常");
+        FinishToolRequest(task_context->completion, kDynamicToolFallbackError, true);
+    }
+    if (task_context->completion)
+    {
+        FinishToolRequest(task_context->completion, kDynamicToolFallbackError, true);
+    }
+    bool refresh_manifest = false;
+    {
+        std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
+        dynamic_tool_task_handle_ = nullptr;
+        refresh_manifest = mcp_manifest_refresh_requested_;
+        mcp_manifest_refresh_requested_ = false;
+    }
+    if (refresh_manifest)
+    {
+        StartMcpManifestSync();
+    }
+}
+
+/**
+ * @brief 执行备忘录语音操作并释放任务上下文。
+ * @param context 备忘录语音操作上下文。
+ */
+void BackendService::ExecuteMemoToolJob(MemoToolTaskContext* context)
+{
+    std::unique_ptr<MemoToolTaskContext> task_context(context);
+    try
+    {
+        RunMemoToolTask(*task_context);
+    }
+    catch (const std::exception &exception)
+    {
+        ESP_LOGE(kTag, "备忘录语音任务异常，原因=%s", exception.what());
+        FinishToolRequest(task_context->completion, "备忘录操作失败，请稍后重试。", true);
+    }
+    catch (...)
+    {
+        ESP_LOGE(kTag, "备忘录语音任务发生未知异常");
+        FinishToolRequest(task_context->completion, "备忘录操作失败，请稍后重试。", true);
+    }
+    if (task_context->completion)
+    {
+        FinishToolRequest(task_context->completion, "备忘录操作未能完成，请稍后重试。", true);
+    }
+    {
+        std::lock_guard<std::mutex> lock(memo_mutex_);
+        memo_task_handle_ = nullptr;
+    }
+    if ((memo_refresh_requested_.load() || memo_retry_due_.load())
+        && screensaver_active_.load())
+    {
+        StartMemoSync(true);
+    }
+}
+
+/**
+ * @brief 执行备忘录屏保同步任务。
+ */
+void BackendService::ExecuteMemoSyncJob()
+{
+    try
+    {
+        RunMemoSync();
+    }
+    catch (const std::exception &exception)
+    {
+        ESP_LOGE(kTag, "备忘录同步任务异常，原因=%s", exception.what());
+        ShowMemoStatusIfUnavailable("备忘录同步失败");
+        ScheduleMemoRetry();
+    }
+    catch (...)
+    {
+        ESP_LOGE(kTag, "备忘录同步任务发生未知异常");
+        ShowMemoStatusIfUnavailable("备忘录同步失败");
+        ScheduleMemoRetry();
+    }
+    bool retry_or_refresh = false;
+    {
+        std::lock_guard<std::mutex> lock(memo_mutex_);
+        memo_task_handle_ = nullptr;
+        retry_or_refresh = memo_refresh_requested_.load() || memo_retry_due_.load();
+    }
+    if (retry_or_refresh && screensaver_active_.load())
+    {
+        StartMemoSync(true);
+    }
+}
+
+/**
+ * @brief 执行天气屏保同步任务。
+ */
+void BackendService::ExecuteWeatherSyncJob()
+{
+    try
+    {
+        RunWeatherSync();
+    }
+    catch (const std::exception &exception)
+    {
+        ESP_LOGE(kTag, "天气同步任务异常，原因=%s", exception.what());
+        ShowWeatherStatusIfUnavailable("天气同步失败");
+    }
+    catch (...)
+    {
+        ESP_LOGE(kTag, "天气同步任务发生未知异常");
+        ShowWeatherStatusIfUnavailable("天气同步失败");
+    }
+    bool refresh_requested = false;
+    {
+        std::lock_guard<std::mutex> lock(weather_mutex_);
+        weather_task_handle_ = nullptr;
+        refresh_requested = weather_refresh_requested_.load();
+    }
+    if (screensaver_active_.load())
+    {
+        if (refresh_requested)
+        {
+            StartWeatherSync(true);
+        }
+        else
+        {
+            StartMemoSync(false);
+        }
+    }
+}
+
+/**
+ * @brief 执行天气城市设置任务并释放上下文。
+ * @param context 天气城市设置上下文。
+ */
+void BackendService::ExecuteWeatherLocationJob(WeatherLocationTaskContext* context)
+{
+    std::unique_ptr<WeatherLocationTaskContext> task_context(context);
+    try
+    {
+        RunWeatherLocationTask(
+            task_context->location_name,
+            task_context->use_ip_auto,
+            task_context->completion);
+    }
+    catch (const std::exception &exception)
+    {
+        ESP_LOGE(kTag, "天气位置设置任务异常，原因=%s", exception.what());
+        FinishToolRequest(task_context->completion, "天气城市设置失败，请稍后重试。", true);
+    }
+    catch (...)
+    {
+        ESP_LOGE(kTag, "天气位置设置任务发生未知异常");
+        FinishToolRequest(task_context->completion, "天气城市设置失败，请稍后重试。", true);
+    }
+    std::lock_guard<std::mutex> lock(weather_mutex_);
+    weather_location_task_handle_ = nullptr;
+}
+
+/**
+ * @brief 执行天气播报设置任务并释放上下文。
+ * @param context 天气播报设置上下文。
+ */
+void BackendService::ExecuteWeatherAnnouncementJob(WeatherAnnouncementTaskContext* context)
+{
+    std::unique_ptr<WeatherAnnouncementTaskContext> task_context(context);
+    try
+    {
+        RunWeatherAnnouncementTask(
+            task_context->enabled,
+            task_context->announcement_time,
+            task_context->completion);
+    }
+    catch (const std::exception &exception)
+    {
+        ESP_LOGE(kTag, "天气播报设置任务异常，原因=%s", exception.what());
+        FinishToolRequest(task_context->completion, "天气播报设置失败，请稍后重试。", true);
+    }
+    catch (...)
+    {
+        ESP_LOGE(kTag, "天气播报设置任务发生未知异常");
+        FinishToolRequest(task_context->completion, "天气播报设置失败，请稍后重试。", true);
+    }
+    std::lock_guard<std::mutex> lock(weather_mutex_);
+    weather_announcement_task_handle_ = nullptr;
+}
+
+/**
+ * @brief 执行主动通知同步任务。
+ */
+void BackendService::ExecuteNotificationSyncJob()
+{
+    notification_reconnect_requested_.exchange(false);
+    try
+    {
+        RunNotificationSync();
+    }
+    catch (const std::exception &exception)
+    {
+        ESP_LOGE(kTag, "主动通知同步任务异常，原因=%s", exception.what());
+    }
+    catch (...)
+    {
+        ESP_LOGE(kTag, "主动通知同步任务发生未知异常");
+    }
+    bool continue_sync = false;
+    {
+        std::lock_guard<std::mutex> lock(notification_mutex_);
+        notification_task_handle_ = nullptr;
+        continue_sync = (notification_hint_count_ > 0
+                          || notification_reconnect_requested_.load())
+            && notification_playback_task_handle_ == nullptr
+            && notification_confirmation_task_handle_ == nullptr;
+    }
+    if (continue_sync)
+    {
+        StartNotificationSync(false);
+    }
+}
+
+/**
+ * @brief 根据固定任务类型分派常驻 Worker 工作。
+ * @param job 从固定环形队列取出的任务。
+ */
+void BackendService::ExecuteBackendJob(const BackendJob& job)
+{
+    switch (job.type)
+    {
+    case BackendJobType::McpManifest:
+        ExecuteMcpManifestJob();
+        break;
+    case BackendJobType::DynamicTool:
+        ExecuteDynamicToolJob(static_cast<DynamicToolTaskContext*>(job.context));
+        break;
+    case BackendJobType::MemoTool:
+        ExecuteMemoToolJob(static_cast<MemoToolTaskContext*>(job.context));
+        break;
+    case BackendJobType::MemoSync:
+        ExecuteMemoSyncJob();
+        break;
+    case BackendJobType::WeatherSync:
+        ExecuteWeatherSyncJob();
+        break;
+    case BackendJobType::WeatherLocation:
+        ExecuteWeatherLocationJob(static_cast<WeatherLocationTaskContext*>(job.context));
+        break;
+    case BackendJobType::WeatherAnnouncement:
+        ExecuteWeatherAnnouncementJob(
+            static_cast<WeatherAnnouncementTaskContext*>(job.context));
+        break;
+    case BackendJobType::NotificationSync:
+        ExecuteNotificationSyncJob();
+        break;
+    }
+}
+
+/**
  * @brief 从 NVS 恢复后端绑定状态。
  */
 void BackendService::Start()
@@ -970,6 +1377,18 @@ void BackendService::Start()
         return;
     }
     started_ = true;
+    const BaseType_t worker_created = CreatePsramBackendTask(
+        BackendWorkerTaskEntry,
+        "backend_worker",
+        kBackendWorkerStackSize,
+        this,
+        kBackendWorkerPriority,
+        &backend_worker_task_handle_);
+    if (worker_created != pdPASS)
+    {
+        backend_worker_task_handle_ = nullptr;
+        ESP_LOGE(kTag, "后端常驻 Worker 创建失败，后台同步功能暂不可用");
+    }
     /*
      * 依赖库的 Debug 日志会输出完整 HTTP 请求头，其中可能包含绑定会话 Token 或设备 Token。
      * 将底层客户端固定在 Info 级别，仍保留连接和错误日志，同时阻止认证头进入串口日志。
@@ -1544,49 +1963,20 @@ void BackendService::StartMcpManifestSync()
         }
     }
 
-    std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
-    if (mcp_manifest_task_handle_ != nullptr)
     {
-        return;
+        std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
+        if (mcp_manifest_task_handle_ != nullptr)
+        {
+            return;
+        }
+        mcp_manifest_task_handle_ = backend_worker_task_handle_;
     }
-    const BaseType_t created = CreatePsramBackendTask(
-        McpManifestTaskEntry,
-        "mcp_manifest",
-        kMcpTaskStackSize,
-        this,
-        kMcpTaskPriority,
-        &mcp_manifest_task_handle_);
-    if (created != pdPASS)
+    if (!EnqueueBackendJob(BackendJobType::McpManifest))
     {
+        std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
         mcp_manifest_task_handle_ = nullptr;
-        ESP_LOGE(kTag, "内存不足，无法启动 MCP 清单同步任务");
+        ESP_LOGE(kTag, "后端 Worker 队列已满，无法安排 MCP 清单同步");
     }
-}
-
-/**
- * @brief FreeRTOS 动态 MCP 清单同步任务入口，确保任务标志始终释放。
- * @param context 指向 BackendService 单例。
- */
-void BackendService::McpManifestTaskEntry(void *context)
-{
-    auto *service = static_cast<BackendService *>(context);
-    try
-    {
-        service->RunMcpManifestSync();
-    }
-    catch (const std::exception &exception)
-    {
-        ESP_LOGE(kTag, "MCP 清单同步任务异常，原因=%s", exception.what());
-    }
-    catch (...)
-    {
-        ESP_LOGE(kTag, "MCP 清单同步任务发生未知异常");
-    }
-    {
-        std::lock_guard<std::mutex> lock(service->dynamic_mcp_mutex_);
-        service->mcp_manifest_task_handle_ = nullptr;
-    }
-    DeleteCurrentPsramTask();
 }
 
 /**
@@ -1775,95 +2165,48 @@ void BackendService::StartDynamicToolExecution(
         }
     }
 
-    DynamicToolCompletion rejected_completion;
     const char *rejected_message = nullptr;
+    DynamicToolCompletion rejected_completion = completion;
     {
         std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
         if (dynamic_tool_task_handle_ != nullptr)
         {
-            rejected_completion = std::move(completion);
             rejected_message = "设备正在执行另一个自定义服务，请稍后再试。";
         }
         else
         {
-            auto *context = new (std::nothrow) DynamicToolTaskContext{
-                this,
-                tool_name,
-                tool_revision,
-                std::move(completion)};
-            if (context == nullptr)
-            {
-                rejected_completion = std::move(completion);
-                rejected_message = "设备内存不足，无法执行该服务。";
-            }
-            else
-            {
-                const BaseType_t created = CreatePsramBackendTask(
-                    DynamicToolTaskEntry,
-                    "mcp_execute",
-                    kMcpTaskStackSize,
-                    context,
-                    kMcpTaskPriority,
-                    &dynamic_tool_task_handle_);
-                if (created == pdPASS)
-                {
-                    return;
-                }
-                rejected_completion = std::move(context->completion);
-                delete context;
-                dynamic_tool_task_handle_ = nullptr;
-                rejected_message = "设备内存不足，无法执行该服务。";
-            }
+            dynamic_tool_task_handle_ = backend_worker_task_handle_;
         }
     }
-    if (rejected_completion)
+    if (rejected_message != nullptr)
     {
         rejected_completion(rejected_message, true);
+        return;
     }
-}
 
-/**
- * @brief FreeRTOS 动态工具执行入口，确保回调和任务标志始终得到处理。
- * @param context DynamicToolTaskContext 指针。
- */
-void BackendService::DynamicToolTaskEntry(void *context)
-{
-    std::unique_ptr<DynamicToolTaskContext> task_context(
-        static_cast<DynamicToolTaskContext *>(context));
-    BackendService *service = task_context->service;
-    try
+    auto *task_context = new (std::nothrow) DynamicToolTaskContext{
+        tool_name,
+        tool_revision,
+        std::move(completion)};
+    if (task_context == nullptr)
     {
-        service->RunDynamicToolExecution(
-            task_context->tool_name,
-            task_context->tool_revision,
-            task_context->completion);
+        std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
+        dynamic_tool_task_handle_ = nullptr;
+        rejected_completion("设备内存不足，无法执行该服务。", true);
+        return;
     }
-    catch (const std::exception &exception)
+    bool queue_failed = false;
+    if (!EnqueueBackendJob(BackendJobType::DynamicTool, task_context))
     {
-        ESP_LOGE(kTag, "动态 MCP 工具执行异常，原因=%s", exception.what());
-        FinishToolRequest(task_context->completion, kDynamicToolFallbackError, true);
+        queue_failed = true;
+        delete task_context;
+        std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
+        dynamic_tool_task_handle_ = nullptr;
     }
-    catch (...)
+    if (queue_failed)
     {
-        ESP_LOGE(kTag, "动态 MCP 工具执行发生未知异常");
-        FinishToolRequest(task_context->completion, kDynamicToolFallbackError, true);
+        rejected_completion("设备后台任务队列已满，暂时无法执行该服务。", true);
     }
-    if (task_context->completion)
-    {
-        FinishToolRequest(task_context->completion, kDynamicToolFallbackError, true);
-    }
-    bool refresh_manifest = false;
-    {
-        std::lock_guard<std::mutex> lock(service->dynamic_mcp_mutex_);
-        service->dynamic_tool_task_handle_ = nullptr;
-        refresh_manifest = service->mcp_manifest_refresh_requested_;
-        service->mcp_manifest_refresh_requested_ = false;
-    }
-    if (refresh_manifest)
-    {
-        service->StartMcpManifestSync();
-    }
-    DeleteCurrentPsramTask();
 }
 
 /**
@@ -1877,6 +2220,11 @@ void BackendService::RunDynamicToolExecution(
     uint32_t tool_revision,
     DynamicToolCompletion &completion)
 {
+    if (!network_connected_.load())
+    {
+        FinishToolRequest(completion, "设备网络尚未连接，暂时无法执行该服务。", true);
+        return;
+    }
     std::string access_token;
     {
         std::lock_guard<std::mutex> lock(binding_mutex_);
@@ -2055,7 +2403,6 @@ void BackendService::StartMemoToolTask(MemoToolTaskContext *context)
     }
 
     bool task_busy = false;
-    bool task_start_failed = false;
     {
         std::lock_guard<std::mutex> lock(memo_mutex_);
         if (memo_task_handle_ != nullptr)
@@ -2064,70 +2411,32 @@ void BackendService::StartMemoToolTask(MemoToolTaskContext *context)
         }
         else
         {
-            const BaseType_t created = CreatePsramBackendTask(
-                MemoToolTaskEntry, "memo_tool", kMemoTaskStackSize, context,
-                kMemoTaskPriority, &memo_task_handle_);
-            if (created != pdPASS)
-            {
-                memo_task_handle_ = nullptr;
-                task_start_failed = true;
-            }
+            memo_task_handle_ = backend_worker_task_handle_;
         }
     }
 
-    if (!task_busy && !task_start_failed)
+    if (task_busy)
     {
+        FinishToolRequest(
+            context->completion,
+            "备忘录服务正在处理其他请求，请稍后再试。",
+            true);
+        delete context;
         return;
     }
-    FinishToolRequest(
-        context->completion,
-        task_busy ? "备忘录服务正在处理其他请求，请稍后再试。"
-                  : "设备内存不足，无法启动备忘录任务。",
-        true);
-    delete context;
-}
 
-/**
- * @brief FreeRTOS 备忘录语音任务入口，确保上下文和任务占用标志始终释放。
- * @param context MemoToolTaskContext 指针。
- */
-void BackendService::MemoToolTaskEntry(void *context)
-{
-    std::unique_ptr<MemoToolTaskContext> task_context(
-        static_cast<MemoToolTaskContext *>(context));
-    BackendService *service = task_context->service;
-    try
+    if (!EnqueueBackendJob(BackendJobType::MemoTool, context))
     {
-        service->RunMemoToolTask(*task_context);
-    }
-    catch (const std::exception &exception)
-    {
-        ESP_LOGE(kTag, "备忘录语音任务异常，原因=%s", exception.what());
-        FinishToolRequest(task_context->completion, "备忘录操作失败，请稍后重试。", true);
-    }
-    catch (...)
-    {
-        ESP_LOGE(kTag, "备忘录语音任务发生未知异常");
-        FinishToolRequest(task_context->completion, "备忘录操作失败，请稍后重试。", true);
-    }
-    if (task_context->completion)
-    {
-        FinishToolRequest(task_context->completion, "备忘录操作未能完成，请稍后重试。", true);
-    }
-    {
-        std::lock_guard<std::mutex> lock(service->memo_mutex_);
-        service->memo_task_handle_ = nullptr;
-    }
-    if ((service->memo_refresh_requested_.load()
-         || service->memo_retry_due_.load())
-        && service->screensaver_active_.load())
-    {
-        Application::GetInstance().Schedule([service]()
         {
-            service->StartMemoSync(true);
-        });
+            std::lock_guard<std::mutex> lock(memo_mutex_);
+            memo_task_handle_ = nullptr;
+        }
+        FinishToolRequest(
+            context->completion,
+            "设备后台任务队列已满，暂时无法操作备忘录。",
+            true);
+        delete context;
     }
-    DeleteCurrentPsramTask();
 }
 
 /**
@@ -2136,6 +2445,11 @@ void BackendService::MemoToolTaskEntry(void *context)
  */
 void BackendService::RunMemoToolTask(MemoToolTaskContext &context)
 {
+    if (!network_connected_.load())
+    {
+        FinishToolRequest(context.completion, "设备网络尚未连接，暂时无法操作备忘录。", true);
+        return;
+    }
     std::string access_token;
     {
         std::lock_guard<std::mutex> lock(binding_mutex_);
@@ -2433,7 +2747,7 @@ void BackendService::RunMemoToolTask(MemoToolTaskContext &context)
 }
 
 /**
- * @brief 在屏保备忘录缓存需要更新时创建一个临时 FreeRTOS Worker。
+ * @brief 在屏保备忘录缓存需要更新时把请求加入常驻后端 Worker。
  * @param force_refresh true 忽略最近成功时间；false 遵守 30 分钟本地新鲜周期。
  */
 void BackendService::StartMemoSync(bool force_refresh)
@@ -2449,22 +2763,14 @@ void BackendService::StartMemoSync(bool force_refresh)
             return;
         }
     }
-    {
-        std::lock_guard<std::mutex> lock(weather_mutex_);
-        if (weather_task_handle_ != nullptr)
-        {
-            return;
-        }
-    }
-
-    bool task_start_failed = false;
+    bool mqtt_refresh_requested = false;
     {
         std::lock_guard<std::mutex> lock(memo_mutex_);
         if (memo_task_handle_ != nullptr)
         {
             return;
         }
-        const bool mqtt_refresh_requested = memo_refresh_requested_.exchange(false);
+        mqtt_refresh_requested = memo_refresh_requested_.exchange(false);
         const bool retry_due = memo_retry_due_.load();
         if (!force_refresh && memo_retry_pending_.load() && !retry_due
             && !mqtt_refresh_requested)
@@ -2478,73 +2784,29 @@ void BackendService::StartMemoSync(bool force_refresh)
         {
             return;
         }
-        const BaseType_t created = CreatePsramBackendTask(
-            MemoSyncTaskEntry, "memo_sync", kMemoTaskStackSize, this,
-            kMemoTaskPriority, &memo_task_handle_);
-        if (created != pdPASS)
+        memo_task_handle_ = backend_worker_task_handle_;
+        memo_retry_pending_.store(false);
+        memo_retry_due_.store(false);
+        if (memo_retry_timer_ != nullptr)
         {
+            esp_timer_stop(memo_retry_timer_);
+        }
+    }
+
+    if (!EnqueueBackendJob(BackendJobType::MemoSync))
+    {
+        {
+            std::lock_guard<std::mutex> lock(memo_mutex_);
             memo_task_handle_ = nullptr;
             if (mqtt_refresh_requested)
             {
                 memo_refresh_requested_.store(true);
             }
-            task_start_failed = true;
         }
-        else
-        {
-            memo_retry_pending_.store(false);
-            memo_retry_due_.store(false);
-            if (memo_retry_timer_ != nullptr)
-            {
-                esp_timer_stop(memo_retry_timer_);
-            }
-        }
-    }
-    if (task_start_failed)
-    {
-        ESP_LOGE(kTag, "内存不足，无法启动备忘录同步任务");
+        ESP_LOGE(kTag, "后端 Worker 队列已满，无法安排备忘录同步");
         ShowMemoStatusIfUnavailable("备忘录任务启动失败");
         ScheduleMemoRetry();
     }
-}
-
-/**
- * @brief FreeRTOS 屏保备忘录 Worker 入口，捕获异常并始终释放任务占用标志。
- * @param context 指向 BackendService 单例。
- */
-void BackendService::MemoSyncTaskEntry(void *context)
-{
-    auto *service = static_cast<BackendService *>(context);
-    try
-    {
-        service->RunMemoSync();
-    }
-    catch (const std::exception &exception)
-    {
-        ESP_LOGE(kTag, "备忘录同步任务异常，原因=%s", exception.what());
-        service->ShowMemoStatusIfUnavailable("备忘录同步失败");
-        service->ScheduleMemoRetry();
-    }
-    catch (...)
-    {
-        ESP_LOGE(kTag, "备忘录同步任务发生未知异常");
-        service->ShowMemoStatusIfUnavailable("备忘录同步失败");
-        service->ScheduleMemoRetry();
-    }
-    {
-        std::lock_guard<std::mutex> lock(service->memo_mutex_);
-        service->memo_task_handle_ = nullptr;
-    }
-    if ((service->memo_refresh_requested_.load()
-         || service->memo_retry_due_.load())
-        && service->screensaver_active_.load())
-    {
-        Application::GetInstance().Schedule([service]()
-        {
-            service->StartMemoSync(true);
-        });
-    }
-    DeleteCurrentPsramTask();
 }
 
 /**
@@ -2769,7 +3031,7 @@ void BackendService::OnScreensaverChanged(bool active)
 }
 
 /**
- * @brief 在天气缓存确实需要更新时创建一个临时 FreeRTOS Worker。
+ * @brief 在天气缓存确实需要更新时把请求加入常驻后端 Worker。
  * @param force_refresh true 忽略最近成功时间；false 遵守 30 分钟本地新鲜周期。
  */
 void BackendService::StartWeatherSync(bool force_refresh)
@@ -2789,14 +3051,14 @@ void BackendService::StartWeatherSync(bool force_refresh)
         return;
     }
 
-    bool task_start_failed = false;
+    bool mqtt_refresh_requested = false;
     {
         std::lock_guard<std::mutex> lock(weather_mutex_);
         if (weather_task_handle_ != nullptr)
         {
             return;
         }
-        const bool mqtt_refresh_requested = weather_refresh_requested_.exchange(false);
+        mqtt_refresh_requested = weather_refresh_requested_.exchange(false);
         force_refresh = force_refresh || mqtt_refresh_requested;
         const int64_t now_us = esp_timer_get_time();
         if (!force_refresh && weather_snapshot_.valid && weather_last_success_us_ > 0 && now_us - weather_last_success_us_ < kWeatherRefreshIntervalUs)
@@ -2804,68 +3066,22 @@ void BackendService::StartWeatherSync(bool force_refresh)
             return;
         }
 
-        weather_task_handle_ = nullptr;
-        const BaseType_t created = CreatePsramBackendTask(
-            WeatherTaskEntry, "weather_sync", kWeatherTaskStackSize, this,
-            kWeatherTaskPriority, &weather_task_handle_);
-        if (created != pdPASS)
+        weather_task_handle_ = backend_worker_task_handle_;
+    }
+
+    if (!EnqueueBackendJob(BackendJobType::WeatherSync))
+    {
         {
+            std::lock_guard<std::mutex> lock(weather_mutex_);
             weather_task_handle_ = nullptr;
             if (mqtt_refresh_requested)
             {
                 weather_refresh_requested_.store(true);
             }
-            task_start_failed = true;
         }
-    }
-
-    if (task_start_failed)
-    {
-        ESP_LOGE(kTag, "内存不足，无法启动天气同步任务");
+        ESP_LOGE(kTag, "后端 Worker 队列已满，无法安排天气同步");
         ShowWeatherStatusIfUnavailable("天气任务启动失败");
     }
-}
-
-/**
- * @brief FreeRTOS 天气 Worker 入口，捕获异常并始终释放任务占用标志。
- * @param context 指向 BackendService 单例。
- */
-void BackendService::WeatherTaskEntry(void *context)
-{
-    auto *service = static_cast<BackendService *>(context);
-    try
-    {
-        service->RunWeatherSync();
-    }
-    catch (const std::exception &exception)
-    {
-        ESP_LOGE(kTag, "天气同步任务异常，原因=%s", exception.what());
-        service->ShowWeatherStatusIfUnavailable("天气同步失败");
-    }
-    catch (...)
-    {
-        ESP_LOGE(kTag, "天气同步任务发生未知异常");
-        service->ShowWeatherStatusIfUnavailable("天气同步失败");
-    }
-    {
-        std::lock_guard<std::mutex> lock(service->weather_mutex_);
-        service->weather_task_handle_ = nullptr;
-    }
-    if (service->screensaver_active_.load())
-    {
-        Application::GetInstance().Schedule([service]()
-        {
-            if (service->weather_refresh_requested_.load())
-            {
-                service->StartWeatherSync(true);
-            }
-            else
-            {
-                service->StartMemoSync(false);
-            }
-        });
-    }
-    DeleteCurrentPsramTask();
 }
 
 /**
@@ -3071,7 +3287,7 @@ void BackendService::ShowWeatherStatusIfUnavailable(const std::string &message)
 }
 
 /**
- * @brief 创建通过语音设置固定城市或 IP 自动定位的独立 FreeRTOS 任务。
+ * @brief 把通过语音设置固定城市或 IP 自动定位的请求加入常驻后端 Worker。
  * @param location_name 固定模式下用户提供的城市或区县名称；IP 模式下为空。
  * @param use_ip_auto true 切换为设备公网 IP 自动定位；false 设置固定城市。
  * @param completion 保存结果的一次性回调。
@@ -3112,7 +3328,6 @@ void BackendService::StartWeatherLocationTask(
     }
 
     bool task_already_running = false;
-    bool task_start_failed = false;
     {
         std::lock_guard<std::mutex> lock(weather_mutex_);
         if (weather_location_task_handle_ != nullptr ||
@@ -3122,71 +3337,28 @@ void BackendService::StartWeatherLocationTask(
         }
         else
         {
-            const BaseType_t created = CreatePsramBackendTask(
-                WeatherLocationTaskEntry,
-                "weather_location",
-                kWeatherTaskStackSize,
-                context,
-                kWeatherTaskPriority,
-                &weather_location_task_handle_);
-            task_start_failed = created != pdPASS;
-            if (task_start_failed)
-            {
-                weather_location_task_handle_ = nullptr;
-            }
+            weather_location_task_handle_ = backend_worker_task_handle_;
         }
     }
 
-    if (!task_already_running && !task_start_failed)
+    if (task_already_running)
     {
+        auto callback = std::move(context->completion);
+        delete context;
+        callback("设备正在保存另一项天气设置，请稍后再试。", true);
         return;
     }
 
-    auto callback = std::move(context->completion);
-    delete context;
-    callback(task_already_running
-                 ? "设备正在保存另一个天气城市，请稍后再试。"
-                 : "设备内存不足，无法启动天气城市设置任务。",
-             true);
-}
-
-/**
- * @brief FreeRTOS 天气城市设置任务入口，确保上下文和任务标志始终释放。
- * @param context WeatherLocationTaskContext 指针。
- */
-void BackendService::WeatherLocationTaskEntry(void *context)
-{
-    std::unique_ptr<WeatherLocationTaskContext> task_context(
-        static_cast<WeatherLocationTaskContext *>(context));
-    BackendService *service = task_context->service;
-    try
+    if (!EnqueueBackendJob(BackendJobType::WeatherLocation, context))
     {
-        service->RunWeatherLocationTask(
-            task_context->location_name,
-            task_context->use_ip_auto,
-            task_context->completion);
+        {
+            std::lock_guard<std::mutex> lock(weather_mutex_);
+            weather_location_task_handle_ = nullptr;
+        }
+        auto callback = std::move(context->completion);
+        delete context;
+        callback("设备后台任务队列已满，无法设置天气城市。", true);
     }
-    catch (const std::exception &exception)
-    {
-        ESP_LOGE(kTag, "天气位置设置任务异常，原因=%s", exception.what());
-        FinishToolRequest(
-            task_context->completion,
-            "天气城市设置失败，请稍后重试。",
-            true);
-    }
-    catch (...)
-    {
-        ESP_LOGE(kTag, "天气位置设置任务发生未知异常");
-        FinishToolRequest(
-            task_context->completion,
-            "天气城市设置失败，请稍后重试。",
-            true);
-    }
-    {
-        std::lock_guard<std::mutex> lock(service->weather_mutex_);
-        service->weather_location_task_handle_ = nullptr;
-    }
-    DeleteCurrentPsramTask();
 }
 
 /**
@@ -3200,6 +3372,11 @@ void BackendService::RunWeatherLocationTask(
     bool use_ip_auto,
     WeatherLocationCompletion &completion)
 {
+    if (!network_connected_.load())
+    {
+        FinishToolRequest(completion, "设备网络尚未连接，暂时无法设置天气城市。", true);
+        return;
+    }
     std::string access_token;
     {
         std::lock_guard<std::mutex> lock(binding_mutex_);
@@ -3350,7 +3527,6 @@ void BackendService::StartWeatherAnnouncementTask(
     }
 
     bool task_already_running = false;
-    bool task_start_failed = false;
     {
         std::lock_guard<std::mutex> lock(weather_mutex_);
         if (weather_location_task_handle_ != nullptr ||
@@ -3360,70 +3536,27 @@ void BackendService::StartWeatherAnnouncementTask(
         }
         else
         {
-            const BaseType_t created = CreatePsramBackendTask(
-                WeatherAnnouncementTaskEntry,
-                "weather_announce",
-                kWeatherTaskStackSize,
-                context,
-                kWeatherTaskPriority,
-                &weather_announcement_task_handle_);
-            task_start_failed = created != pdPASS;
-            if (task_start_failed)
-            {
-                weather_announcement_task_handle_ = nullptr;
-            }
+            weather_announcement_task_handle_ = backend_worker_task_handle_;
         }
     }
-    if (!task_already_running && !task_start_failed)
+    if (task_already_running)
     {
+        auto callback = std::move(context->completion);
+        delete context;
+        callback("设备正在保存另一项天气设置，请稍后再试。", true);
         return;
     }
 
-    auto callback = std::move(context->completion);
-    delete context;
-    callback(
-        task_already_running
-            ? "设备正在保存另一项天气设置，请稍后再试。"
-            : "设备内存不足，无法启动天气播报设置任务。",
-        true);
-}
-
-/**
- * @brief 每日天气播报设置任务入口。
- */
-void BackendService::WeatherAnnouncementTaskEntry(void *context)
-{
-    std::unique_ptr<WeatherAnnouncementTaskContext> task_context(
-        static_cast<WeatherAnnouncementTaskContext *>(context));
-    BackendService *service = task_context->service;
-    try
+    if (!EnqueueBackendJob(BackendJobType::WeatherAnnouncement, context))
     {
-        service->RunWeatherAnnouncementTask(
-            task_context->enabled,
-            task_context->announcement_time,
-            task_context->completion);
+        {
+            std::lock_guard<std::mutex> lock(weather_mutex_);
+            weather_announcement_task_handle_ = nullptr;
+        }
+        auto callback = std::move(context->completion);
+        delete context;
+        callback("设备后台任务队列已满，无法设置天气播报。", true);
     }
-    catch (const std::exception &exception)
-    {
-        ESP_LOGE(kTag, "天气播报设置任务异常，原因=%s", exception.what());
-        FinishToolRequest(
-            task_context->completion,
-            "天气播报设置失败，请稍后重试。",
-            true);
-    }
-    catch (...)
-    {
-        ESP_LOGE(kTag, "天气播报设置任务发生未知异常");
-        FinishToolRequest(
-            task_context->completion,
-            "天气播报设置失败，请稍后重试。",
-            true);
-    }
-    {
-        std::lock_guard<std::mutex> lock(service->weather_mutex_);
-        service->weather_announcement_task_handle_ = nullptr;
-    }
-    DeleteCurrentPsramTask();
 }
 
 /**
@@ -3434,6 +3567,11 @@ void BackendService::RunWeatherAnnouncementTask(
     const std::string &announcement_time,
     WeatherLocationCompletion &completion)
 {
+    if (!network_connected_.load())
+    {
+        FinishToolRequest(completion, "设备网络尚未连接，暂时无法设置天气播报。", true);
+        return;
+    }
     std::string access_token;
     {
         std::lock_guard<std::mutex> lock(binding_mutex_);
@@ -3922,7 +4060,7 @@ void BackendService::SaveDeviceCredential(const std::string &device_id,
 }
 
 /**
- * @brief 在设备已绑定且联网时启动一次通知同步任务。
+ * @brief 在设备已绑定且联网时把通知同步请求加入常驻后端 Worker。
  * @param reconnect_mqtt true 表示同时按需重新连接业务 EMQX。
  */
 void BackendService::StartNotificationSync(bool reconnect_mqtt)
@@ -3949,43 +4087,12 @@ void BackendService::StartNotificationSync(bool reconnect_mqtt)
     {
         return;
     }
-    if (CreatePsramBackendTask(
-            NotificationTaskEntry,
-            "notify_sync",
-            kNotificationTaskStackSize,
-            this,
-            kNotificationTaskPriority,
-            &notification_task_handle_) != pdPASS)
+    notification_task_handle_ = backend_worker_task_handle_;
+    if (!EnqueueBackendJob(BackendJobType::NotificationSync))
     {
         notification_task_handle_ = nullptr;
-        ESP_LOGE(kTag, "主动通知同步任务创建失败");
+        ESP_LOGE(kTag, "后端 Worker 队列已满，无法安排主动通知同步");
     }
-}
-
-/**
- * @brief 主动通知同步任务入口。
- * @param context 指向当前 BackendService 单例。
- */
-void BackendService::NotificationTaskEntry(void *context)
-{
-    auto *service = static_cast<BackendService *>(context);
-    while (true)
-    {
-        service->notification_reconnect_requested_.exchange(false);
-        service->RunNotificationSync();
-
-        std::lock_guard<std::mutex> lock(service->notification_mutex_);
-        const bool continue_sync = (service->notification_hint_count_ > 0
-                                    || service->notification_reconnect_requested_.load())
-            && service->notification_playback_task_handle_ == nullptr
-            && service->notification_confirmation_task_handle_ == nullptr;
-        if (!continue_sync)
-        {
-            service->notification_task_handle_ = nullptr;
-            break;
-        }
-    }
-    DeleteCurrentPsramTask();
 }
 
 /**
@@ -3993,6 +4100,10 @@ void BackendService::NotificationTaskEntry(void *context)
  */
 void BackendService::RunNotificationSync()
 {
+    if (!network_connected_.load())
+    {
+        return;
+    }
     NotificationHint hint;
     if (DequeueNotificationHint(hint))
     {
@@ -4565,7 +4676,7 @@ bool BackendService::StreamNotificationAudio(
     const std::string &path,
     const std::string &access_token)
 {
-    std::lock_guard<std::mutex> request_lock(backend_http_mutex);
+    BackendHttpLease request_lock(true);
     auto *network = Board::GetInstance().GetNetwork();
     if (network == nullptr)
     {

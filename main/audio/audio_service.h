@@ -237,6 +237,10 @@ private:
     int decoder_sample_rate_ = 0;
     int decoder_duration_ms_ = OPUS_FRAME_DURATION_MS;
     int decoder_frame_size_ = 0;
+    /** @brief 输入采样率转换使用的常驻临时缓冲，避免每 10ms 重新分配。 */
+    std::vector<int16_t> input_resample_buffer_;
+    /** @brief 输出采样率转换使用的常驻临时缓冲。 */
+    std::vector<int16_t> output_resample_buffer_;
     DebugStatistics debug_statistics_;
     srmodel_list_t* models_list_ = nullptr;
 
@@ -253,6 +257,8 @@ private:
     std::deque<std::unique_ptr<AudioStreamPacket>> audio_testing_queue_;
     std::deque<std::unique_ptr<AudioTask>> audio_encode_queue_;
     std::deque<std::unique_ptr<AudioTask>> audio_playback_queue_;
+    /** @brief 已完成处理、可复用其 PCM 容量的音频任务对象。 */
+    std::deque<std::unique_ptr<AudioTask>> reusable_audio_tasks_;
     /** @brief true 表示编解码任务已经取出一个下行 Opus 包并正在生成待播放 PCM。 */
     bool audio_decode_active_ = false;
     /** @brief true 表示音频输出任务已经取出一帧并正在向 Codec 写入。 */

@@ -49,6 +49,20 @@ protected:
      * @brief 独立绘制的当前秒刻度，仅移动自身以避免每秒重绘整个表盘刻度控件。
      */
     lv_obj_t* screensaver_second_marker_ = nullptr;
+    /**
+     * @brief 当前秒刻度使用的尺寸类型，0 为普通刻度，1 为五秒主刻度，-1 表示尚未配置。
+     */
+    int screensaver_second_marker_style_ = -1;
+    /** @brief 上一次已经绘制的秒值，避免同一秒重复设置旋转和位置。 */
+    int screensaver_last_rendered_second_ = -2;
+    /** @brief 上一次已经写入日期、农历和星期的日期键。 */
+    int screensaver_last_date_key_ = 0;
+    /** @brief 上一次已经应用的电量告警颜色状态。 */
+    bool screensaver_battery_attention_valid_ = false;
+    bool screensaver_battery_attention_ = false;
+    /** @brief 上一次已经应用的网络断开颜色状态。 */
+    bool screensaver_network_disconnected_valid_ = false;
+    bool screensaver_network_disconnected_ = false;
     lv_obj_t* screensaver_time_group_ = nullptr;
     lv_obj_t* screensaver_time_label_ = nullptr;
     lv_obj_t* screensaver_seconds_label_ = nullptr;

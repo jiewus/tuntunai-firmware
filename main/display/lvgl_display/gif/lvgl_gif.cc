@@ -8,6 +8,20 @@
 
 #define TAG "LvglGif"
 
+namespace {
+
+/**
+ * @brief 将 GIF 规范中的百分之一秒延迟转换为 LVGL 定时器周期。
+ * @param delay_centiseconds GIF Graphic Control Extension 中的帧延迟。
+ * @return 不低于 10ms 的定时器周期。
+ */
+uint32_t GifFrameDelayMs(uint16_t delay_centiseconds) {
+    const uint32_t delay_ms = static_cast<uint32_t>(delay_centiseconds) * 10U;
+    return delay_ms == 0 ? 10U : delay_ms;
+}
+
+}  // namespace
+
 /**
  * @brief 构造 LvglGif 对象并初始化该模块运行所需的成员和系统资源。
  * @details 构造阶段只建立本模块自身资源；需要异步运行的任务由后续 Start 或 Initialize 方法启动。
@@ -16,13 +30,13 @@ LvglGif::LvglGif(const lv_img_dsc_t* img_dsc)
     : gif_(nullptr), timer_(nullptr), last_call_(0), playing_(false), loaded_(false),
       loop_delay_ms_(0), loop_waiting_(false), loop_wait_start_(0) {
     if (!img_dsc || !img_dsc->data) {
-        ESP_LOGE(TAG, "Invalid image descriptor");
+        ESP_LOGE(TAG, "GIF 图片描述符无效");
         return;
     }
 
     gif_ = gd_open_gif_data(img_dsc->data);
     if (!gif_) {
-        ESP_LOGE(TAG, "Failed to open GIF from image descriptor");
+        ESP_LOGE(TAG, "无法从图片描述符打开 GIF");
         return;
     }
 
@@ -43,7 +57,7 @@ LvglGif::LvglGif(const lv_img_dsc_t* img_dsc)
     }
 
     loaded_ = true;
-    ESP_LOGD(TAG, "GIF loaded from image descriptor: %dx%d", gif_->width, gif_->height);
+    ESP_LOGD(TAG, "GIF 已从图片描述符加载，尺寸=%dx%d", gif_->width, gif_->height);
 }
 
 // Destructor
@@ -75,7 +89,7 @@ const lv_img_dsc_t* LvglGif::image_dsc() const {
  */
 void LvglGif::Start() {
     if (!loaded_ || !gif_) {
-        ESP_LOGW(TAG, "GIF not loaded, cannot start");
+        ESP_LOGW(TAG, "GIF 尚未加载，无法启动动画");
         return;
     }
 
@@ -83,11 +97,12 @@ void LvglGif::Start() {
         timer_ = lv_timer_create([](lv_timer_t* timer) {
             LvglGif* gif_obj = static_cast<LvglGif*>(lv_timer_get_user_data(timer));
             gif_obj->NextFrame();
-        }, 10, this);
+        }, GifFrameDelayMs(gif_->gce.delay), this);
     }
 
     if (timer_) {
         playing_ = true;
+        lv_timer_set_period(timer_, GifFrameDelayMs(gif_->gce.delay));
         loop_waiting_ = false;  // Reset loop waiting state
         last_call_ = lv_tick_get();
         lv_timer_resume(timer_);
@@ -96,7 +111,7 @@ void LvglGif::Start() {
         // Render first frame
         NextFrame();
         
-        ESP_LOGD(TAG, "GIF animation started");
+        ESP_LOGD(TAG, "GIF 动画已启动");
     }
 }
 
@@ -109,7 +124,7 @@ void LvglGif::Pause() {
     if (timer_) {
         playing_ = false;
         lv_timer_pause(timer_);
-        ESP_LOGD(TAG, "GIF animation paused");
+        ESP_LOGD(TAG, "GIF 动画已暂停");
     }
 }
 
@@ -120,14 +135,14 @@ void LvglGif::Pause() {
  */
 void LvglGif::Resume() {
     if (!loaded_ || !gif_) {
-        ESP_LOGW(TAG, "GIF not loaded, cannot resume");
+        ESP_LOGW(TAG, "GIF 尚未加载，无法恢复动画");
         return;
     }
 
     if (timer_) {
         playing_ = true;
         lv_timer_resume(timer_);
-        ESP_LOGD(TAG, "GIF animation resumed");
+        ESP_LOGD(TAG, "GIF 动画已恢复");
     }
 }
 
@@ -151,7 +166,7 @@ void LvglGif::Stop() {
         if (gif_->canvas) {
             gd_render_frame(gif_, gif_->canvas);
         }
-        ESP_LOGD(TAG, "GIF animation stopped and rewound");
+        ESP_LOGD(TAG, "GIF 动画已停止并回到首帧");
     }
 }
 
@@ -193,7 +208,7 @@ int32_t LvglGif::GetLoopCount() const {
  */
 void LvglGif::SetLoopCount(int32_t count) {
     if (!loaded_ || !gif_) {
-        ESP_LOGW(TAG, "GIF not loaded, cannot set loop count");
+        ESP_LOGW(TAG, "GIF 尚未加载，无法设置循环次数");
         return;
     }
     gif_->loop_count = count;
@@ -215,7 +230,7 @@ uint32_t LvglGif::GetLoopDelay() const {
  */
 void LvglGif::SetLoopDelay(uint32_t delay_ms) {
     loop_delay_ms_ = delay_ms;
-    ESP_LOGD(TAG, "Loop delay set to %lu ms", delay_ms);
+    ESP_LOGD(TAG, "GIF 循环等待时间已设置为%lu毫秒", delay_ms);
 }
 
 /**
@@ -264,12 +279,16 @@ void LvglGif::NextFrame() {
     if (loop_waiting_) {
         uint32_t wait_elapsed = lv_tick_elaps(loop_wait_start_);
         if (wait_elapsed < loop_delay_ms_) {
-            // Still waiting for loop delay
+            // Still waiting for loop delay. Set the next callback close to the deadline.
+            if (timer_) {
+                const uint32_t remaining = loop_delay_ms_ - wait_elapsed;
+                lv_timer_set_period(timer_, remaining == 0 ? 1U : remaining);
+            }
             return;
         }
         // Loop delay completed, continue playing
         loop_waiting_ = false;
-        ESP_LOGD(TAG, "Loop delay completed, continuing GIF");
+        ESP_LOGD(TAG, "GIF 循环等待结束，继续播放");
     }
 
     // Check if enough time has passed for the next frame
@@ -291,7 +310,7 @@ void LvglGif::NextFrame() {
         if (timer_) {
             lv_timer_pause(timer_);
         }
-        ESP_LOGD(TAG, "GIF animation completed");
+        ESP_LOGD(TAG, "GIF 动画播放完成");
         return;
     }
 
@@ -302,13 +321,17 @@ void LvglGif::NextFrame() {
         // Start waiting before rendering this frame
         loop_waiting_ = true;
         loop_wait_start_ = lv_tick_get();
-        ESP_LOGD(TAG, "GIF completed one cycle, waiting %lu ms before next loop", loop_delay_ms_);
+        ESP_LOGD(TAG, "GIF 完成一轮播放，将等待%lu毫秒后继续", loop_delay_ms_);
         return;
     }
 
     // Render current frame
     if (gif_->canvas) {
         gd_render_frame(gif_, gif_->canvas);
+
+        if (timer_) {
+            lv_timer_set_period(timer_, GifFrameDelayMs(gif_->gce.delay));
+        }
         
         // Call frame callback if set
         if (frame_callback_) {

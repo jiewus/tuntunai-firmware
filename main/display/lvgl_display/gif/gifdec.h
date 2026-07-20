@@ -60,6 +60,8 @@ typedef struct _gd_GIF {
     uint16_t fx, fy, fw, fh;
     uint8_t bgindex;
     uint8_t * canvas, * frame;
+    /** true 表示整个解码上下文由 PSRAM 分配，关闭时必须使用 LVGL 释放函数。 */
+    uint8_t allocated_from_psram;
 #if LV_GIF_CACHE_DECODE_DATA
     uint8_t *lzw_cache;
 #endif

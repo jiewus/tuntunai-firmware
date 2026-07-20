@@ -4,11 +4,13 @@
 #include <string.h>
 #include <stdbool.h>
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 
 #define TAG "GIF"
 
 #define MIN(A, B) ((A) < (B) ? (A) : (B))
 #define MAX(A, B) ((A) > (B) ? (A) : (B))
+#define GIF_PSRAM_ALLOC_THRESHOLD (16 * 1024)
 
 typedef struct Entry {
     uint16_t length;
@@ -33,6 +35,27 @@ static bool f_gif_open(gd_GIF * gif, const void * path, bool is_file);
 static inline void f_gif_read(gd_GIF * gif, void * buf, size_t len);
 static inline int f_gif_seek(gd_GIF * gif, size_t pos, int k);
 static void f_gif_close(gd_GIF * gif);
+
+/**
+ * @brief 为 GIF 解码上下文分配连续内存，大块缓冲优先使用 PSRAM。
+ * @param size 所需字节数。
+ * @param allocated_from_psram 输出参数，表示是否需要使用 heap_caps_free 释放。
+ * @return 分配成功的内存地址，失败时返回 NULL。
+ */
+static void *gif_alloc(size_t size, bool *allocated_from_psram)
+{
+    *allocated_from_psram = false;
+#if CONFIG_SPIRAM
+    if(size >= GIF_PSRAM_ALLOC_THRESHOLD) {
+        void *psram = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if(psram) {
+            *allocated_from_psram = true;
+            return psram;
+        }
+    }
+#endif
+    return lv_malloc(size);
+}
 
 #if LV_USE_DRAW_SW_ASM == LV_DRAW_SW_ASM_HELIUM
     #include "gifdec_mve.h"
@@ -79,17 +102,18 @@ static gd_GIF * gif_open(gd_GIF * gif_base)
     uint8_t * bgcolor;
     int gct_sz;
     gd_GIF * gif = NULL;
+    bool allocated_from_psram = false;
 
     /* Header */
     f_gif_read(gif_base, sigver, 3);
     if(memcmp(sigver, "GIF", 3) != 0) {
-        ESP_LOGW(TAG, "invalid signature");
+        ESP_LOGW(TAG, "GIF 文件签名无效");
         goto fail;
     }
     /* Version */
     f_gif_read(gif_base, sigver, 3);
     if(memcmp(sigver, "89a", 3) != 0 && memcmp(sigver, "87a", 3) != 0) {
-        ESP_LOGW(TAG, "invalid version");
+        ESP_LOGW(TAG, "GIF 文件版本无效");
         goto fail;
     }
     /* Width x Height */
@@ -99,7 +123,7 @@ static gd_GIF * gif_open(gd_GIF * gif_base)
     f_gif_read(gif_base, &fdsz, 1);
     /* Presence of GCT */
     if(!(fdsz & 0x80)) {
-        ESP_LOGW(TAG, "no global color table");
+        ESP_LOGW(TAG, "GIF 文件缺少全局颜色表");
         goto fail;
     }
     /* Color Space's Depth */
@@ -113,24 +137,26 @@ static gd_GIF * gif_open(gd_GIF * gif_base)
     f_gif_read(gif_base, &aspect, 1);
     /* Create gd_GIF Structure. */
     if(0 == width || 0 == height){
-        ESP_LOGW(TAG, "Zero size image");
+        ESP_LOGW(TAG, "GIF 图片尺寸为零");
         goto fail;
     }
 #if LV_GIF_CACHE_DECODE_DATA
     if(0 == (INT_MAX - sizeof(gd_GIF) - LZW_CACHE_SIZE) / width / height / 5){
-        ESP_LOGW(TAG, "Image dimensions are too large");
+        ESP_LOGW(TAG, "GIF 图片尺寸过大");
         goto fail;
     } 
-    gif = lv_malloc(sizeof(gd_GIF) + 5 * width * height + LZW_CACHE_SIZE);
+    gif = gif_alloc(sizeof(gd_GIF) + 5 * width * height + LZW_CACHE_SIZE,
+                    &allocated_from_psram);
 #else
     if(0 == (INT_MAX - sizeof(gd_GIF)) / width / height / 5){
-        ESP_LOGW(TAG, "Image dimensions are too large");
+        ESP_LOGW(TAG, "GIF 图片尺寸过大");
         goto fail;
     } 
-    gif = lv_malloc(sizeof(gd_GIF) + 5 * width * height);
+    gif = gif_alloc(sizeof(gd_GIF) + 5 * width * height, &allocated_from_psram);
 #endif
     if(!gif) goto fail;
     memcpy(gif, gif_base, sizeof(gd_GIF));
+    gif->allocated_from_psram = allocated_from_psram ? 1 : 0;
     gif->width  = width;
     gif->height = height;
     gif->depth  = depth;
@@ -295,7 +321,7 @@ read_ext(gd_GIF * gif)
             read_application_ext(gif);
             break;
         default:
-            ESP_LOGW(TAG, "unknown extension: %02X\n", label);
+            ESP_LOGW(TAG, "GIF 包含未知扩展，标识=%02X\n", label);
     }
 }
 
@@ -389,7 +415,7 @@ read_image_data(gd_GIF *gif, int interlace)
         /* copy data to frame buffer */
         while (sp > p_stack) {
             if(frm_off >= frm_size){
-                ESP_LOGW(TAG, "LZW table token overflows the frame buffer");
+                ESP_LOGW(TAG, "GIF 的 LZW 表项超出帧缓冲区");
                 return -1;
             }
             *ptr++ = *(--sp);
@@ -596,7 +622,7 @@ read_image_data(gd_GIF * gif, int interlace)
         entry = table->entries[key];
         str_len = entry.length;
 	if(frm_off + str_len > frm_size){
-		ESP_LOGW(TAG, "LZW table token overflows the frame buffer");
+		ESP_LOGW(TAG, "GIF 的 LZW 表项超出帧缓冲区");
 		lv_free(table);
 		return -1;
 	}
@@ -638,7 +664,7 @@ read_image(gd_GIF * gif)
     gif->fw = read_num(gif);
     gif->fh = read_num(gif);
     if(gif->fx + (uint32_t)gif->fw > gif->width || gif->fy + (uint32_t)gif->fh > gif->height){
-        ESP_LOGW(TAG, "Frame coordinates out of image bounds");
+        ESP_LOGW(TAG, "GIF 帧坐标超出图片边界");
         return -1;
     }
     f_gif_read(gif, &fisrz, 1);
@@ -759,14 +785,20 @@ void
 gd_rewind(gd_GIF * gif)
 {
     gif->loop_count = -1;
+    gif->gce.delay = 0;
     f_gif_seek(gif, gif->anim_start, LV_FS_SEEK_SET);
 }
 
 void
 gd_close_gif(gd_GIF * gif)
 {
+    if(!gif) return;
     f_gif_close(gif);
-    lv_free(gif);
+    if(gif->allocated_from_psram) {
+        heap_caps_free(gif);
+    } else {
+        lv_free(gif);
+    }
 }
 
 static bool f_gif_open(gd_GIF * gif, const void * path, bool is_file)
@@ -818,4 +850,3 @@ static void f_gif_close(gd_GIF * gif)
         lv_fs_close(&gif->fd);
     }
 }
-

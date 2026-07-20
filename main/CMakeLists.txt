@@ -102,6 +102,7 @@ idf_component_register(
 target_compile_definitions(${COMPONENT_LIB}
     PRIVATE BOARD_TYPE=\"${BOARD_TYPE}\" BOARD_NAME=\"${BOARD_NAME}\"
     PRIVATE BUILTIN_TEXT_FONT=${BUILTIN_TEXT_FONT} BUILTIN_ICON_FONT=${BUILTIN_ICON_FONT}
+    PRIVATE LV_GIF_CACHE_DECODE_DATA=1
 )
 
 # language.json 或生成器变化时自动重新生成中文语言头文件。
