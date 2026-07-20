@@ -9,6 +9,7 @@
 #include <font_emoji.h>
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -27,6 +28,14 @@ class LvglFont;
  */
 class LcdDisplay : public LvglDisplay {
 protected:
+    /** @brief 对话中心光环当前使用的低成本动画模式。 */
+    enum class ConversationOrbMode : uint8_t {
+        Idle,
+        Connecting,
+        Listening,
+        Speaking
+    };
+
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
     
@@ -42,6 +51,15 @@ protected:
     lv_obj_t* emoji_image_ = nullptr;
     std::unique_ptr<LvglGif> gif_controller_ = nullptr;
     lv_obj_t* emoji_box_ = nullptr;
+    /** @brief 对话界面中心光环的外层、内层、核心和环绕光点。 */
+    lv_obj_t* conversation_orb_outer_ = nullptr;
+    lv_obj_t* conversation_orb_middle_ = nullptr;
+    lv_obj_t* conversation_orb_core_ = nullptr;
+    lv_obj_t* conversation_orb_dot_ = nullptr;
+    /** @brief 驱动对话中心光环局部刷新的 LVGL 定时器。 */
+    lv_timer_t* conversation_orb_timer_ = nullptr;
+    ConversationOrbMode conversation_orb_mode_ = ConversationOrbMode::Idle;
+    uint32_t conversation_orb_tick_ = 0;
     lv_obj_t* chat_message_label_ = nullptr;
     lv_obj_t* screensaver_container_ = nullptr;
     /** 预渲染的金属表盘、圆环和固定刻度背景。 */
@@ -204,6 +222,26 @@ protected:
      */
     void CreateDeviceBindingUI();
     /**
+     * @brief 创建对话界面的中心光环和轻量动画定时器。
+     * @details 光环使用固定圆形控件组合，不加载额外位图，便于在 ESP32-C5 上保持局部刷新。
+     */
+    void CreateConversationOrbUI();
+    /**
+     * @brief 根据状态文字切换中心光环动画模式。
+     * @param status 当前设备状态文字。
+     */
+    void UpdateConversationOrbMode(const char* status);
+    /**
+     * @brief 更新中心光环当前动画帧。
+     * @details 只调整四个小控件的尺寸、位置和透明度，不触发布局树重排。
+     */
+    void UpdateConversationOrbFrame();
+    /**
+     * @brief LVGL 定时器回调，刷新中心光环动画帧。
+     * @param timer user_data 指向当前 LcdDisplay 实例。
+     */
+    static void ConversationOrbTimerCallback(lv_timer_t* timer);
+    /**
      * @brief 从资源分区加载屏保天气和日期专用字体。
      */
     void LoadScreensaverWeatherFont();
@@ -325,6 +363,11 @@ public:
      * @brief 在静态 PNG 和 GIF 控制器之间切换表情。
      */
     virtual void SetEmotion(const char* emotion) override;
+    /**
+     * @brief 更新顶部状态并同步对话中心光环动画模式。
+     * @param status UTF-8 状态文字。
+     */
+    virtual void SetStatus(const char* status) override;
     /**
      * @brief 在圆屏底部的两行可视窗口中显示对话字幕。
      * @param role 消息角色，默认圆屏布局中用于日志诊断。

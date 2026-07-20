@@ -8,6 +8,8 @@
 #include "settings.h"
 
 #include <esp_log.h>
+#include <esp_timer.h>
+#include <freertos/task.h>
 #include <cstring>
 #include <arpa/inet.h>
 #include "assets/lang_config.h"
@@ -306,12 +308,21 @@ bool MqttProtocol::OpenAudioChannel() {
         }
         uint32_t timestamp = ntohl(*(uint32_t*)&data[8]);
         uint32_t sequence = ntohl(*(uint32_t*)&data[12]);
-        if (sequence < remote_sequence_) {
-            ESP_LOGW(TAG, "Received audio packet with old sequence: %lu, expected: %lu", sequence, remote_sequence_);
+        if (sequence <= remote_sequence_) {
             return;
         }
         if (sequence != remote_sequence_ + 1) {
-            ESP_LOGW(TAG, "Received audio packet with wrong sequence: %lu, expected: %lu", sequence, remote_sequence_ + 1);
+            remote_sequence_gap_count_ += sequence - remote_sequence_ - 1;
+            const int64_t now_us = esp_timer_get_time();
+            if (remote_sequence_last_warning_us_ == 0
+                || now_us - remote_sequence_last_warning_us_ >= 1000000) {
+                ESP_LOGW(TAG, "音频 UDP 出现丢包，当前序号=%lu，期望序号=%lu，最近丢失=%lu 个",
+                         static_cast<unsigned long>(sequence),
+                         static_cast<unsigned long>(remote_sequence_ + 1),
+                         static_cast<unsigned long>(remote_sequence_gap_count_));
+                remote_sequence_gap_count_ = 0;
+                remote_sequence_last_warning_us_ = now_us;
+            }
         }
 
         size_t decrypted_size = data.size() - aes_nonce_.size();
@@ -336,7 +347,15 @@ bool MqttProtocol::OpenAudioChannel() {
         last_incoming_time_ = std::chrono::steady_clock::now();
     });
 
-    udp_->Connect(udp_server_, udp_port_);
+    if (!udp_->Connect(udp_server_, udp_port_)) {
+        ESP_LOGE(TAG, "UDP 音频通道连接失败，错误码=%d", udp_->GetLastError());
+        udp_.reset();
+        return false;
+    }
+    TaskHandle_t udp_receive_task = xTaskGetHandle("udp_receive");
+    if (udp_receive_task != nullptr) {
+        vTaskPrioritySet(udp_receive_task, 3);
+    }
 
     if (on_audio_channel_opened_ != nullptr) {
         on_audio_channel_opened_();
@@ -424,6 +443,8 @@ void MqttProtocol::ParseServerHello(const cJSON* root) {
     mbedtls_aes_setkey_enc(&aes_ctx_, (const unsigned char*)DecodeHexString(key).c_str(), 128);
     local_sequence_ = 0;
     remote_sequence_ = 0;
+    remote_sequence_gap_count_ = 0;
+    remote_sequence_last_warning_us_ = 0;
     xEventGroupSetBits(event_group_handle_, MQTT_PROTOCOL_SERVER_HELLO_EVENT);
 }
 

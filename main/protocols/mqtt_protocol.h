@@ -83,6 +83,10 @@ private:
     int udp_port_;
     uint32_t local_sequence_;
     uint32_t remote_sequence_;
+    /** @brief 当前会话累计发现的音频丢包数量。 */
+    uint32_t remote_sequence_gap_count_ = 0;
+    /** @brief 上一次输出音频丢包汇总日志的单调时钟时间。 */
+    int64_t remote_sequence_last_warning_us_ = 0;
     esp_timer_handle_t reconnect_timer_;
 
     /**

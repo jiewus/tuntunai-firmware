@@ -14,6 +14,7 @@
 #include <array>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
@@ -111,6 +112,16 @@ constexpr int kRoundSubtitleScrollRepeatDelayMs = 1600;
 constexpr int kRoundSubtitleScale = 205;
 // 中央表情相对屏幕正中心的 Y 轴偏移。0 严格居中、-16 向上移动16px、+16 向下移动16px
 constexpr int kRoundEmojiOffsetY = -16;
+/**
+ * @brief 对话中心光环的固定尺寸和刷新周期。
+ * @details 光环仅覆盖屏幕中心约 150px 区域，动画不触发布局计算，适合圆屏和 ESP32-C5。
+ */
+constexpr int kConversationOrbOuterSize = 136;
+constexpr int kConversationOrbMiddleSize = 106;
+constexpr int kConversationOrbCoreSize = 72;
+constexpr int kConversationOrbDotSize = 10;
+constexpr int kConversationOrbTimerPeriodMs = 80;
+constexpr int kConversationOrbCenterOffsetY = -16;
 // 低电量等提示弹窗的宽度。
 // 弹窗水平居中，因此当前范围大约是：X = (360 - 220) / 2 = 70，范围：70～290
 constexpr int kRoundPopupWidth = 220;
@@ -942,6 +953,27 @@ LcdDisplay::~LcdDisplay() {
     if (preview_timer_ != nullptr) {
         esp_timer_stop(preview_timer_);
         esp_timer_delete(preview_timer_);
+    }
+
+    if (conversation_orb_timer_ != nullptr) {
+        lv_timer_delete(conversation_orb_timer_);
+        conversation_orb_timer_ = nullptr;
+    }
+    if (conversation_orb_dot_ != nullptr) {
+        lv_obj_del(conversation_orb_dot_);
+        conversation_orb_dot_ = nullptr;
+    }
+    if (conversation_orb_core_ != nullptr) {
+        lv_obj_del(conversation_orb_core_);
+        conversation_orb_core_ = nullptr;
+    }
+    if (conversation_orb_middle_ != nullptr) {
+        lv_obj_del(conversation_orb_middle_);
+        conversation_orb_middle_ = nullptr;
+    }
+    if (conversation_orb_outer_ != nullptr) {
+        lv_obj_del(conversation_orb_outer_);
+        conversation_orb_outer_ = nullptr;
     }
 
     lv_anim_delete(this, ScreensaverMemoScrollAnimationCallback);
@@ -2069,6 +2101,9 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
 
     screensaver_active_ = enabled;
     if (enabled) {
+        if (conversation_orb_timer_ != nullptr) {
+            lv_timer_pause(conversation_orb_timer_);
+        }
         screensaver_last_rendered_second_ = -2;
         SetStandardScreensaverContentVisible(true);
         if (gif_controller_) {
@@ -2113,6 +2148,11 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
             }
         }
         lv_obj_add_flag(screensaver_container_, LV_OBJ_FLAG_HIDDEN);
+        if (conversation_orb_timer_ != nullptr) {
+            lv_timer_resume(conversation_orb_timer_);
+            lv_timer_reset(conversation_orb_timer_);
+        }
+        UpdateConversationOrbFrame();
         if (gif_controller_) {
             gif_controller_->Start();
         }
@@ -2138,6 +2178,9 @@ void LcdDisplay::ShowCustomMcpList(
 
     custom_mcp_list_active_.store(true);
     screensaver_active_ = true;
+    if (conversation_orb_timer_ != nullptr) {
+        lv_timer_pause(conversation_orb_timer_);
+    }
     if (gif_controller_) {
         gif_controller_->Stop();
     }
@@ -2537,6 +2580,201 @@ void LcdDisplay::ScreensaverMemoTimerCallback(lv_timer_t* timer) {
         (display->screensaver_memo_index_ + 1) % display->screensaver_memos_.size();
     display->UpdateScreensaverMemo();
     lv_timer_reset(timer);
+}
+
+/**
+ * @brief 创建对话界面的中心光环和轻量动画定时器。
+ * @details 使用三层圆形控件和一个环绕光点表达待机、聆听和播报状态，避免加载大尺寸动画资源。
+ */
+void LcdDisplay::CreateConversationOrbUI() {
+    if (conversation_orb_outer_ != nullptr) {
+        return;
+    }
+
+    auto* screen = lv_screen_active();
+    auto create_ring = [screen](int size, int border_width) {
+        auto* ring = lv_obj_create(screen);
+        lv_obj_set_size(ring, size, size);
+        lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(ring, border_width, 0);
+        lv_obj_set_style_pad_all(ring, 0, 0);
+        lv_obj_set_style_shadow_width(ring, 0, 0);
+        lv_obj_remove_flag(ring, LV_OBJ_FLAG_SCROLLABLE);
+        return ring;
+    };
+
+    conversation_orb_outer_ = create_ring(kConversationOrbOuterSize, 3);
+    conversation_orb_middle_ = create_ring(kConversationOrbMiddleSize, 2);
+
+    conversation_orb_core_ = lv_obj_create(screen);
+    lv_obj_set_size(
+        conversation_orb_core_,
+        kConversationOrbCoreSize,
+        kConversationOrbCoreSize);
+    lv_obj_set_style_radius(conversation_orb_core_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(conversation_orb_core_, 0, 0);
+    lv_obj_set_style_pad_all(conversation_orb_core_, 0, 0);
+    lv_obj_set_style_shadow_width(conversation_orb_core_, 0, 0);
+    lv_obj_remove_flag(conversation_orb_core_, LV_OBJ_FLAG_SCROLLABLE);
+
+    conversation_orb_dot_ = lv_obj_create(screen);
+    lv_obj_set_size(
+        conversation_orb_dot_,
+        kConversationOrbDotSize,
+        kConversationOrbDotSize);
+    lv_obj_set_style_radius(conversation_orb_dot_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(conversation_orb_dot_, 0, 0);
+    lv_obj_set_style_pad_all(conversation_orb_dot_, 0, 0);
+    lv_obj_set_style_shadow_width(conversation_orb_dot_, 0, 0);
+    lv_obj_remove_flag(conversation_orb_dot_, LV_OBJ_FLAG_SCROLLABLE);
+
+    conversation_orb_timer_ = lv_timer_create(
+        ConversationOrbTimerCallback,
+        kConversationOrbTimerPeriodMs,
+        this);
+    lv_timer_pause(conversation_orb_timer_);
+    UpdateConversationOrbMode(Lang::Strings::STANDBY);
+}
+
+/**
+ * @brief 根据状态文字切换中心光环动画模式。
+ * @param status 当前设备状态文字。
+ */
+void LcdDisplay::UpdateConversationOrbMode(const char* status) {
+    if (conversation_orb_outer_ == nullptr || status == nullptr) {
+        return;
+    }
+
+    if (std::strcmp(status, Lang::Strings::LISTENING) == 0) {
+        conversation_orb_mode_ = ConversationOrbMode::Listening;
+    } else if (std::strcmp(status, Lang::Strings::SPEAKING) == 0) {
+        conversation_orb_mode_ = ConversationOrbMode::Speaking;
+    } else if (std::strcmp(status, Lang::Strings::CONNECTING) == 0
+               || std::strcmp(status, Lang::Strings::PLEASE_WAIT) == 0) {
+        conversation_orb_mode_ = ConversationOrbMode::Connecting;
+    } else {
+        conversation_orb_mode_ = ConversationOrbMode::Idle;
+    }
+
+    const lv_color_t accent = conversation_orb_mode_ == ConversationOrbMode::Listening
+        ? lv_color_hex(0x54D6FF)
+        : lv_color_hex(0x165DFF);
+    const lv_color_t secondary = conversation_orb_mode_ == ConversationOrbMode::Speaking
+        ? lv_color_hex(0x8B7CFF)
+        : lv_color_hex(0x2BA8FF);
+    lv_obj_set_style_border_color(conversation_orb_outer_, accent, 0);
+    lv_obj_set_style_border_color(conversation_orb_middle_, secondary, 0);
+    lv_obj_set_style_bg_color(conversation_orb_core_, accent, 0);
+    lv_obj_set_style_bg_color(conversation_orb_dot_, secondary, 0);
+    conversation_orb_tick_ = 0;
+
+    if (conversation_orb_timer_ != nullptr) {
+        if (screensaver_active_) {
+            lv_timer_pause(conversation_orb_timer_);
+        } else {
+            lv_timer_resume(conversation_orb_timer_);
+            lv_timer_reset(conversation_orb_timer_);
+        }
+    }
+    UpdateConversationOrbFrame();
+}
+
+/**
+ * @brief 更新中心光环当前动画帧。
+ * @details 只修改中心四个对象的几何和透明度，保持动画区域固定并避免整屏布局计算。
+ */
+void LcdDisplay::UpdateConversationOrbFrame() {
+    if (conversation_orb_outer_ == nullptr || conversation_orb_middle_ == nullptr
+        || conversation_orb_core_ == nullptr || conversation_orb_dot_ == nullptr
+        || screensaver_active_) {
+        return;
+    }
+
+    const float seconds = static_cast<float>(conversation_orb_tick_)
+        * static_cast<float>(kConversationOrbTimerPeriodMs) / 1000.0F;
+    float pulse = 0.0F;
+    float orbit_speed = 0.0F;
+    lv_opa_t outer_opa = LV_OPA_20;
+    lv_opa_t middle_opa = LV_OPA_30;
+    lv_opa_t core_opa = LV_OPA_20;
+    lv_opa_t dot_opa = LV_OPA_0;
+
+    switch (conversation_orb_mode_) {
+        case ConversationOrbMode::Connecting:
+            pulse = std::sin(seconds * 2.4F) * 7.0F;
+            orbit_speed = 2.4F;
+            outer_opa = LV_OPA_60;
+            middle_opa = LV_OPA_70;
+            core_opa = LV_OPA_40;
+            dot_opa = LV_OPA_90;
+            break;
+        case ConversationOrbMode::Listening:
+            pulse = std::sin(seconds * 5.0F) * 10.0F;
+            orbit_speed = 3.0F;
+            outer_opa = LV_OPA_80;
+            middle_opa = LV_OPA_90;
+            core_opa = LV_OPA_50;
+            dot_opa = LV_OPA_COVER;
+            break;
+        case ConversationOrbMode::Speaking:
+            pulse = std::sin(seconds * 9.0F) * 14.0F;
+            orbit_speed = 4.5F;
+            outer_opa = LV_OPA_90;
+            middle_opa = LV_OPA_80;
+            core_opa = LV_OPA_60;
+            dot_opa = LV_OPA_COVER;
+            break;
+        case ConversationOrbMode::Idle:
+        default:
+            pulse = std::sin(seconds * 1.5F) * 3.0F;
+            orbit_speed = 0.0F;
+            outer_opa = LV_OPA_20;
+            middle_opa = LV_OPA_30;
+            core_opa = LV_OPA_20;
+            dot_opa = LV_OPA_0;
+            break;
+    }
+
+    const int outer_size = std::max(96, kConversationOrbOuterSize + static_cast<int>(pulse));
+    const int middle_size = std::max(78, kConversationOrbMiddleSize + static_cast<int>(pulse * 0.7F));
+    const int core_size = std::max(58, kConversationOrbCoreSize + static_cast<int>(pulse * 0.35F));
+    const int center_x = LV_HOR_RES / 2;
+    const int center_y = LV_VER_RES / 2 + kConversationOrbCenterOffsetY;
+    const auto place_centered = [center_x, center_y](lv_obj_t* object, int size) {
+        lv_obj_set_size(object, size, size);
+        lv_obj_set_pos(object, center_x - size / 2, center_y - size / 2);
+    };
+    place_centered(conversation_orb_outer_, outer_size);
+    place_centered(conversation_orb_middle_, middle_size);
+    place_centered(conversation_orb_core_, core_size);
+    lv_obj_set_style_border_opa(conversation_orb_outer_, outer_opa, 0);
+    lv_obj_set_style_border_opa(conversation_orb_middle_, middle_opa, 0);
+    lv_obj_set_style_bg_opa(conversation_orb_core_, core_opa, 0);
+    lv_obj_set_style_bg_opa(conversation_orb_dot_, dot_opa, 0);
+
+    if (dot_opa != LV_OPA_0) {
+        const float angle = seconds * orbit_speed;
+        const int radius = outer_size / 2 - kConversationOrbDotSize / 2 - 3;
+        const int dot_x = center_x + static_cast<int>(std::cos(angle) * radius)
+            - kConversationOrbDotSize / 2;
+        const int dot_y = center_y + static_cast<int>(std::sin(angle) * radius)
+            - kConversationOrbDotSize / 2;
+        lv_obj_set_pos(conversation_orb_dot_, dot_x, dot_y);
+    }
+    ++conversation_orb_tick_;
+}
+
+/**
+ * @brief LVGL 定时器回调，刷新中心光环动画帧。
+ * @param timer user_data 指向当前 LcdDisplay 实例。
+ */
+void LcdDisplay::ConversationOrbTimerCallback(lv_timer_t* timer) {
+    auto* display = static_cast<LcdDisplay*>(lv_timer_get_user_data(timer));
+    if (display == nullptr) {
+        return;
+    }
+    display->UpdateConversationOrbFrame();
 }
 
 #if CONFIG_USE_WECHAT_MESSAGE_STYLE
@@ -3043,6 +3281,8 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_bg_color(container_, lvgl_theme->background_color(), 0);
     lv_obj_set_style_border_color(container_, lvgl_theme->border_color(), 0);
 
+    CreateConversationOrbUI();
+
     /* Bottom layer: emoji_box_ - centered display */
     emoji_box_ = lv_obj_create(screen);
     lv_obj_set_size(emoji_box_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
@@ -3309,6 +3549,16 @@ void LcdDisplay::ClearChatMessages() {
     }
 }
 #endif
+
+/**
+ * @brief 更新顶部状态并同步对话中心光环动画模式。
+ * @param status UTF-8 状态文字。
+ */
+void LcdDisplay::SetStatus(const char* status) {
+    LvglDisplay::SetStatus(status);
+    DisplayLockGuard lock(this);
+    UpdateConversationOrbMode(status);
+}
 
 /**
  * @brief 在静态 PNG 和 GIF 控制器之间切换表情。
