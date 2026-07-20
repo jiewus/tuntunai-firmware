@@ -299,25 +299,10 @@ constexpr int kScreensaverMemoScrollEndDelayMs =
     kRoundSubtitleScrollRepeatDelayMs;
 
 /**
- * @brief 天气位置名称的目标视觉字号，单位为像素。
- * @details 位置名称单独位于天气三列上方并水平居中。使用 25px 可容纳“浙江省杭州市西湖区”
- *          等完整省市区名称，同时与下方更醒目的天气数据形成清晰的信息层级。
- */
-constexpr int kScreensaverLocationTextPixelSize = 25;
-
-/**
  * @brief 天气位置名称标签的最终可见宽度，单位为物理像素。
- * @details 220px 可以在圆屏顶部安全区内容纳常见完整省市区名称。主题字体变化时会根据
- *          实际缩放比例反算逻辑宽度，保证最终可见宽度和水平中心保持不变。
+ * @details 220px 可以在圆屏顶部安全区内容纳常见完整省市区名称。
  */
 constexpr int kScreensaverLocationWidth = 220;
-
-/**
- * @brief 天气三列文字的目标视觉字号，单位为像素。
- * @details 当前温度、天气描述和最低/最高温度共用该字号。字体资源切换后会根据新字体的
- *          line_height 重新计算缩放比例，确保精简字体和完整中文字库显示尺寸基本一致。
- */
-constexpr int kScreensaverWeatherTextPixelSize = 29;
 
 /**
  * @brief 天气三列相邻内容之间的最终可见间距，单位为像素。
@@ -327,16 +312,8 @@ constexpr int kScreensaverWeatherTextPixelSize = 29;
 constexpr int kScreensaverWeatherColumnGap = 15;
 
 /**
- * @brief 农历、公历和星期文字的目标视觉字号，单位为像素。
- * @details 日期三列共用该字号，并作为一个整体保持单行居中。增大后日期更醒目，但较长的
- *          闰月日期可能接近圆屏两侧；减小后可以获得更大的横向安全余量。
- */
-constexpr int kScreensaverDateTextPixelSize = 26;
-
-/**
  * @brief 日期三列相邻内容之间的最终可见间距，单位为像素。
- * @details 该值控制农历与公历、公历与星期之间的距离。与天气间距相同，代码会先根据字体
- *          缩放比例换算为 Flex 逻辑间距，再将整个日期组合水平居中。
+ * @details 该值控制农历与公历、公历与星期之间的距离，并直接使用原生像素间距。
  */
 constexpr int kScreensaverDateColumnGap = 20;
 
@@ -776,7 +753,11 @@ SpiLcdDisplay::SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
 #if CONFIG_SOC_CPU_CORES_NUM > 1
     port_cfg.task_affinity = 1;
 #endif
-    lvgl_port_init(&port_cfg);
+    const esp_err_t lvgl_init_result = lvgl_port_init(&port_cfg);
+    if (lvgl_init_result != ESP_OK) {
+        ESP_LOGE(TAG, "LVGL 端口初始化失败，错误码=%s", esp_err_to_name(lvgl_init_result));
+        return;
+    }
 
     ESP_LOGI(TAG, "正在添加 LCD 显示设备");
     const lvgl_port_display_cfg_t display_cfg = {
@@ -840,7 +821,11 @@ RgbLcdDisplay::RgbLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     port_cfg.task_priority = 1;
     port_cfg.timer_period_ms = 50;
-    lvgl_port_init(&port_cfg);
+    const esp_err_t lvgl_init_result = lvgl_port_init(&port_cfg);
+    if (lvgl_init_result != ESP_OK) {
+        ESP_LOGE(TAG, "LVGL 端口初始化失败，错误码=%s", esp_err_to_name(lvgl_init_result));
+        return;
+    }
 
     ESP_LOGI(TAG, "正在添加 LCD 显示设备");
     const lvgl_port_display_cfg_t display_cfg = {
@@ -895,7 +880,11 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
 
     ESP_LOGI(TAG, "正在初始化 LVGL 端口");
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
-    lvgl_port_init(&port_cfg);
+    const esp_err_t lvgl_init_result = lvgl_port_init(&port_cfg);
+    if (lvgl_init_result != ESP_OK) {
+        ESP_LOGE(TAG, "LVGL 端口初始化失败，错误码=%s", esp_err_to_name(lvgl_init_result));
+        return;
+    }
 
     ESP_LOGI(TAG, "正在添加 LCD 显示设备");
     const lvgl_port_display_cfg_t disp_cfg = {
@@ -1241,39 +1230,29 @@ void LcdDisplay::SetStandardScreensaverContentVisible(bool visible) {
 /**
  * @brief 将完整主题字体应用到天气位置名称标签。
  * @param font 需要使用的 LVGL 字体对象；为空时不执行任何修改。
- * @details 位置名称固定使用 220px 最终可见宽度和单行裁切模式，并按照字体实际行高缩放
- *          到约 20px。标签以屏幕中心为变换中心，完整省市区名称仍能保持视觉居中。
+ * @details 位置名称固定使用 220px 可见宽度和单行裁切模式，直接使用主题字体的原生字号。
+ *          完整省市区名称仍能保持视觉居中。
  */
 void LcdDisplay::ApplyScreensaverLocationFont(const lv_font_t* font) {
     if (font == nullptr || font->line_height <= 0 || screensaver_weather_location_label_ == nullptr) {
         return;
     }
 
-    const int location_scale = kScreensaverLocationTextPixelSize * 256 / font->line_height;
-    const int location_logical_width =
-        (kScreensaverLocationWidth * 256 + location_scale - 1) / location_scale;
-    lv_obj_set_width(screensaver_weather_location_label_, location_logical_width);
+    lv_obj_set_width(screensaver_weather_location_label_, kScreensaverLocationWidth);
     lv_obj_set_style_text_font(screensaver_weather_location_label_, font, 0);
-    lv_obj_set_style_transform_scale(screensaver_weather_location_label_, location_scale, 0);
-    lv_obj_set_style_transform_pivot_x(screensaver_weather_location_label_, LV_PCT(50), 0);
-    lv_obj_set_style_transform_pivot_y(screensaver_weather_location_label_, LV_PCT(50), 0);
-    lv_obj_align(screensaver_weather_location_label_, LV_ALIGN_CENTER, 0, -126);
+    lv_obj_align(screensaver_weather_location_label_, LV_ALIGN_CENTER, 0, -130);
 }
 
 /**
  * @brief 将完整主题字体应用到天气三列，并统一计算视觉字号和列间距。
  * @param font 需要使用的 LVGL 字体对象；为空时不执行任何修改。
- * @details 天气组整体缩放到约 29px。Flex 布局的间距发生在缩放前，因此先根据缩放比例
- *          反算逻辑间距，保证最终屏幕上相邻两列之间约为 12px。
+ * @details 天气三列继续使用主题字体的原生字号；本方法只设置字体和列间距，不改变字形大小。
  */
 void LcdDisplay::ApplyScreensaverWeatherFont(const lv_font_t* font) {
     if (font == nullptr || font->line_height <= 0 || screensaver_weather_group_ == nullptr) {
         return;
     }
 
-    const int weather_scale = kScreensaverWeatherTextPixelSize * 256 / font->line_height;
-    const int logical_gap = (kScreensaverWeatherColumnGap * 256 + weather_scale - 1) /
-                            weather_scale;
     lv_obj_t* labels[] = {
         screensaver_weather_temperature_label_,
         screensaver_weather_description_label_,
@@ -1286,10 +1265,7 @@ void LcdDisplay::ApplyScreensaverWeatherFont(const lv_font_t* font) {
         }
     }
 
-    lv_obj_set_style_pad_column(screensaver_weather_group_, logical_gap, 0);
-    lv_obj_set_style_transform_scale(screensaver_weather_group_, weather_scale, 0);
-    lv_obj_set_style_transform_pivot_x(screensaver_weather_group_, LV_PCT(50), 0);
-    lv_obj_set_style_transform_pivot_y(screensaver_weather_group_, LV_PCT(50), 0);
+    lv_obj_set_style_pad_column(screensaver_weather_group_, kScreensaverWeatherColumnGap, 0);
     lv_obj_update_layout(screensaver_weather_group_);
     lv_obj_align(screensaver_weather_group_, LV_ALIGN_CENTER, 0, -96);
 }
@@ -1297,16 +1273,14 @@ void LcdDisplay::ApplyScreensaverWeatherFont(const lv_font_t* font) {
 /**
  * @brief 将完整主题字体应用到农历、公历和星期三列。
  * @param font 需要使用的 LVGL 字体对象；为空时不执行任何修改。
- * @details 日期组整体缩放到约 26px，并反算 Flex 的逻辑间距，使最终可见间距约为 16px。
- *          三个标签使用自动内容宽度和裁切模式，不会自动换行。
+ * @details 日期标签直接使用主题字体的原生字号，三个标签使用自动内容宽度和裁切模式，
+ *          不会自动换行。
  */
 void LcdDisplay::ApplyScreensaverDateFont(const lv_font_t* font) {
     if (font == nullptr || font->line_height <= 0 || screensaver_date_group_ == nullptr) {
         return;
     }
 
-    const int date_scale = kScreensaverDateTextPixelSize * 256 / font->line_height;
-    const int logical_gap = (kScreensaverDateColumnGap * 256 + date_scale - 1) / date_scale;
     lv_obj_t* labels[] = {
         screensaver_lunar_date_label_,
         screensaver_solar_date_label_,
@@ -1319,10 +1293,7 @@ void LcdDisplay::ApplyScreensaverDateFont(const lv_font_t* font) {
         }
     }
 
-    lv_obj_set_style_pad_column(screensaver_date_group_, logical_gap, 0);
-    lv_obj_set_style_transform_scale(screensaver_date_group_, date_scale, 0);
-    lv_obj_set_style_transform_pivot_x(screensaver_date_group_, LV_PCT(50), 0);
-    lv_obj_set_style_transform_pivot_y(screensaver_date_group_, LV_PCT(50), 0);
+    lv_obj_set_style_pad_column(screensaver_date_group_, kScreensaverDateColumnGap, 0);
     lv_obj_update_layout(screensaver_date_group_);
     lv_obj_align(screensaver_date_group_, LV_ALIGN_CENTER, 0, -56);
 }
@@ -2295,8 +2266,8 @@ void LcdDisplay::SetScreensaverMemos(const std::vector<std::string>& memos) {
 
 /**
  * @brief 刷新当前备忘录文本并重新计算三行视口布局。
- * @details 结构化屏保文本使用“时间换行正文”格式，首行固定显示时间，正文最多显示两行并以
- *          省略号截断。没有时间首行的加载状态和兼容文本继续使用原有高度判断。
+ * @details 结构化屏保文本使用“时间换行正文”格式，正文最多显示两行，日期时间显示在正文
+ *          下方并以第三行作为独立显示行。没有时间首行的加载状态和兼容文本继续使用原有高度判断。
  */
 void LcdDisplay::UpdateScreensaverMemo() {
     if (screensaver_memo_labels_[0] == nullptr) {
@@ -2312,13 +2283,21 @@ void LcdDisplay::UpdateScreensaverMemo() {
         visible_text = screensaver_memos_[screensaver_memo_index_].c_str();
     }
 
+    const char* content_text = visible_text;
+    const char* line_break = std::strchr(visible_text, '\n');
+    if (line_break != nullptr) {
+        content_text = line_break + 1;
+        screensaver_memo_has_reminder_line_ = true;
+    } else {
+        screensaver_memo_has_reminder_line_ = false;
+    }
+
     for (lv_obj_t* memo_label : screensaver_memo_labels_) {
         if (memo_label != nullptr) {
             lv_label_set_long_mode(memo_label, LV_LABEL_LONG_WRAP);
-            lv_label_set_text(memo_label, visible_text);
+            lv_label_set_text(memo_label, content_text);
         }
     }
-    const char* line_break = std::strchr(visible_text, '\n');
     const std::string date_text = line_break == nullptr
         ? std::string()
         : std::string(visible_text, static_cast<size_t>(line_break - visible_text));
@@ -2332,9 +2311,9 @@ void LcdDisplay::UpdateScreensaverMemo() {
 
 /**
  * @brief 根据当前备忘录文本类型配置固定三行或兼容滚动布局。
- * @details 包含显式换行的结构化备忘录最多占用三行：不足三行时按真实高度垂直居中，超出时
- *          在第三行末尾省略，保证时间始终位于第一行、正文最多两行。没有显式时间行的状态文本
- *          仍按实际高度居中；兼容的超长文本继续使用原有纵向滚动逻辑。
+ * @details 包含显式换行的结构化备忘录正文最多占用两行，日期时间紧接正文显示在下一行；
+ *          内容不足两行时，正文和日期整体垂直居中。没有显式时间行的状态文本仍按实际高度居中，
+ *          兼容的超长文本继续使用原有纵向滚动逻辑。
  */
 void LcdDisplay::UpdateScreensaverMemoScroll() {
     lv_obj_t* measurement_label = screensaver_memo_labels_[0];
@@ -2358,17 +2337,21 @@ void LcdDisplay::UpdateScreensaverMemoScroll() {
     const int logical_content_height = lv_obj_get_height(measurement_label);
     const int visible_content_height =
         (logical_content_height * text_scale + 255) / 256;
-    const char* measurement_text = lv_label_get_text(measurement_label);
-    const bool has_reminder_line =
-        measurement_text != nullptr && std::strchr(measurement_text, '\n') != nullptr;
+    const bool has_reminder_line = screensaver_memo_has_reminder_line_;
     if (has_reminder_line) {
         const bool content_fits =
-            visible_content_height <= kScreensaverMemoViewportHeight;
-        const int top_offset = content_fits
-            ? (kScreensaverMemoViewportHeight - visible_content_height) / 2
-            : 0;
+            visible_content_height <= kScreensaverMemoRowHeight * 2;
+        const int content_rows = content_fits
+            ? std::max(1, std::min(2,
+                (visible_content_height + kScreensaverMemoRowHeight - 1)
+                    / kScreensaverMemoRowHeight))
+            : 2;
+        const int content_block_height =
+            (content_rows + 1) * kScreensaverMemoRowHeight;
+        const int top_offset =
+            std::max(0, (kScreensaverMemoViewportHeight - content_block_height) / 2);
         const int logical_viewport_height =
-            (kScreensaverMemoViewportHeight * 256 + text_scale - 1) / text_scale;
+            (kScreensaverMemoRowHeight * 2 * 256 + text_scale - 1) / text_scale;
         for (int row = 0; row < kScreensaverMemoVisibleLines; ++row) {
             lv_obj_t* memo_label = screensaver_memo_labels_[row];
             if (memo_label == nullptr) {
@@ -2386,7 +2369,8 @@ void LcdDisplay::UpdateScreensaverMemoScroll() {
             lv_obj_t* date_label = screensaver_memo_date_labels_[row];
             if (date_label != nullptr) {
                 lv_obj_align(date_label, LV_ALIGN_TOP_MID, 0,
-                             top_offset - row * kScreensaverMemoRowHeight);
+                             top_offset + content_rows * kScreensaverMemoRowHeight
+                                 - row * kScreensaverMemoRowHeight);
                 lv_obj_update_layout(date_label);
             }
         }

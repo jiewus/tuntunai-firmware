@@ -172,6 +172,8 @@ protected:
      * @brief 保存后端最近成功返回的最多 5 条备忘录正文副本。
      */
     std::vector<std::string> screensaver_memos_;
+    /** @brief true 表示当前备忘录包含独立的日期时间行，日期显示在正文下方。 */
+    bool screensaver_memo_has_reminder_line_ = false;
     /**
      * @brief 指向当前正在表盘时间下方全宽区域展示的备忘录下标。
      */

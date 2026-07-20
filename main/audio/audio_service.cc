@@ -296,7 +296,13 @@ void AudioService::AudioInputTask() {
 
         // 配网状态下按 BOOT 键进入音频测试；采集数据经过 Opus 编码后用于本地回放验证。
         if (bits & AS_EVENT_AUDIO_TESTING_RUNNING) {
-            if (audio_testing_queue_.size() >= AUDIO_TESTING_MAX_DURATION_MS / OPUS_FRAME_DURATION_MS) {
+            bool testing_queue_full = false;
+            {
+                std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+                testing_queue_full = audio_testing_queue_.size()
+                    >= AUDIO_TESTING_MAX_DURATION_MS / OPUS_FRAME_DURATION_MS;
+            }
+            if (testing_queue_full) {
                 ESP_LOGW(TAG, "音频测试队列已满，正在停止音频测试");
                 EnableAudioTesting(false);
                 continue;
