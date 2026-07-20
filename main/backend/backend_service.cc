@@ -1547,13 +1547,16 @@ void BackendService::RegisterMcpTools(McpServer &server)
                     + " 个自定义 MCP。";
                 for (size_t index = 0; index < summaries.size(); ++index)
                 {
+                    const std::string display_name = summaries[index].display_name.empty()
+                        ? "未命名自定义 MCP"
+                        : summaries[index].display_name;
                     std::string screen_item =
-                        std::to_string(index + 1) + ". " + summaries[index].display_name
+                        std::to_string(index + 1) + ". " + display_name
                         + "\n" + summaries[index].name;
                     screen_items.push_back(std::move(screen_item));
 
                     speech_text += "第 " + std::to_string(index + 1) + " 个是 "
-                        + summaries[index].display_name;
+                        + display_name;
                     if (!summaries[index].description.empty())
                     {
                         speech_text += "，" + summaries[index].description;
@@ -1571,6 +1574,7 @@ void BackendService::RegisterMcpTools(McpServer &server)
             }
             ESP_LOGI(kTag, "正在显示并介绍自定义 MCP，数量=%u",
                      static_cast<unsigned>(summaries.size()));
+            Application::GetInstance().RequestConversationEndAfterSpeaking();
             return speech_text;
         });
 

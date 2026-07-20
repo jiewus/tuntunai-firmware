@@ -712,6 +712,14 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
         return;
     }
 
+    const bool end_conversation_after_response = tool->dynamic();
+    const auto reply_error = [this, id, end_conversation_after_response](const std::string& message) {
+        if (end_conversation_after_response) {
+            Application::GetInstance().RequestConversationEndAfterSpeaking();
+        }
+        ReplyError(id, message);
+    };
+
     PropertyList arguments = tool->properties();
     try {
         for (auto& argument : arguments) {
@@ -737,12 +745,12 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
 
             if (provided && !found) {
                 ESP_LOGE(TAG, "工具参数类型无效，参数名称=%s", argument.name().c_str());
-                ReplyError(id, "Invalid argument type: " + argument.name());
+                reply_error("Invalid argument type: " + argument.name());
                 return;
             }
             if (argument.required() && !argument.has_default_value() && !found) {
                 ESP_LOGE(TAG, "工具缺少有效参数，参数名称=%s", argument.name().c_str());
-                ReplyError(id, "Missing valid argument: " + argument.name());
+                reply_error("Missing valid argument: " + argument.name());
                 return;
             }
         }
@@ -757,30 +765,40 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
                 });
                 if (!known) {
                     ESP_LOGE(TAG, "动态工具包含未知参数，参数名称=%s", supplied_name.c_str());
-                    ReplyError(id, "Unknown argument: " + supplied_name);
+                    reply_error("Unknown argument: " + supplied_name);
                     return;
                 }
             }
         }
     } catch (const std::exception& e) {
         ESP_LOGE(TAG, "工具调用参数处理异常，原因=%s", e.what());
-        ReplyError(id, e.what());
+        reply_error(e.what());
         return;
     }
 
     // 硬件和界面工具统一从应用主线程启动，避免网络收包任务直接访问板级资源。
     auto& app = Application::GetInstance();
-    app.Schedule([this, id, tool = std::move(tool), arguments = std::move(arguments)]() {
+    app.Schedule([this, id, tool = std::move(tool), arguments = std::move(arguments),
+                  end_conversation_after_response]() {
         try {
             if (tool->is_async()) {
-                tool->CallAsync(arguments, [this, id](McpToolResult result) {
+                tool->CallAsync(arguments, [this, id, end_conversation_after_response](McpToolResult result) {
+                    if (end_conversation_after_response) {
+                        Application::GetInstance().RequestConversationEndAfterSpeaking();
+                    }
                     ReplyToolResult(id, result);
                 });
             } else {
+                if (end_conversation_after_response) {
+                    Application::GetInstance().RequestConversationEndAfterSpeaking();
+                }
                 ReplyResult(id, tool->Call(arguments));
             }
         } catch (const std::exception& e) {
             ESP_LOGE(TAG, "工具执行异常，原因=%s", e.what());
+            if (end_conversation_after_response) {
+                Application::GetInstance().RequestConversationEndAfterSpeaking();
+            }
             ReplyError(id, e.what());
         }
     });

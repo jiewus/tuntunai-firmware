@@ -148,6 +148,12 @@ public:
     void EndCurrentConversationForLocalPlayback();
 
     /**
+     * @brief 请求在当前云端回复播报完整结束后关闭会话并进入屏保。
+     * @note 本方法只设置一次性线程安全标记，可从 MCP 后台完成回调调用。
+     */
+    void RequestConversationEndAfterSpeaking();
+
+    /**
      * @brief 等待必要数据落盘后重启 ESP32。
      */
     void Reboot();
@@ -226,6 +232,12 @@ private:
      *          事件安全地交给主循环消费；主循环消费后立即清零，避免后续无关空闲状态误进屏保。
      */
     std::atomic<bool> enter_screensaver_after_conversation_{false};
+    /**
+     * @brief 标记当前 MCP 回复播报结束后需要主动关闭云端音频会话。
+     * @details 标记在处理下一条 TTS stop 时一次性消费；用户主动打断播报时立即清除，避免旧回复
+     *          的停止事件关闭新会话。
+     */
+    std::atomic<bool> end_conversation_after_speaking_{false};
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
 

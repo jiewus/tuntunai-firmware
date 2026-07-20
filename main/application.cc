@@ -647,6 +647,15 @@ void Application::InitializeProtocol() {
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
+                    if (end_conversation_after_speaking_.exchange(false)) {
+                        audio_service_.WaitForPlaybackQueueEmpty();
+                        if (protocol_ && protocol_->IsAudioChannelOpened()) {
+                            protocol_->CloseAudioChannel();
+                        }
+                        SetDeviceState(kDeviceStateIdle);
+                        ESP_LOGI(TAG, "自定义 MCP 回复播报完成，已结束会话并进入屏保");
+                        return;
+                    }
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
                             SetDeviceState(kDeviceStateIdle);
@@ -861,6 +870,15 @@ void Application::EndCurrentConversationForLocalPlayback() {
         enter_screensaver_after_conversation_.store(false);
         ESP_LOGI(TAG, "确认会话已结束，准备直接播放本地通知");
     });
+}
+
+/**
+ * @brief 请求在当前云端回复播报完整结束后关闭会话并进入屏保。
+ * @details MCP 工具在向云端返回最终结果前设置一次性标记；TTS stop 到达后等待剩余播放数据消费完，
+ *          再关闭音频通道。由播报状态转为空闲的既有状态监听器负责立即显示屏保。
+ */
+void Application::RequestConversationEndAfterSpeaking() {
+    end_conversation_after_speaking_.store(true);
 }
 
 /**
@@ -1201,7 +1219,8 @@ void Application::Schedule(std::function<void()>&& callback) {
  * @details 先设置本地 aborted_ 标志，使后续状态回调识别本次中断，再通过当前协议发送 abort 消息。
  */
 void Application::AbortSpeaking(AbortReason reason) {
-    ESP_LOGI(TAG, "Abort speaking");
+    ESP_LOGI(TAG, "正在中断云端语音播报");
+    end_conversation_after_speaking_.store(false);
     aborted_ = true;
     if (protocol_) {
         protocol_->SendAbortSpeaking(reason);
