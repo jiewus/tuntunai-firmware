@@ -49,8 +49,8 @@
 #define DISPLAY_QSPI_H_RES           (360)
 #define DISPLAY_QSPI_V_RES           (360)
 #define DISPLAY_QSPI_BIT_PER_PIXEL   (16)
-// ST77916 QSPI 像素时钟，初始性能方案使用 80MHz。
-#define DISPLAY_QSPI_PIXEL_CLOCK_HZ  (80 * 1000 * 1000)
+// ST77916 QSPI 像素时钟。40MHz 优先保证长时间刷新和 DMA 传输稳定性。
+#define DISPLAY_QSPI_PIXEL_CLOCK_HZ  (40 * 1000 * 1000)
 
 // ST77916 使用 SPI2 的 QSPI 模式：一根时钟、四根数据和一根片选。
 #define DISPLAY_QSPI_HOST           SPI2_HOST

@@ -285,14 +285,6 @@ constexpr int kScreensaverDateTextPixelSize = 26;
 constexpr int kScreensaverDateColumnGap = 20;
 
 /**
- * @brief 点阵字体伪粗体每次重复绘制使用的坐标偏移量，单位为字体源像素。
- * @details 当前 LVGL 未启用 FreeType、矢量绘制和 ThorVG，text_outline_stroke_width 对
- *          点阵字体不会生效。因此在原文字基础上分别向右、向下和右下重复绘制 1px，形成
- *          兼容内置字体与资源字体的实际笔画扩张效果。
- */
-constexpr int kScreensaverBitmapBoldOffset = 1;
-
-/**
  * @brief 备忘录区域相对屏幕中心的 Y 轴偏移，单位为物理像素。
  * @details LV_ALIGN_CENTER 以屏幕中心 Y=180 为基准，当前值 87 表示三行视口中心位于
  *          Y=267，顶部约为 Y=219，恰好避开大时间；底部约为 Y=315，该位置的圆屏有效
@@ -430,90 +422,6 @@ constexpr uint32_t kLunarYearInfo[] = {
     0x0e968, 0x0d520, 0x0daa0, 0x16aa6, 0x056d0, 0x04ae0, 0x0a9d4, 0x0a2d0, 0x0d150, 0x0f252,
     0x0d520,
 };
-
-/**
- * @brief 在标签完成默认绘制后，通过三次同色偏移绘制模拟点阵粗体。
- * @param event LVGL 传入的标签绘制或扩展绘制区域计算事件。
- * @details 该回调直接复用标签当前字体、颜色、透明度和对齐方式，不创建额外标签或字体缓存。
- *          原文字与右移、下移、右下三份副本叠加后，可以把点阵笔画扩张约 1px。
- */
-void DrawBitmapBoldText(lv_event_t* event) {
-    const lv_event_code_t event_code = lv_event_get_code(event);
-    if (event_code == LV_EVENT_REFR_EXT_DRAW_SIZE) {
-        lv_event_set_ext_draw_size(event, kScreensaverBitmapBoldOffset);
-        return;
-    }
-    if (event_code != LV_EVENT_DRAW_MAIN_END) {
-        return;
-    }
-
-    lv_obj_t* label = lv_event_get_target_obj(event);
-    lv_layer_t* layer = lv_event_get_layer(event);
-    if (label == nullptr || layer == nullptr) {
-        return;
-    }
-
-    const char* text = lv_label_get_text(label);
-    if (text == nullptr || text[0] == '\0') {
-        return;
-    }
-
-    lv_draw_label_dsc_t draw_dsc;
-    lv_draw_label_dsc_init(&draw_dsc);
-    draw_dsc.base.layer = layer;
-    lv_obj_init_draw_label_dsc(label, LV_PART_MAIN, &draw_dsc);
-    draw_dsc.text = text;
-    draw_dsc.align = lv_obj_get_style_text_align(label, LV_PART_MAIN);
-    draw_dsc.outline_stroke_width = 0;
-
-    lv_area_t text_area;
-    lv_obj_get_content_coords(label, &text_area);
-    constexpr int offsets[][2] = {
-        {kScreensaverBitmapBoldOffset, 0},
-        {0, kScreensaverBitmapBoldOffset},
-        {kScreensaverBitmapBoldOffset, kScreensaverBitmapBoldOffset},
-    };
-    const bool lightweight = lv_event_get_user_data(event) != nullptr;
-    const size_t offset_count = lightweight ? 1 : sizeof(offsets) / sizeof(offsets[0]);
-    for (size_t index = 0; index < offset_count; ++index) {
-        const auto& offset = offsets[index];
-        lv_area_t offset_area = text_area;
-        offset_area.x1 += offset[0];
-        offset_area.x2 += offset[0];
-        offset_area.y1 += offset[1];
-        offset_area.y2 += offset[1];
-        lv_draw_label(layer, &draw_dsc, &offset_area);
-    }
-}
-
-/**
- * @brief 为一个不滚动的屏保标签启用点阵字体伪粗体绘制。
- * @param label 需要加粗的 LVGL Label；为空时不执行任何操作。
- */
-void EnableBitmapTextBold(lv_obj_t* label) {
-    if (label != nullptr) {
-        lv_obj_add_event_cb(label, DrawBitmapBoldText, LV_EVENT_ALL, nullptr);
-        lv_obj_refresh_ext_draw_size(label);
-    }
-}
-
-/**
- * @brief 为需要低负载更新的文本启用单次偏移点阵粗体。
- * @param label 需要加粗的 LVGL Label；为空时不执行任何操作。
- * @details 保留正常绘制加一次右移描边，只产生两次文本绘制，避免列表切换时三次附加描边
- *          占用过多单核 CPU 和 QSPI 刷新带宽。
- */
-void EnableLightweightBitmapTextBold(lv_obj_t* label) {
-    if (label != nullptr) {
-        static bool lightweight_marker = true;
-        lv_obj_add_event_cb(
-            label,
-            DrawBitmapBoldText,
-            LV_EVENT_ALL,
-            &lightweight_marker);
-        lv_obj_refresh_ext_draw_size(label);
-    }
-}
 
 constexpr int kLunarBaseYear = 1900;
 constexpr int kLunarMaxYear = 2100;
@@ -1472,7 +1380,6 @@ void LcdDisplay::CreateScreensaverUI() {
         screensaver_mcp_list_title_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(screensaver_mcp_list_title_label_, LV_LABEL_LONG_CLIP);
     lv_label_set_text(screensaver_mcp_list_title_label_, "自定义 MCP");
-    EnableLightweightBitmapTextBold(screensaver_mcp_list_title_label_);
     lv_obj_align(
         screensaver_mcp_list_title_label_, LV_ALIGN_TOP_MID, 0,
         kCustomMcpListTitleTopOffset);
@@ -1509,7 +1416,6 @@ void LcdDisplay::CreateScreensaverUI() {
         screensaver_mcp_list_label_, kCustomMcpListLineSpacing, 0);
     lv_label_set_long_mode(screensaver_mcp_list_label_, LV_LABEL_LONG_WRAP);
     lv_label_set_text(screensaver_mcp_list_label_, "暂无自定义 MCP");
-    EnableLightweightBitmapTextBold(screensaver_mcp_list_label_);
     lv_obj_center(screensaver_mcp_list_label_);
 
     screensaver_mcp_list_switch_timer_ = lv_timer_create(
@@ -1551,7 +1457,6 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_set_style_text_font(screensaver_weather_temperature_label_, text_font, 0);
     lv_obj_set_style_text_color(screensaver_weather_temperature_label_, lv_color_white(), 0);
     lv_obj_set_style_text_align(screensaver_weather_temperature_label_, LV_TEXT_ALIGN_CENTER, 0);
-    EnableBitmapTextBold(screensaver_weather_temperature_label_);
     lv_label_set_text(screensaver_weather_temperature_label_, "--℃");
 
     screensaver_weather_description_label_ = lv_label_create(screensaver_weather_group_);
@@ -1560,7 +1465,6 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_set_style_text_color(screensaver_weather_description_label_,
                                 lv_color_hex(kScreensaverSecondaryTextColor), 0);
     lv_obj_set_style_text_align(screensaver_weather_description_label_, LV_TEXT_ALIGN_CENTER, 0);
-    EnableBitmapTextBold(screensaver_weather_description_label_);
     lv_label_set_text(screensaver_weather_description_label_, "待同步");
 
     screensaver_weather_range_label_ = lv_label_create(screensaver_weather_group_);
@@ -1568,7 +1472,6 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_set_style_text_font(screensaver_weather_range_label_, text_font, 0);
     lv_obj_set_style_text_color(screensaver_weather_range_label_, lv_color_white(), 0);
     lv_obj_set_style_text_align(screensaver_weather_range_label_, LV_TEXT_ALIGN_CENTER, 0);
-    EnableBitmapTextBold(screensaver_weather_range_label_);
     lv_label_set_text(screensaver_weather_range_label_, "--/--");
 
     /*
@@ -1593,7 +1496,6 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_set_style_text_opa(screensaver_lunar_date_label_, LV_OPA_80, 0);
     lv_obj_set_style_text_align(screensaver_lunar_date_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(screensaver_lunar_date_label_, LV_LABEL_LONG_CLIP);
-    EnableBitmapTextBold(screensaver_lunar_date_label_);
     lv_label_set_text(screensaver_lunar_date_label_, "农历待同步");
 
     screensaver_solar_date_label_ = lv_label_create(screensaver_date_group_);
@@ -1603,7 +1505,6 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_set_style_text_opa(screensaver_solar_date_label_, LV_OPA_80, 0);
     lv_obj_set_style_text_align(screensaver_solar_date_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(screensaver_solar_date_label_, LV_LABEL_LONG_CLIP);
-    EnableBitmapTextBold(screensaver_solar_date_label_);
     lv_label_set_text(screensaver_solar_date_label_, "-- --");
 
     screensaver_weekday_label_ = lv_label_create(screensaver_date_group_);
@@ -1613,7 +1514,6 @@ void LcdDisplay::CreateScreensaverUI() {
     lv_obj_set_style_text_opa(screensaver_weekday_label_, LV_OPA_80, 0);
     lv_obj_set_style_text_align(screensaver_weekday_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(screensaver_weekday_label_, LV_LABEL_LONG_CLIP);
-    EnableBitmapTextBold(screensaver_weekday_label_);
     lv_label_set_text(screensaver_weekday_label_, "星期--");
 
     /*
@@ -1698,7 +1598,6 @@ void LcdDisplay::CreateScreensaverUI() {
         lv_obj_set_style_text_align(date_label, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_long_mode(date_label, LV_LABEL_LONG_CLIP);
         lv_label_set_text(date_label, "");
-        EnableBitmapTextBold(date_label);
         lv_obj_align(date_label, LV_ALIGN_TOP_MID, 0,
                      -row * kScreensaverMemoRowHeight);
     }
@@ -1871,7 +1770,6 @@ void LcdDisplay::CreateDeviceBindingUI() {
     lv_obj_set_style_text_color(binding_code_label_,
                                 lv_color_hex(kScreensaverAccentColor), 0);
     lv_obj_set_style_text_align(binding_code_label_, LV_TEXT_ALIGN_CENTER, 0);
-    EnableBitmapTextBold(binding_code_label_);
 
     binding_message_label_ = lv_label_create(binding_container_);
     lv_label_set_text(binding_message_label_, "正在获取绑定码...");
