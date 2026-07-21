@@ -2392,9 +2392,13 @@ void LcdDisplay::UpdateScreensaverMemo() {
         visible_text = screensaver_memos_[screensaver_memo_index_].c_str();
     }
 
-    const char* content_text = visible_text;
     const char* line_break = std::strchr(visible_text, '\n');
-    if (line_break != nullptr) {
+    const bool has_reminder_line = line_break != nullptr
+        && visible_text[0] == '['
+        && line_break > visible_text + 1
+        && *(line_break - 1) == ']';
+    const char* content_text = visible_text;
+    if (has_reminder_line) {
         content_text = line_break + 1;
         screensaver_memo_has_reminder_line_ = true;
     } else {
@@ -2407,7 +2411,7 @@ void LcdDisplay::UpdateScreensaverMemo() {
             lv_label_set_text(memo_label, content_text);
         }
     }
-    const std::string date_text = line_break == nullptr
+    const std::string date_text = !has_reminder_line
         ? std::string()
         : std::string(visible_text, static_cast<size_t>(line_break - visible_text));
     for (lv_obj_t* date_label : screensaver_memo_date_labels_) {

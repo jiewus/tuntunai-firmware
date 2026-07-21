@@ -107,6 +107,11 @@ namespace
     constexpr const char *kDeviceTokenKey = "device_token";
 
     /**
+     * @brief 每次囤囤AI后端请求携带当前固件版本的请求头名称。
+     */
+    constexpr const char *kFirmwareVersionHeader = "X-Firmware-Version";
+
+    /**
      * @brief 后端设备绑定接口相对于 CONFIG_TUNTUN_API_URL 的固定路径。
      */
     constexpr const char *kBindingRequestPath = "/api/device/binding/request";
@@ -332,6 +337,9 @@ namespace
     constexpr const char *kWeatherTemperaturePlaceholder = "--℃";
     constexpr const char *kWeatherDescriptionPlaceholder = "--";
     constexpr const char *kWeatherRangePlaceholder = "--/--";
+    /** @brief 屏保备忘录区域在设备未绑定时显示的操作引导。 */
+    constexpr const char *kUnboundMemoPrompt =
+        "请先绑定囤囤AI\n唤醒我，和我说：“绑定设备”吧";
 
     /**
      * @brief 保存一次 HTTP 请求的传输结果。
@@ -401,6 +409,7 @@ namespace
         http->SetHeader("Accept", "application/json");
         http->SetHeader("Content-Type", "application/json");
         http->SetHeader("User-Agent", SystemInfo::GetUserAgent());
+        http->SetHeader(kFirmwareVersionHeader, esp_app_get_description()->version);
         if (!bearer_token.empty())
         {
             http->SetHeader("Authorization", "Bearer " + bearer_token);
@@ -2829,7 +2838,7 @@ void BackendService::RunMemoSync()
     }
     if (access_token.empty())
     {
-        ShowMemoStatusIfUnavailable("请先绑定囤囤AI");
+        ShowMemoStatusIfUnavailable(kUnboundMemoPrompt);
         return;
     }
 
@@ -2989,7 +2998,7 @@ void BackendService::OnScreensaverChanged(bool active)
         }
         if (!has_device_credential)
         {
-            ShowMemoStatusIfUnavailable("请先绑定囤囤AI");
+            ShowMemoStatusIfUnavailable(kUnboundMemoPrompt);
         }
         else if (!network_connected_.load())
         {
@@ -3019,7 +3028,7 @@ void BackendService::OnScreensaverChanged(bool active)
         }
         if (!has_device_credential)
         {
-            ShowWeatherStatusIfUnavailable("请先绑定囤囤AI");
+            ShowWeatherStatusIfUnavailable("");
         }
         else if (!network_connected_.load())
         {
@@ -3194,7 +3203,7 @@ void BackendService::RunWeatherSync()
     }
     if (access_token.empty())
     {
-        ShowWeatherStatusIfUnavailable("请先绑定囤囤AI");
+        ShowWeatherStatusIfUnavailable("");
         return;
     }
 
@@ -4740,6 +4749,7 @@ bool BackendService::StreamNotificationAudio(
     http->SetHeader("Accept", "audio/ogg");
     http->SetHeader("Authorization", "Bearer " + access_token);
     http->SetHeader("User-Agent", SystemInfo::GetUserAgent());
+    http->SetHeader(kFirmwareVersionHeader, esp_app_get_description()->version);
     if (!http->Open("GET", BuildApiUrl(path.c_str())))
     {
         ESP_LOGW(kTag, "通知音频请求失败，错误码=0x%x", http->GetLastError());

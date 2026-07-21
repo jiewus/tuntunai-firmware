@@ -82,8 +82,8 @@ def append_sdkconfig(entries: list[str]) -> None:
 
 
 def package_firmware(name: str) -> Path:
-    """将 merged-binary.bin 压缩到 releases；name 用于输出文件名，返回 ZIP 完整路径。"""
-    merged = PROJECT_ROOT / "build" / "merged-binary.bin"
+    """将 tuntun-binary.bin 压缩到 releases；name 用于输出文件名，返回 ZIP 完整路径。"""
+    merged = PROJECT_ROOT / "build" / "tuntun-binary.bin"
     if not merged.exists():
         raise RuntimeError(f"Merged firmware not found: {merged}")
 
@@ -91,7 +91,7 @@ def package_firmware(name: str) -> Path:
     releases.mkdir(exist_ok=True)
     output = releases / f"v{project_version()}_{name}.zip"
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.write(merged, arcname="merged-binary.bin")
+        archive.write(merged, arcname="tuntun-binary.bin")
     return output
 
 
@@ -105,7 +105,7 @@ def build() -> Path:
     run("idf.py", "set-target", target)
     append_sdkconfig(build_config.get("sdkconfig_append", []))
     run("idf.py", f"-DBOARD_NAME={name}", f"-DBOARD_TYPE={BOARD}", "build")
-    run("idf.py", "merge-bin")
+    run("idf.py", "merge-bin", "-o", "build/tuntun-binary.bin")
     return package_firmware(name)
 
 
