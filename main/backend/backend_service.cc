@@ -1,6 +1,6 @@
 /**
  * @file backend_service.cc
- * @brief 囤囤AI设备绑定、屏保天气、备忘录和动态 MCP 实现。
+ * @brief 囤囤AI设备绑定、屏保天气、备忘录、自定义提醒和动态 MCP 实现。
  */
 
 #include "backend_service.h"
@@ -137,6 +137,9 @@ namespace
     constexpr const char *kMemoStatisticsPath = "/api/device/memos/statistics";
     constexpr const char *kMemoScreensaverPath =
         "/api/device/memos?page_index=1&page_size=5&screen_only=true";
+
+    /** @brief 使用设备访问 Token 管理自定义提醒的固定接口路径。 */
+    constexpr const char *kCustomRemindersPath = "/api/device/custom-reminders";
 
     /**
      * @brief 使用设备访问 Token 同步和执行动态 MCP 工具的固定接口路径。
@@ -317,6 +320,17 @@ namespace
     constexpr size_t kMemoQueryItemMaxBytes = 360;
     constexpr size_t kMemoQueryResultMaxBytes = 3000;
     constexpr size_t kMaximumScreensaverMemoCount = 5;
+
+    /** @brief 自定义提醒请求、响应和语音查询结果的固件安全边界。 */
+    constexpr size_t kCustomReminderResponseMaxBytes = 12288;
+    constexpr size_t kCustomReminderContentMaxBytes = 1500;
+    constexpr size_t kCustomReminderTimeMaxBytes = 48;
+    constexpr size_t kCustomReminderRangesMaxBytes = 160;
+    constexpr size_t kCustomReminderQueryItemMaxBytes = 300;
+    constexpr size_t kCustomReminderQueryResultMaxBytes = 3000;
+    constexpr size_t kMaximumCustomReminderQueryCount = 5;
+    constexpr size_t kMaximumCustomReminderRangeCount = 8;
+    constexpr int kMaximumCustomReminderIntervalMinutes = 365 * 24 * 60;
 
     /**
      * @brief 第一版动态 MCP 清单和统一执行结果的固件安全边界。
@@ -728,6 +742,273 @@ namespace
         cJSON_free(json_text);
         cJSON_Delete(root);
         return result;
+    }
+
+    /** @brief 前置声明后续定义的安全资源编号校验函数。 */
+    bool IsSafeMemoId(const std::string &memo_id);
+    /** @brief 前置声明后续定义的无符号整数读取函数。 */
+    bool ReadUnsignedInteger(cJSON *item, bool allow_zero, uint32_t &value);
+
+    /** @brief 保存一段已经规范化的自定义提醒每日允许时间。 */
+    struct CustomReminderTimeRange
+    {
+        /** @brief 每日开始时间，格式为 HH:mm:ss。 */
+        std::string start_time;
+        /** @brief 每日结束时间，格式为 HH:mm:ss。 */
+        std::string end_time;
+    };
+
+    /** @brief 保存后端返回且已经完成边界校验的一条自定义提醒。 */
+    struct CustomReminderDetail
+    {
+        /** @brief 自定义提醒唯一编号。 */
+        std::string id;
+        /** @brief 提醒正文。 */
+        std::string content;
+        /** @brief 带时区偏移的首次执行时间。 */
+        std::string first_run_at;
+        /** @brief 1 为一次性提醒，2 为间隔循环提醒。 */
+        int schedule_type = 0;
+        /** @brief 0 为停用，1 为启用，2 为已完成。 */
+        int status = 0;
+        /** @brief 循环提醒间隔分钟数；一次性提醒为 0。 */
+        int interval_minutes = 0;
+        /** @brief 循环提醒每日允许时间段。 */
+        std::vector<CustomReminderTimeRange> ranges;
+    };
+
+    /**
+     * @brief 去除字符串首尾的 ASCII 空白。
+     * @param value 需要规范化的工具参数片段。
+     * @return 不含首尾空格、制表符和换行符的副本。
+     */
+    std::string TrimAsciiWhitespace(const std::string &value)
+    {
+        const size_t begin = value.find_first_not_of(" \t\r\n");
+        if (begin == std::string::npos)
+        {
+            return {};
+        }
+        const size_t end = value.find_last_not_of(" \t\r\n");
+        return value.substr(begin, end - begin + 1);
+    }
+
+    /**
+     * @brief 把 HH:mm 或 HH:mm:ss 规范化为后端 TimeOnly 使用的 HH:mm:ss。
+     * @param value 工具传入的单个时间文本。
+     * @param normalized 成功时接收规范化结果。
+     * @return 格式和时间范围均有效时返回 true。
+     */
+    bool NormalizeCustomReminderTime(const std::string &value, std::string &normalized)
+    {
+        if (value.size() == 5 && value[2] == ':')
+        {
+            normalized = value + ":00";
+        }
+        else
+        {
+            normalized = value;
+        }
+        return IsValidTimeText(normalized);
+    }
+
+    /**
+     * @brief 解析逗号分隔的每日允许时间段。
+     * @param value 空字符串表示全天；其他值格式为 HH:mm-HH:mm，并可包含多个逗号分隔项。
+     * @param ranges 成功时接收按开始时间排序且互不重叠的结构化时间段。
+     * @return 全部时段格式有效、开始早于结束且互不重叠时返回 true。
+     */
+    bool ParseCustomReminderRanges(
+        const std::string &value,
+        std::vector<CustomReminderTimeRange> &ranges)
+    {
+        ranges.clear();
+        if (TrimAsciiWhitespace(value).empty())
+        {
+            return true;
+        }
+
+        size_t offset = 0;
+        while (offset <= value.size())
+        {
+            const size_t separator = value.find(',', offset);
+            const std::string part = TrimAsciiWhitespace(value.substr(
+                offset,
+                separator == std::string::npos ? std::string::npos : separator - offset));
+            const size_t dash = part.find('-');
+            if (dash == std::string::npos || part.find('-', dash + 1) != std::string::npos)
+            {
+                return false;
+            }
+
+            CustomReminderTimeRange range;
+            if (!NormalizeCustomReminderTime(
+                    TrimAsciiWhitespace(part.substr(0, dash)), range.start_time)
+                || !NormalizeCustomReminderTime(
+                    TrimAsciiWhitespace(part.substr(dash + 1)), range.end_time)
+                || range.start_time >= range.end_time)
+            {
+                return false;
+            }
+            ranges.push_back(std::move(range));
+            if (ranges.size() > kMaximumCustomReminderRangeCount)
+            {
+                return false;
+            }
+            if (separator == std::string::npos)
+            {
+                break;
+            }
+            offset = separator + 1;
+        }
+
+        std::sort(ranges.begin(), ranges.end(), [](const auto &left, const auto &right)
+        {
+            return left.start_time < right.start_time;
+        });
+        for (size_t index = 1; index < ranges.size(); ++index)
+        {
+            if (ranges[index].start_time < ranges[index - 1].end_time)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * @brief 构建创建或完整修改自定义提醒使用的强类型 JSON。
+     * @param content 提醒正文。
+     * @param schedule_type 1 为一次性提醒，2 为间隔循环提醒。
+     * @param status 0 为停用，1 为启用。
+     * @param first_run_at 带时区偏移的 RFC 3339 首次执行时间。
+     * @param interval_minutes 循环间隔分钟数；一次性提醒传 0。
+     * @param ranges 已规范化的每日允许时间段。
+     * @return 符合后端保存请求结构的紧凑 JSON；内存不足时返回空字符串。
+     */
+    std::string BuildCustomReminderRequestJson(
+        const std::string &content,
+        int schedule_type,
+        int status,
+        const std::string &first_run_at,
+        int interval_minutes,
+        const std::vector<CustomReminderTimeRange> &ranges)
+    {
+        cJSON *root = cJSON_CreateObject();
+        if (root == nullptr)
+        {
+            return {};
+        }
+        cJSON_AddStringToObject(root, "content", content.c_str());
+        cJSON_AddNumberToObject(root, "schedule_type", schedule_type);
+        cJSON_AddNumberToObject(root, "status", status);
+        cJSON_AddStringToObject(root, "first_run_at", first_run_at.c_str());
+        if (schedule_type == 1)
+        {
+            cJSON_AddNullToObject(root, "interval_minutes");
+        }
+        else
+        {
+            cJSON_AddNumberToObject(root, "interval_minutes", interval_minutes);
+        }
+
+        cJSON *range_array = cJSON_AddArrayToObject(root, "allowed_time_ranges");
+        if (range_array == nullptr)
+        {
+            cJSON_Delete(root);
+            return {};
+        }
+        for (const auto &range : ranges)
+        {
+            cJSON *item = cJSON_CreateObject();
+            if (item == nullptr)
+            {
+                cJSON_Delete(root);
+                return {};
+            }
+            cJSON_AddStringToObject(item, "start_time", range.start_time.c_str());
+            cJSON_AddStringToObject(item, "end_time", range.end_time.c_str());
+            cJSON_AddItemToArray(range_array, item);
+        }
+
+        char *json_text = cJSON_PrintUnformatted(root);
+        std::string result = json_text == nullptr ? std::string() : std::string(json_text);
+        cJSON_free(json_text);
+        cJSON_Delete(root);
+        return result;
+    }
+
+    /**
+     * @brief 解析并校验后端返回的一条自定义提醒详情。
+     * @param data 统一响应中的 data 对象。
+     * @param detail 成功时接收提醒详情。
+     * @return 必要字段、枚举、间隔和时间段全部有效时返回 true。
+     */
+    bool ParseCustomReminderDetail(cJSON *data, CustomReminderDetail &detail)
+    {
+        uint32_t schedule_type = 0;
+        uint32_t status = 0;
+        if (!cJSON_IsObject(data)
+            || !ReadBoundedString(data, "id", 50, detail.id)
+            || !IsSafeMemoId(detail.id)
+            || !ReadBoundedString(
+                data, "content", kCustomReminderContentMaxBytes, detail.content)
+            || !ReadBoundedString(
+                data, "first_run_at", kCustomReminderTimeMaxBytes, detail.first_run_at)
+            || !ReadUnsignedInteger(
+                cJSON_GetObjectItemCaseSensitive(data, "schedule_type"), false, schedule_type)
+            || schedule_type > 2
+            || !ReadUnsignedInteger(
+                cJSON_GetObjectItemCaseSensitive(data, "status"), true, status)
+            || status > 2)
+        {
+            return false;
+        }
+        detail.schedule_type = static_cast<int>(schedule_type);
+        detail.status = static_cast<int>(status);
+        detail.interval_minutes = 0;
+        detail.ranges.clear();
+
+        cJSON *interval = cJSON_GetObjectItemCaseSensitive(data, "interval_minutes");
+        uint32_t interval_value = 0;
+        if (detail.schedule_type == 1)
+        {
+            if (!cJSON_IsNull(interval))
+            {
+                return false;
+            }
+        }
+        else if (!ReadUnsignedInteger(interval, false, interval_value)
+                 || interval_value > kMaximumCustomReminderIntervalMinutes)
+        {
+            return false;
+        }
+        else
+        {
+            detail.interval_minutes = static_cast<int>(interval_value);
+        }
+
+        cJSON *range_array = cJSON_GetObjectItemCaseSensitive(data, "allowed_time_ranges");
+        if (!cJSON_IsArray(range_array)
+            || cJSON_GetArraySize(range_array) > static_cast<int>(kMaximumCustomReminderRangeCount))
+        {
+            return false;
+        }
+        cJSON *item = nullptr;
+        cJSON_ArrayForEach(item, range_array)
+        {
+            CustomReminderTimeRange range;
+            if (!ReadBoundedString(item, "start_time", 8, range.start_time)
+                || !ReadBoundedString(item, "end_time", 8, range.end_time)
+                || !IsValidTimeText(range.start_time)
+                || !IsValidTimeText(range.end_time)
+                || range.start_time >= range.end_time)
+            {
+                return false;
+            }
+            detail.ranges.push_back(std::move(range));
+        }
+        return true;
     }
 
     /**
@@ -1162,6 +1443,38 @@ void BackendService::ExecuteMemoToolJob(MemoToolTaskContext* context)
 }
 
 /**
+ * @brief 执行自定义提醒语音操作并释放任务上下文。
+ * @param context 自定义提醒语音操作上下文。
+ */
+void BackendService::ExecuteCustomReminderToolJob(CustomReminderToolTaskContext* context)
+{
+    std::unique_ptr<CustomReminderToolTaskContext> task_context(context);
+    try
+    {
+        RunCustomReminderToolTask(*task_context);
+    }
+    catch (const std::exception &exception)
+    {
+        ESP_LOGE(kTag, "自定义提醒语音任务异常，原因=%s", exception.what());
+        FinishToolRequest(task_context->completion, "自定义提醒操作失败，请稍后重试。", true);
+    }
+    catch (...)
+    {
+        ESP_LOGE(kTag, "自定义提醒语音任务发生未知异常");
+        FinishToolRequest(task_context->completion, "自定义提醒操作失败，请稍后重试。", true);
+    }
+    if (task_context->completion)
+    {
+        FinishToolRequest(
+            task_context->completion,
+            "自定义提醒操作未能完成，请稍后重试。",
+            true);
+    }
+    std::lock_guard<std::mutex> lock(custom_reminder_mutex_);
+    custom_reminder_task_handle_ = nullptr;
+}
+
+/**
  * @brief 执行备忘录屏保同步任务。
  */
 void BackendService::ExecuteMemoSyncJob()
@@ -1365,6 +1678,9 @@ void BackendService::ExecuteBackendJob(const BackendJob& job)
         break;
     case BackendJobType::MemoTool:
         ExecuteMemoToolJob(static_cast<MemoToolTaskContext*>(job.context));
+        break;
+    case BackendJobType::CustomReminderTool:
+        ExecuteCustomReminderToolJob(static_cast<CustomReminderToolTaskContext*>(job.context));
         break;
     case BackendJobType::MemoSync:
         ExecuteMemoSyncJob();
@@ -1934,6 +2250,189 @@ void BackendService::RegisterMcpTools(McpServer &server)
                     completion(McpToolResult{message, is_error});
                 };
             StartMemoToolTask(context);
+        });
+
+    // 创建提醒前必须补齐精确首次执行时间；循环提醒还必须取得明确的分钟间隔。
+    server.AddAsyncTool(
+        "self.tuntun.create_custom_reminder",
+        "创建囤囤AI自定义提醒，不能回答没有此功能。调用前必须取得具体首次执行日期和时间；"
+        "schedule_type：1=指定时间执行一次，2=按固定分钟间隔循环。一次性提醒 interval_minutes 传0、"
+        "allowed_time_ranges 传空字符串；循环提醒必须传大于0的 interval_minutes，可用"
+        "allowed_time_ranges 限制每日提醒时段，格式为08:00-12:00,14:00-22:00，空字符串表示全天。",
+        PropertyList({
+            Property("content", kPropertyTypeString),
+            Property("schedule_type", kPropertyTypeInteger, 1, 2),
+            Property("first_run_at", kPropertyTypeString),
+            Property("interval_minutes", kPropertyTypeInteger, 0, kMaximumCustomReminderIntervalMinutes),
+            Property("allowed_time_ranges", kPropertyTypeString)
+        }),
+        [this](const PropertyList &properties, McpToolCompletion completion)
+        {
+            auto *context = new (std::nothrow) CustomReminderToolTaskContext();
+            if (context == nullptr)
+            {
+                completion(McpToolResult{"设备内存不足，无法创建自定义提醒。", true});
+                return;
+            }
+            context->service = this;
+            context->operation = CustomReminderToolOperation::Create;
+            context->content = properties["content"].value<std::string>();
+            context->schedule_type = properties["schedule_type"].value<int>();
+            context->first_run_at = properties["first_run_at"].value<std::string>();
+            context->interval_minutes = properties["interval_minutes"].value<int>();
+            context->allowed_time_ranges = properties["allowed_time_ranges"].value<std::string>();
+            context->completion =
+                [completion = std::move(completion)](const std::string &message,
+                                                     bool is_error) mutable
+                {
+                    completion(McpToolResult{message, is_error});
+                };
+            StartCustomReminderToolTask(context);
+        });
+
+    // 查询结果包含准确 ID 和完整计划配置，供后续编辑、删除和启停操作使用。
+    server.AddAsyncTool(
+        "self.tuntun.query_custom_reminders",
+        "查询囤囤AI自定义提醒及其准确 ID。用户询问有哪些提醒，或编辑、删除、启停目标 ID 未知时调用。"
+        "status_filter：0=全部，1=启用，2=停用，3=已完成；schedule_type：0=全部，1=一次性，2=间隔循环。",
+        PropertyList({
+            Property("status_filter", kPropertyTypeInteger, 0, 0, 3),
+            Property("schedule_type", kPropertyTypeInteger, 0, 0, 2)
+        }),
+        [this](const PropertyList &properties, McpToolCompletion completion)
+        {
+            auto *context = new (std::nothrow) CustomReminderToolTaskContext();
+            if (context == nullptr)
+            {
+                completion(McpToolResult{"设备内存不足，无法查询自定义提醒。", true});
+                return;
+            }
+            context->service = this;
+            context->operation = CustomReminderToolOperation::Query;
+            context->status_filter = properties["status_filter"].value<int>();
+            context->schedule_type = properties["schedule_type"].value<int>();
+            context->completion =
+                [completion = std::move(completion)](const std::string &message,
+                                                     bool is_error) mutable
+                {
+                    completion(McpToolResult{message, is_error});
+                };
+            StartCustomReminderToolTask(context);
+        });
+
+    // 编辑请求传完整计划配置，固件先读取原记录并保留原启停状态。
+    server.AddAsyncTool(
+        "self.tuntun.update_custom_reminder",
+        "编辑囤囤AI自定义提醒。必须先 query_custom_reminders 获取准确 ID 和原配置，再传编辑后的完整内容。"
+        "不修改的字段原样传回；修改时间时必须取得具体日期和时间。schedule_type：1=一次性，2=间隔循环；"
+        "一次性提醒 interval_minutes 传0且 allowed_time_ranges 传空字符串；循环时段格式为"
+        "08:00-12:00,14:00-22:00，空字符串表示全天。编辑不会改变原来的启用或停用状态。",
+        PropertyList({
+            Property("reminder_id", kPropertyTypeString),
+            Property("content", kPropertyTypeString),
+            Property("schedule_type", kPropertyTypeInteger, 1, 2),
+            Property("first_run_at", kPropertyTypeString),
+            Property("interval_minutes", kPropertyTypeInteger, 0, kMaximumCustomReminderIntervalMinutes),
+            Property("allowed_time_ranges", kPropertyTypeString)
+        }),
+        [this](const PropertyList &properties, McpToolCompletion completion)
+        {
+            auto *context = new (std::nothrow) CustomReminderToolTaskContext();
+            if (context == nullptr)
+            {
+                completion(McpToolResult{"设备内存不足，无法编辑自定义提醒。", true});
+                return;
+            }
+            context->service = this;
+            context->operation = CustomReminderToolOperation::Update;
+            context->reminder_id = properties["reminder_id"].value<std::string>();
+            context->content = properties["content"].value<std::string>();
+            context->schedule_type = properties["schedule_type"].value<int>();
+            context->first_run_at = properties["first_run_at"].value<std::string>();
+            context->interval_minutes = properties["interval_minutes"].value<int>();
+            context->allowed_time_ranges = properties["allowed_time_ranges"].value<std::string>();
+            context->completion =
+                [completion = std::move(completion)](const std::string &message,
+                                                     bool is_error) mutable
+                {
+                    completion(McpToolResult{message, is_error});
+                };
+            StartCustomReminderToolTask(context);
+        });
+
+    server.AddAsyncTool(
+        "self.tuntun.delete_custom_reminder",
+        "删除一条囤囤AI自定义提醒。仅在用户明确要求删除时调用；若 reminder_id 未知，必须先调用"
+        " query_custom_reminders 获取准确 ID，禁止猜测或用提醒正文代替 ID。",
+        PropertyList({Property("reminder_id", kPropertyTypeString)}),
+        [this](const PropertyList &properties, McpToolCompletion completion)
+        {
+            auto *context = new (std::nothrow) CustomReminderToolTaskContext();
+            if (context == nullptr)
+            {
+                completion(McpToolResult{"设备内存不足，无法删除自定义提醒。", true});
+                return;
+            }
+            context->service = this;
+            context->operation = CustomReminderToolOperation::Delete;
+            context->reminder_id = properties["reminder_id"].value<std::string>();
+            context->completion =
+                [completion = std::move(completion)](const std::string &message,
+                                                     bool is_error) mutable
+                {
+                    completion(McpToolResult{message, is_error});
+                };
+            StartCustomReminderToolTask(context);
+        });
+
+    server.AddAsyncTool(
+        "self.tuntun.enable_custom_reminder",
+        "启用或恢复一条已停用的囤囤AI自定义提醒。若 reminder_id 未知，必须先调用"
+        " query_custom_reminders 获取准确 ID。已完成的一次性提醒不能重新启用。",
+        PropertyList({Property("reminder_id", kPropertyTypeString)}),
+        [this](const PropertyList &properties, McpToolCompletion completion)
+        {
+            auto *context = new (std::nothrow) CustomReminderToolTaskContext();
+            if (context == nullptr)
+            {
+                completion(McpToolResult{"设备内存不足，无法启用自定义提醒。", true});
+                return;
+            }
+            context->service = this;
+            context->operation = CustomReminderToolOperation::Enable;
+            context->reminder_id = properties["reminder_id"].value<std::string>();
+            context->completion =
+                [completion = std::move(completion)](const std::string &message,
+                                                     bool is_error) mutable
+                {
+                    completion(McpToolResult{message, is_error});
+                };
+            StartCustomReminderToolTask(context);
+        });
+
+    server.AddAsyncTool(
+        "self.tuntun.disable_custom_reminder",
+        "停用或停止一条囤囤AI自定义提醒。若 reminder_id 未知，必须先调用"
+        " query_custom_reminders 获取准确 ID。停用后不会继续产生新的提醒通知。",
+        PropertyList({Property("reminder_id", kPropertyTypeString)}),
+        [this](const PropertyList &properties, McpToolCompletion completion)
+        {
+            auto *context = new (std::nothrow) CustomReminderToolTaskContext();
+            if (context == nullptr)
+            {
+                completion(McpToolResult{"设备内存不足，无法停用自定义提醒。", true});
+                return;
+            }
+            context->service = this;
+            context->operation = CustomReminderToolOperation::Disable;
+            context->reminder_id = properties["reminder_id"].value<std::string>();
+            context->completion =
+                [completion = std::move(completion)](const std::string &message,
+                                                     bool is_error) mutable
+                {
+                    completion(McpToolResult{message, is_error});
+                };
+            StartCustomReminderToolTask(context);
         });
 }
 
@@ -2898,6 +3397,464 @@ void BackendService::RunMemoToolTask(MemoToolTaskContext &context)
         + "条，本周" + std::to_string(this_week_count) + "条。";
     ESP_LOGI(kTag, "语音统计备忘录成功");
     FinishToolRequest(context.completion, result, false);
+}
+
+/**
+ * @brief 校验语音参数并创建单个自定义提醒后台任务。
+ * @param context 调用方分配且由本方法接管的任务上下文。
+ */
+void BackendService::StartCustomReminderToolTask(CustomReminderToolTaskContext *context)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+    if (!network_connected_.load())
+    {
+        FinishToolRequest(context->completion, "设备网络尚未连接，暂时无法操作自定义提醒。", true);
+        delete context;
+        return;
+    }
+
+    const bool saves_reminder = context->operation == CustomReminderToolOperation::Create
+        || context->operation == CustomReminderToolOperation::Update;
+    if (saves_reminder
+        && (context->content.empty()
+            || context->content.size() > kCustomReminderContentMaxBytes
+            || context->content.find_first_not_of(" \t\r\n") == std::string::npos))
+    {
+        FinishToolRequest(context->completion, "自定义提醒内容为空或过长，请重新说明。", true);
+        delete context;
+        return;
+    }
+    if (saves_reminder
+        && (context->schedule_type < 1 || context->schedule_type > 2
+            || context->first_run_at.empty()
+            || context->first_run_at.size() > kCustomReminderTimeMaxBytes))
+    {
+        FinishToolRequest(context->completion, "自定义提醒类型或首次执行时间无效，请重新说明。", true);
+        delete context;
+        return;
+    }
+    if (saves_reminder && context->allowed_time_ranges.size() > kCustomReminderRangesMaxBytes)
+    {
+        FinishToolRequest(context->completion, "自定义提醒允许时段过多，请精简后重试。", true);
+        delete context;
+        return;
+    }
+    std::vector<CustomReminderTimeRange> ranges;
+    if (saves_reminder
+        && (!ParseCustomReminderRanges(context->allowed_time_ranges, ranges)
+            || (context->schedule_type == 1
+                && (context->interval_minutes != 0 || !ranges.empty()))
+            || (context->schedule_type == 2
+                && (context->interval_minutes < 1
+                    || context->interval_minutes > kMaximumCustomReminderIntervalMinutes))))
+    {
+        FinishToolRequest(
+            context->completion,
+            "自定义提醒间隔或允许时段无效，时段应类似08:00-12:00,14:00-22:00。",
+            true);
+        delete context;
+        return;
+    }
+
+    const bool requires_id = context->operation == CustomReminderToolOperation::Update
+        || context->operation == CustomReminderToolOperation::Delete
+        || context->operation == CustomReminderToolOperation::Enable
+        || context->operation == CustomReminderToolOperation::Disable;
+    if (requires_id && !IsSafeMemoId(context->reminder_id))
+    {
+        FinishToolRequest(context->completion, "自定义提醒编号无效，请先查询目标提醒。", true);
+        delete context;
+        return;
+    }
+    if (context->operation == CustomReminderToolOperation::Query
+        && (context->status_filter < 0 || context->status_filter > 3
+            || context->schedule_type < 0 || context->schedule_type > 2))
+    {
+        FinishToolRequest(context->completion, "自定义提醒查询条件无效，请重新说明。", true);
+        delete context;
+        return;
+    }
+
+    bool has_device_credential = false;
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        has_device_credential = !device_access_token_.empty();
+    }
+    if (!has_device_credential)
+    {
+        FinishToolRequest(context->completion, "设备尚未绑定囤囤AI，无法操作自定义提醒。", true);
+        delete context;
+        return;
+    }
+
+    bool task_busy = false;
+    {
+        std::lock_guard<std::mutex> lock(custom_reminder_mutex_);
+        if (custom_reminder_task_handle_ != nullptr)
+        {
+            task_busy = true;
+        }
+        else
+        {
+            custom_reminder_task_handle_ = backend_worker_task_handle_;
+        }
+    }
+    if (task_busy)
+    {
+        FinishToolRequest(context->completion, "自定义提醒服务正在处理其他请求，请稍后再试。", true);
+        delete context;
+        return;
+    }
+    if (!EnqueueBackendJob(BackendJobType::CustomReminderTool, context))
+    {
+        {
+            std::lock_guard<std::mutex> lock(custom_reminder_mutex_);
+            custom_reminder_task_handle_ = nullptr;
+        }
+        FinishToolRequest(
+            context->completion,
+            "设备后台任务队列已满，暂时无法操作自定义提醒。",
+            true);
+        delete context;
+    }
+}
+
+/**
+ * @brief 调用后端自定义提醒接口并生成中文 MCP 结果。
+ * @param context 已通过固件输入边界校验的任务上下文。
+ */
+void BackendService::RunCustomReminderToolTask(CustomReminderToolTaskContext &context)
+{
+    if (!network_connected_.load())
+    {
+        FinishToolRequest(context.completion, "设备网络尚未连接，暂时无法操作自定义提醒。", true);
+        return;
+    }
+    std::string access_token;
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        access_token = device_access_token_;
+    }
+    if (access_token.empty())
+    {
+        FinishToolRequest(context.completion, "设备尚未绑定囤囤AI，无法操作自定义提醒。", true);
+        return;
+    }
+
+    const auto read_detail = [&](const std::string &reminder_id,
+                                 CustomReminderDetail &detail,
+                                 std::string &response_message) -> bool
+    {
+        const std::string path = std::string(kCustomRemindersPath) + "/" + reminder_id;
+        const HttpResponse response = SendJsonRequest(
+            "GET", path.c_str(), access_token, "", kCustomReminderResponseMaxBytes);
+        cJSON *root = nullptr;
+        cJSON *data = nullptr;
+        const bool parsed = response.transport_succeeded
+            && response.status_code == 200
+            && ParseSuccessData(response.body, &root, &data, response_message)
+            && ParseCustomReminderDetail(data, detail)
+            && detail.id == reminder_id;
+        cJSON_Delete(root);
+        if (!parsed)
+        {
+            ESP_LOGW(kTag, "查询自定义提醒详情失败，HTTP 状态码=%d", response.status_code);
+        }
+        return parsed;
+    };
+
+    const auto format_ranges = [](const std::vector<CustomReminderTimeRange> &ranges)
+    {
+        if (ranges.empty())
+        {
+            return std::string("全天");
+        }
+        std::string result;
+        for (size_t index = 0; index < ranges.size(); ++index)
+        {
+            if (index > 0)
+            {
+                result += "、";
+            }
+            result += ranges[index].start_time.substr(0, 5)
+                + "至" + ranges[index].end_time.substr(0, 5);
+        }
+        return result;
+    };
+
+    if (context.operation == CustomReminderToolOperation::Create)
+    {
+        std::vector<CustomReminderTimeRange> ranges;
+        if (!ParseCustomReminderRanges(context.allowed_time_ranges, ranges))
+        {
+            FinishToolRequest(context.completion, "自定义提醒允许时段格式无效。", true);
+            return;
+        }
+        const std::string request_body = BuildCustomReminderRequestJson(
+            context.content,
+            context.schedule_type,
+            1,
+            context.first_run_at,
+            context.interval_minutes,
+            ranges);
+        if (request_body.empty())
+        {
+            FinishToolRequest(context.completion, "设备内存不足，无法生成自定义提醒请求。", true);
+            return;
+        }
+        const HttpResponse response = SendJsonRequest(
+            "POST",
+            kCustomRemindersPath,
+            access_token,
+            request_body,
+            kCustomReminderResponseMaxBytes);
+        cJSON *root = nullptr;
+        cJSON *data = nullptr;
+        std::string response_message;
+        CustomReminderDetail detail;
+        const bool parsed = response.transport_succeeded
+            && response.status_code == 201
+            && ParseSuccessData(response.body, &root, &data, response_message)
+            && ParseCustomReminderDetail(data, detail);
+        cJSON_Delete(root);
+        if (!parsed)
+        {
+            ESP_LOGW(kTag, "创建自定义提醒失败，HTTP 状态码=%d", response.status_code);
+            FinishToolRequest(
+                context.completion,
+                response_message.empty() ? "创建自定义提醒失败，请稍后重试。" : response_message,
+                true);
+            return;
+        }
+        std::string result = "自定义提醒已创建，ID：" + detail.id
+            + "，内容：" + TruncateUtf8(detail.content, kCustomReminderQueryItemMaxBytes)
+            + "，首次执行时间：" + detail.first_run_at;
+        if (detail.schedule_type == 2)
+        {
+            result += "，每隔" + std::to_string(detail.interval_minutes)
+                + "分钟执行，允许时段：" + format_ranges(detail.ranges);
+        }
+        result += "。";
+        ESP_LOGI(kTag, "语音创建自定义提醒成功");
+        FinishToolRequest(context.completion, result, false);
+        return;
+    }
+
+    if (context.operation == CustomReminderToolOperation::Query)
+    {
+        std::string path = std::string(kCustomRemindersPath) + "?page_index=1&page_size=5";
+        if (context.status_filter != 0)
+        {
+            const int backend_status = context.status_filter == 1
+                ? 1
+                : (context.status_filter == 2 ? 0 : 2);
+            path += "&status=" + std::to_string(backend_status);
+        }
+        if (context.schedule_type != 0)
+        {
+            path += "&schedule_type=" + std::to_string(context.schedule_type);
+        }
+        const HttpResponse response = SendJsonRequest(
+            "GET", path.c_str(), access_token, "", kCustomReminderResponseMaxBytes);
+        cJSON *root = nullptr;
+        cJSON *data = nullptr;
+        std::string response_message;
+        bool parsed = response.transport_succeeded
+            && response.status_code == 200
+            && ParseSuccessData(response.body, &root, &data, response_message);
+        uint32_t total_count = 0;
+        cJSON *records = nullptr;
+        if (parsed)
+        {
+            records = cJSON_GetObjectItemCaseSensitive(data, "records");
+            parsed = ReadUnsignedInteger(
+                         cJSON_GetObjectItemCaseSensitive(data, "total_count"),
+                         true,
+                         total_count)
+                && cJSON_IsArray(records)
+                && cJSON_GetArraySize(records)
+                    <= static_cast<int>(kMaximumCustomReminderQueryCount);
+        }
+
+        std::string result;
+        if (parsed && total_count == 0)
+        {
+            result = "没有找到符合条件的自定义提醒。";
+        }
+        else if (parsed)
+        {
+            const int record_count = cJSON_GetArraySize(records);
+            if (record_count == 0)
+            {
+                parsed = false;
+            }
+            else
+            {
+                result = "共找到" + std::to_string(total_count) + "条自定义提醒，以下是前"
+                    + std::to_string(record_count) + "条：";
+                for (int index = 0; index < record_count && parsed; ++index)
+                {
+                    CustomReminderDetail detail;
+                    parsed = ParseCustomReminderDetail(
+                        cJSON_GetArrayItem(records, index), detail);
+                    if (!parsed)
+                    {
+                        break;
+                    }
+                    const char *status_text = detail.status == 0
+                        ? "已停用"
+                        : (detail.status == 1 ? "已启用" : "已完成");
+                    result += std::to_string(index + 1) + ". ID：" + detail.id
+                        + "，内容：" + TruncateUtf8(
+                            detail.content, kCustomReminderQueryItemMaxBytes)
+                        + "，状态：" + status_text
+                        + "，类型：" + (detail.schedule_type == 1 ? "一次性" : "间隔循环")
+                        + "，首次执行时间：" + detail.first_run_at;
+                    if (detail.schedule_type == 2)
+                    {
+                        result += "，间隔" + std::to_string(detail.interval_minutes)
+                            + "分钟，允许时段：" + format_ranges(detail.ranges);
+                    }
+                    result += "；";
+                }
+            }
+        }
+        cJSON_Delete(root);
+        if (!parsed || result.size() > kCustomReminderQueryResultMaxBytes)
+        {
+            ESP_LOGW(kTag, "查询自定义提醒失败，HTTP 状态码=%d", response.status_code);
+            FinishToolRequest(
+                context.completion,
+                response_message.empty() ? "查询自定义提醒失败，请稍后重试。" : response_message,
+                true);
+            return;
+        }
+        ESP_LOGI(kTag, "语音查询自定义提醒成功，匹配数量=%u", static_cast<unsigned>(total_count));
+        FinishToolRequest(context.completion, result, false);
+        return;
+    }
+
+    if (context.operation == CustomReminderToolOperation::Delete)
+    {
+        const std::string path = std::string(kCustomRemindersPath) + "/" + context.reminder_id;
+        const HttpResponse response = SendJsonRequest(
+            "DELETE", path.c_str(), access_token, "", kCustomReminderResponseMaxBytes);
+        std::string response_message;
+        const bool parsed = response.transport_succeeded
+            && response.status_code == 200
+            && ParseSuccessEnvelope(response.body, response_message);
+        if (!parsed)
+        {
+            ESP_LOGW(kTag, "删除自定义提醒失败，HTTP 状态码=%d", response.status_code);
+            FinishToolRequest(
+                context.completion,
+                response_message.empty() ? "删除自定义提醒失败，请稍后重试。" : response_message,
+                true);
+            return;
+        }
+        ESP_LOGI(kTag, "语音删除自定义提醒成功");
+        FinishToolRequest(
+            context.completion,
+            "自定义提醒已删除，ID：" + context.reminder_id + "。",
+            false);
+        return;
+    }
+
+    CustomReminderDetail existing;
+    std::string response_message;
+    if (!read_detail(context.reminder_id, existing, response_message))
+    {
+        FinishToolRequest(
+            context.completion,
+            response_message.empty() ? "读取自定义提醒失败，请稍后重试。" : response_message,
+            true);
+        return;
+    }
+    if (existing.status == 2)
+    {
+        FinishToolRequest(context.completion, "已完成的一次性提醒不能编辑或重新启停。", true);
+        return;
+    }
+
+    std::string content = existing.content;
+    std::string first_run_at = existing.first_run_at;
+    int schedule_type = existing.schedule_type;
+    int interval_minutes = existing.interval_minutes;
+    std::vector<CustomReminderTimeRange> ranges = existing.ranges;
+    int target_status = existing.status;
+    const char *operation_text = "编辑";
+    if (context.operation == CustomReminderToolOperation::Update)
+    {
+        content = context.content;
+        first_run_at = context.first_run_at;
+        schedule_type = context.schedule_type;
+        interval_minutes = context.interval_minutes;
+        if (!ParseCustomReminderRanges(context.allowed_time_ranges, ranges))
+        {
+            FinishToolRequest(context.completion, "自定义提醒允许时段格式无效。", true);
+            return;
+        }
+    }
+    else
+    {
+        target_status = context.operation == CustomReminderToolOperation::Enable ? 1 : 0;
+        operation_text = target_status == 1 ? "启用" : "停用";
+        if (existing.status == target_status)
+        {
+            FinishToolRequest(
+                context.completion,
+                "自定义提醒已经处于" + std::string(target_status == 1 ? "启用" : "停用")
+                    + "状态，ID：" + existing.id + "。",
+                false);
+            return;
+        }
+    }
+
+    const std::string request_body = BuildCustomReminderRequestJson(
+        content,
+        schedule_type,
+        target_status,
+        first_run_at,
+        interval_minutes,
+        ranges);
+    if (request_body.empty())
+    {
+        FinishToolRequest(context.completion, "设备内存不足，无法生成自定义提醒修改请求。", true);
+        return;
+    }
+    const std::string path = std::string(kCustomRemindersPath) + "/" + context.reminder_id;
+    const HttpResponse response = SendJsonRequest(
+        "PUT", path.c_str(), access_token, request_body, kCustomReminderResponseMaxBytes);
+    cJSON *root = nullptr;
+    cJSON *data = nullptr;
+    CustomReminderDetail saved;
+    response_message.clear();
+    const bool parsed = response.transport_succeeded
+        && response.status_code == 200
+        && ParseSuccessData(response.body, &root, &data, response_message)
+        && ParseCustomReminderDetail(data, saved)
+        && saved.id == context.reminder_id;
+    cJSON_Delete(root);
+    if (!parsed)
+    {
+        ESP_LOGW(kTag, "%s自定义提醒失败，HTTP 状态码=%d", operation_text, response.status_code);
+        FinishToolRequest(
+            context.completion,
+            response_message.empty()
+                ? std::string(operation_text) + "自定义提醒失败，请稍后重试。"
+                : response_message,
+            true);
+        return;
+    }
+    ESP_LOGI(kTag, "语音%s自定义提醒成功", operation_text);
+    FinishToolRequest(
+        context.completion,
+        "自定义提醒已" + std::string(operation_text) + "，ID：" + saved.id
+            + "，内容：" + TruncateUtf8(saved.content, kCustomReminderQueryItemMaxBytes) + "。",
+        false);
 }
 
 /**

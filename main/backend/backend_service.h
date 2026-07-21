@@ -19,15 +19,15 @@ class McpServer;
 
 /**
  * @file backend_service.h
- * @brief 囤囤AI业务 API 的设备绑定、天气、备忘录和动态 MCP 能力入口。
+ * @brief 囤囤AI业务 API 的设备绑定、天气、备忘录、自定义提醒和动态 MCP 能力入口。
  */
 
 /**
  * @brief 管理固件与囤囤AI后端之间的异步业务流程。
  *
  * 当前版本实现设备绑定码申请、状态轮询、设备 Token 领取、绑定页面联动、屏保天气与备忘录
- * 同步、内置和动态 MCP 工具执行，以及主动通知同步和语音播放。天气、备忘录、MCP 和通知
- * 的非实时后端请求统一由一个常驻 Worker 串行调度。
+ * 同步、备忘录与自定义提醒语音管理、内置和动态 MCP 工具执行，以及主动通知同步和语音播放。
+ * 天气、备忘录、MCP、自定义提醒和通知的非实时后端请求统一由一个常驻 Worker 串行调度。
  */
 class BackendService {
 public:
@@ -44,7 +44,7 @@ public:
     void Start();
 
     /**
-     * @brief 注册由小智大模型调用的设备绑定、天气和备忘录工具。
+     * @brief 注册由小智大模型调用的设备绑定、天气、备忘录和自定义提醒工具。
      * @param server 已完成基础工具初始化的设备 MCP 服务器。
      */
     void RegisterMcpTools(McpServer& server);
@@ -147,6 +147,15 @@ private:
         bool is_error)>;
 
     /**
+     * @brief 自定义提醒语音工具完成后的轻量结果回调。
+     * @param message 返回给小智模型的中文操作结果。
+     * @param is_error true 表示自定义提醒操作未成功完成。
+     */
+    using CustomReminderCompletion = std::function<void(
+        const std::string& message,
+        bool is_error)>;
+
+    /**
      * @brief 定义共享备忘录 Worker 当前执行的语音操作。
      */
     enum class MemoToolOperation : uint8_t {
@@ -157,11 +166,22 @@ private:
         Statistics
     };
 
+    /** @brief 定义共享后端 Worker 当前执行的自定义提醒语音操作。 */
+    enum class CustomReminderToolOperation : uint8_t {
+        Create,
+        Query,
+        Update,
+        Delete,
+        Enable,
+        Disable
+    };
+
     /** @brief 常驻后端 Worker 支持的固定任务类型。 */
     enum class BackendJobType : uint8_t {
         McpManifest,
         DynamicTool,
         MemoTool,
+        CustomReminderTool,
         MemoSync,
         WeatherSync,
         WeatherLocation,
@@ -260,6 +280,30 @@ private:
          * @brief HTTP 操作结束后回复原始 MCP tools/call 的一次性回调。
          */
         MemoCompletion completion;
+    };
+
+    /** @brief 传递给自定义提醒语音工具 Worker 的强类型调用参数。 */
+    struct CustomReminderToolTaskContext {
+        /** @brief 指向固件生命周期内唯一的后端服务实例。 */
+        BackendService* service = nullptr;
+        /** @brief 本次需要执行的创建、查询、编辑、删除、启用或停用操作。 */
+        CustomReminderToolOperation operation = CustomReminderToolOperation::Query;
+        /** @brief 创建或编辑操作使用的提醒正文。 */
+        std::string content;
+        /** @brief 编辑、删除、启用或停用操作使用的提醒唯一编号。 */
+        std::string reminder_id;
+        /** @brief 创建或编辑操作使用的带时区偏移 RFC 3339 首次执行时间。 */
+        std::string first_run_at;
+        /** @brief 循环提醒每日允许时间段，多个时段使用英文逗号分隔。 */
+        std::string allowed_time_ranges;
+        /** @brief 创建、编辑或查询使用的提醒类型，1 为一次性，2 为间隔循环。 */
+        int schedule_type = 0;
+        /** @brief 查询筛选，0 为全部，1 为启用，2 为停用，3 为已完成。 */
+        int status_filter = 0;
+        /** @brief 间隔循环提醒的分钟数；一次性提醒固定为 0。 */
+        int interval_minutes = 0;
+        /** @brief HTTP 操作结束后回复原始 MCP tools/call 的一次性回调。 */
+        CustomReminderCompletion completion;
     };
 
     /**
@@ -416,6 +460,8 @@ private:
     void ExecuteDynamicToolJob(DynamicToolTaskContext* context);
     /** @brief 执行备忘录语音任务并释放任务上下文。 */
     void ExecuteMemoToolJob(MemoToolTaskContext* context);
+    /** @brief 执行自定义提醒语音任务并释放任务上下文。 */
+    void ExecuteCustomReminderToolJob(CustomReminderToolTaskContext* context);
     /** @brief 执行备忘录屏保同步任务。 */
     void ExecuteMemoSyncJob();
     /** @brief 执行天气屏保同步任务。 */
@@ -553,6 +599,18 @@ private:
      * @param context 已完成固件边界校验的语音工具任务上下文。
      */
     void RunMemoToolTask(MemoToolTaskContext& context);
+
+    /**
+     * @brief 把一个自定义提醒语音操作加入常驻后端 Worker。
+     * @param context 包含操作类型、输入参数和最终结果回调的任务上下文。
+     */
+    void StartCustomReminderToolTask(CustomReminderToolTaskContext* context);
+
+    /**
+     * @brief 调用自定义提醒创建、查询、编辑、删除、启用或停用接口并生成中文结果。
+     * @param context 已完成固件边界校验的语音工具任务上下文。
+     */
+    void RunCustomReminderToolTask(CustomReminderToolTaskContext& context);
 
     /**
      * @brief 在满足屏保、网络、凭据和缓存条件时把备忘录同步加入常驻后端 Worker。
@@ -945,6 +1003,11 @@ private:
      * @brief 下一次失败需要使用的备忘录重试间隔序号。
      */
     size_t memo_retry_index_ = 0;
+
+    /** @brief 串行保护自定义提醒语音操作的占用标记。 */
+    std::mutex custom_reminder_mutex_;
+    /** @brief 当前自定义提醒语音操作占用标记；非空表示请求已排队或正在执行。 */
+    TaskHandle_t custom_reminder_task_handle_ = nullptr;
 
     /**
      * @brief 串行保护业务 EMQX、通知任务和当前待确认通知。
