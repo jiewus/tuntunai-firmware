@@ -3777,6 +3777,10 @@ void LcdDisplay::SetTheme(Theme* theme) {
     auto large_icon_font = lvgl_theme->large_icon_font()->font();
 
     LoadScreensaverWeatherFont();
+    const lv_font_t* chat_status_font = screensaver_weather_font_ != nullptr
+        && screensaver_weather_font_->font() != nullptr
+        ? screensaver_weather_font_->font()
+        : text_font;
 
     if (text_font->line_height >= 40) {
         if (mute_label_ != nullptr) {
@@ -3843,7 +3847,8 @@ void LcdDisplay::SetTheme(Theme* theme) {
         lv_obj_set_style_text_color(time_label_, lvgl_theme->text_color(), 0);
     }
     if (status_label_ != nullptr) {
-        lv_obj_set_style_text_font(status_label_, status_font, 0);
+        // 表情上方的聊天标题使用完整 Heavy 24px；WiFi 临时提示仍由 notification_label_ 使用 20px。
+        lv_obj_set_style_text_font(status_label_, chat_status_font, 0);
         lv_obj_set_style_text_color(status_label_, lvgl_theme->text_color(), 0);
     }
     if (notification_label_ != nullptr) {
