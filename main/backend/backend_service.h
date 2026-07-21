@@ -81,6 +81,18 @@ public:
      */
     bool InterruptNotificationPlayback();
 
+    /**
+     * @brief 判断设备绑定覆盖页面当前是否可见。
+     * @return 绑定页面正在显示时返回 true，否则返回 false。
+     */
+    bool IsBindingPageVisible() const;
+
+    /**
+     * @brief 由语音指令或物理按键退出当前绑定页面，但保留后台绑定轮询。
+     * @return 成功关闭正在显示的绑定页面时返回 true，否则返回 false。
+     */
+    bool ExitBindingPage();
+
 private:
     /**
      * @brief 后端常驻 Worker 任务栈大小，单位为字节。
@@ -154,7 +166,8 @@ private:
         WeatherSync,
         WeatherLocation,
         WeatherAnnouncement,
-        NotificationSync
+        NotificationSync,
+        Heartbeat
     };
 
     /**
@@ -413,6 +426,8 @@ private:
     void ExecuteWeatherAnnouncementJob(WeatherAnnouncementTaskContext* context);
     /** @brief 执行主动通知同步任务。 */
     void ExecuteNotificationSyncJob();
+    /** @brief 通过业务 EMQX 发布一次设备心跳。 */
+    void ExecuteHeartbeatJob();
 
     /**
      * @brief 检查已有绑定状态，并按需启动申请新会话或恢复旧会话的独立任务。
@@ -430,11 +445,23 @@ private:
     static void BindingTaskEntry(void* context);
 
     /**
-     * @brief 申请绑定码并持续轮询，绑定成功后领取设备 Token。
-     * @param request_new_session true 表示先创建新的绑定会话。
+     * @brief 申请或恢复绑定会话，持续轮询并在绑定成功后领取设备 Token。
+     * @param request_new_session true 创建新会话并显示绑定页面；false 在后台静默恢复已有会话。
      * @param completion MCP 工具的一次性完成回调。
      */
     void RunBindingTask(bool request_new_session, BindingCompletion& completion);
+
+    /**
+     * @brief 显示设备绑定覆盖页面；用户主动退出后忽略当前会话的后续状态更新。
+     * @param binding_code 当前绑定码；空字符串表示仅显示流程状态。
+     * @param message 绑定页面底部提示或流程结果。
+     */
+    void ShowBindingPage(const std::string& binding_code, const std::string& message);
+
+    /**
+     * @brief 隐藏设备绑定覆盖页面，不改变后台绑定会话和轮询状态。
+     */
+    void HideBindingPage();
 
     /**
      * @brief 把修改固定城市或 IP 自动定位模式的请求加入常驻后端 Worker。
@@ -643,6 +670,21 @@ private:
     void ScheduleNotificationMqttReconnect();
 
     /**
+     * @brief 启动两分钟心跳周期并立即安排一次心跳。
+     */
+    void StartHeartbeatPublishing();
+
+    /**
+     * @brief 停止业务 EMQX 心跳周期。
+     */
+    void StopHeartbeatPublishing();
+
+    /**
+     * @brief 在没有待处理心跳时把一次发布加入常驻后端 Worker。
+     */
+    void EnqueueHeartbeat();
+
+    /**
      * @brief 显示并处理当前待通知；设备忙碌时向后端确认延迟。
      * @param notification 已完成 JSON 边界校验的通知快照。
      */
@@ -711,6 +753,12 @@ private:
      * @param context 指向当前 BackendService 单例。
      */
     static void NotificationReconnectTimerCallback(void* context);
+
+    /**
+     * @brief 两分钟设备心跳定时器回调，只负责安排发布任务。
+     * @param context 指向当前 BackendService 单例。
+     */
+    static void HeartbeatTimerCallback(void* context);
 
     /**
      * @brief 从 NVS 恢复当前绑定码、绑定会话 Token 和已领取设备凭据。
@@ -784,6 +832,14 @@ private:
      * @brief 绑定完成后设备访问业务 API 使用的 Bearer Token。
      */
     std::string device_access_token_;
+    /**
+     * @brief true 表示绑定覆盖页面当前可见，供物理按键优先处理退出操作。
+     */
+    std::atomic<bool> binding_page_visible_{false};
+    /**
+     * @brief true 表示用户已主动退出当前绑定页面，后台轮询不得再次弹出该页面。
+     */
+    bool binding_page_dismissed_ = false;
     /**
      * @brief 串行保护动态清单任务、执行任务和最近成功清单修订号。
      */
@@ -903,6 +959,14 @@ private:
      */
     std::atomic<Mqtt*> active_notification_mqtt_{nullptr};
     /**
+     * @brief 当前设备唯一允许发布的 MQTT 心跳主题。
+     */
+    std::string heartbeat_topic_;
+    /**
+     * @brief true 表示一次心跳已经排队或正在发布，防止周期任务重复堆积。
+     */
+    std::atomic<bool> heartbeat_job_pending_{false};
+    /**
      * @brief 当前通知同步占用标记；非空表示请求已排队或正在执行。
      */
     TaskHandle_t notification_task_handle_ = nullptr;
@@ -935,6 +999,10 @@ private:
      * @brief 业务 EMQX 断线后的单次指数退避重连定时器。
      */
     esp_timer_handle_t notification_reconnect_timer_ = nullptr;
+    /**
+     * @brief 每两分钟安排一次业务 EMQX 心跳的周期定时器。
+     */
+    esp_timer_handle_t heartbeat_timer_ = nullptr;
     /**
      * @brief 当前等待直接播放或用户确认的通知。
      */

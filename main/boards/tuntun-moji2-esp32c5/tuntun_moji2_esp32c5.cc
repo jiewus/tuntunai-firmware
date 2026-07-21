@@ -428,6 +428,9 @@ private:
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
+            if (BackendService::GetInstance().ExitBindingPage()) {
+                return;
+            }
             // 启动且尚未联网时，单击 BOOT 直接进入配网，不执行重启。
             if (app.GetDeviceState() == kDeviceStateStarting) {
                 EnterWifiConfigMode();
@@ -438,6 +441,10 @@ private:
             }
         });
         boot_button_.OnPressDown([this]() {
+            if (BackendService::GetInstance().IsBindingPageVisible()) {
+                WakeUpScreen(true);
+                return;
+            }
             if (power_save_timer_) {
                 power_save_timer_->WakeUp();
             }
@@ -446,6 +453,9 @@ private:
             }
         });
         boot_button_.OnPressUp([this]() {
+            if (BackendService::GetInstance().IsBindingPageVisible()) {
+                return;
+            }
             if (press_to_talk_tool_ && press_to_talk_tool_->IsPressToTalkEnabled()) {
                 Application::GetInstance().StopListening();
             }

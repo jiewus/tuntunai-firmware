@@ -411,28 +411,26 @@ constexpr uint32_t kScreensaverAccentColor = 0xF28A3A;
 
 /**
  * @brief 绑定页面标题、绑定码和说明文字的目标视觉字号，单位为物理像素。
- * @details 三种字号会根据当前主题字体的实际行高换算为 LVGL 缩放比例，使内置字体和
- *          下载后的完整中文字库保持一致的视觉层级。
+ * @details 标题使用 Heavy 字体放大显示，说明文字使用资源分区中的 Heavy24 原生字号。
  */
-constexpr int kBindingTitleTextPixelSize = 26;
+constexpr int kBindingTitleTextPixelSize = 30;
 constexpr int kBindingCodeTextPixelSize = 64;
-constexpr int kBindingMessageTextPixelSize = 22;
+constexpr int kBindingMessageTextPixelSize = 24;
 
 /**
  * @brief 绑定码金属框和页面说明文字的圆屏安全尺寸，单位为物理像素。
- * @details 绑定码框位于圆心附近，可使用较宽区域；说明文字靠近下半圆，因此使用更窄的
- *          宽度并允许自动换行，避免字符被圆形面板边缘裁切。
+ * @details 绑定码框位于圆心附近，可使用较宽区域；说明文字固定为两行并位于下半圆安全区。
  */
-constexpr int kBindingCodePanelWidth = 258;
+constexpr int kBindingCodePanelWidth = 324;
 constexpr int kBindingCodePanelHeight = 108;
-constexpr int kBindingMessageWidth = 250;
+constexpr int kBindingMessageWidth = 300;
 
 /**
  * @brief 绑定页面主要控件相对于圆屏边缘或圆心的垂直位置，单位为物理像素。
  */
 constexpr int kBindingTitleOffsetY = 58;
 constexpr int kBindingCodeOffsetY = -3;
-constexpr int kBindingMessageBottomOffset = 54;
+constexpr int kBindingMessageBottomOffset = 50;
 
 /**
  * @brief 1900-2100 年农历大小月和闰月编码表。
@@ -1753,11 +1751,19 @@ void LcdDisplay::ApplyDeviceBindingFont(const lv_font_t* font) {
         return;
     }
 
-    const int title_scale = kBindingTitleTextPixelSize * 256 / font->line_height;
-    const int message_scale = kBindingMessageTextPixelSize * 256 / font->line_height;
+    const bool has_native_heavy_font = screensaver_weather_font_ != nullptr
+        && screensaver_weather_font_->font() != nullptr;
+    const lv_font_t* binding_text_font = font;
+    if (has_native_heavy_font) {
+        binding_text_font = screensaver_weather_font_->font();
+    }
+    const int title_scale = kBindingTitleTextPixelSize * 256 / binding_text_font->line_height;
+    const int message_scale = has_native_heavy_font
+        ? 256
+        : kBindingMessageTextPixelSize * 256 / binding_text_font->line_height;
 
     if (binding_title_label_ != nullptr) {
-        lv_obj_set_style_text_font(binding_title_label_, font, 0);
+        lv_obj_set_style_text_font(binding_title_label_, binding_text_font, 0);
         lv_obj_set_width(binding_title_label_,
                          kBindingMessageWidth * 256 / title_scale);
         lv_obj_set_style_transform_scale(binding_title_label_, title_scale, 0);
@@ -1772,7 +1778,7 @@ void LcdDisplay::ApplyDeviceBindingFont(const lv_font_t* font) {
         lv_obj_center(binding_code_label_);
     }
     if (binding_message_label_ != nullptr) {
-        lv_obj_set_style_text_font(binding_message_label_, font, 0);
+        lv_obj_set_style_text_font(binding_message_label_, binding_text_font, 0);
         lv_obj_set_width(binding_message_label_,
                          kBindingMessageWidth * 256 / message_scale);
         lv_obj_set_style_transform_scale(binding_message_label_, message_scale, 0);

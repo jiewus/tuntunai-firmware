@@ -873,6 +873,27 @@ void Application::EndCurrentConversationForLocalPlayback() {
 }
 
 /**
+ * @brief 结束当前云端会话并立即进入屏保页面。
+ * @details 该方法用于绑定码过期等后台终态。它会在应用主循环中停止语音处理、清空解码器、关闭音频
+ *          通道并切换到空闲状态，即使当前已经是空闲状态也会直接显示屏保，避免继续等待普通超时。
+ */
+void Application::EndCurrentConversationAndEnterScreensaver() {
+    Schedule([this]() {
+        audio_service_.EnableVoiceProcessing(false);
+        audio_service_.EnableWakeWordDetection(true);
+        audio_service_.ResetDecoder();
+        end_conversation_after_speaking_.store(false);
+        if (protocol_ && protocol_->IsAudioChannelOpened()) {
+            protocol_->CloseAudioChannel();
+        }
+        SetDeviceState(kDeviceStateIdle);
+        enter_screensaver_after_conversation_.store(false);
+        Board::GetInstance().EnterScreensaver();
+        ESP_LOGI(TAG, "绑定流程已结束，设备立即进入屏保");
+    });
+}
+
+/**
  * @brief 请求在当前云端回复播报完整结束后关闭会话并进入屏保。
  * @details MCP 工具在向云端返回最终结果前设置一次性标记；TTS stop 到达后等待剩余播放数据消费完，
  *          再关闭音频通道。由播报状态转为空闲的既有状态监听器负责立即显示屏保。

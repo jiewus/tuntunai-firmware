@@ -148,6 +148,12 @@ public:
     void EndCurrentConversationForLocalPlayback();
 
     /**
+     * @brief 结束当前云端会话并立即进入屏保页面。
+     * @note 方法可从后台绑定任务调用，实际音频和界面操作会排到应用主循环执行。
+     */
+    void EndCurrentConversationAndEnterScreensaver();
+
+    /**
      * @brief 请求在当前云端回复播报完整结束后关闭会话并进入屏保。
      * @note 本方法只设置一次性线程安全标记，可从 MCP 后台完成回调调用。
      */

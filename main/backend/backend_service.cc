@@ -119,6 +119,12 @@ namespace
     constexpr const char *kBindingCompletePath = "/api/device/binding/complete";
 
     /**
+     * @brief 绑定码页面固定显示的后台输入提示和访问域名。
+     */
+    constexpr const char *kBindingPageMessage =
+        "请在囤囤AI后台输入\nweb.tuntun.life";
+
+    /**
      * @brief 使用设备访问 Token 获取当前屏保天气的固定接口路径。
      */
     constexpr const char *kWeatherPath = "/api/device/weather";
@@ -185,6 +191,8 @@ namespace
      * @brief 主动通知 HTTPS 补偿、音频下载和任务资源限制。
      */
     constexpr int64_t kNotificationCheckIntervalUs = 5LL * 60LL * 1000LL * 1000LL;
+    /** @brief 设备业务 EMQX 心跳周期，固定为两分钟。 */
+    constexpr int64_t kHeartbeatIntervalUs = 2LL * 60LL * 1000LL * 1000LL;
     /**
      * @brief 通知确认任务的专用栈大小，单位为字节；通知同步本身使用常驻 Worker。
      */
@@ -953,34 +961,6 @@ namespace
     }
 
     /**
-     * @brief 在圆屏上显示绑定流程状态，并确保用户可见背光已经恢复。
-     * @param binding_code 非空时显示大号数字绑定码；空字符串表示只显示状态。
-     * @param message 显示在绑定码下方的中文操作说明或结果。
-     */
-    void ShowBindingPage(const std::string &binding_code, const std::string &message)
-    {
-        auto &board = Board::GetInstance();
-        board.WakeUpScreen(true);
-        Display *display = board.GetDisplay();
-        if (display != nullptr)
-        {
-            display->ShowDeviceBinding(binding_code, message);
-        }
-    }
-
-    /**
-     * @brief 隐藏绑定页面并恢复页面下方的正常界面。
-     */
-    void HideBindingPage()
-    {
-        Display *display = Board::GetInstance().GetDisplay();
-        if (display != nullptr)
-        {
-            display->HideDeviceBinding();
-        }
-    }
-
-    /**
      * @brief 至多调用一次异步 MCP 结果回调，并在调用前清空原回调。
      * @param completion 设备绑定或天气城市设置需要消费的一次性回调；为空时不执行操作。
      * @param message 返回给大模型的中文结果文本。
@@ -1341,6 +1321,34 @@ void BackendService::ExecuteNotificationSyncJob()
 }
 
 /**
+ * @brief 通过业务 EMQX 发布一次设备心跳。
+ * @details 心跳不等待业务响应；发布动作在后端常驻 Worker 中执行，避免阻塞定时器任务和界面线程。
+ */
+void BackendService::ExecuteHeartbeatJob()
+{
+    bool published = false;
+    {
+        std::lock_guard<std::mutex> lock(notification_mutex_);
+        if (notification_mqtt_ != nullptr
+            && notification_mqtt_->IsConnected()
+            && !heartbeat_topic_.empty())
+        {
+            published = notification_mqtt_->Publish(
+                heartbeat_topic_, "{\"type\":\"device.heartbeat\",\"revision\":1}", 0);
+        }
+    }
+    if (published)
+    {
+        ESP_LOGD(kTag, "设备 MQTT 心跳已发送");
+    }
+    else if (network_connected_.load())
+    {
+        ESP_LOGW(kTag, "设备 MQTT 心跳发送失败，等待下一周期重试");
+    }
+    heartbeat_job_pending_.store(false);
+}
+
+/**
  * @brief 根据固定任务类型分派常驻 Worker 工作。
  * @param job 从固定环形队列取出的任务。
  */
@@ -1372,6 +1380,9 @@ void BackendService::ExecuteBackendJob(const BackendJob& job)
         break;
     case BackendJobType::NotificationSync:
         ExecuteNotificationSyncJob();
+        break;
+    case BackendJobType::Heartbeat:
+        ExecuteHeartbeatJob();
         break;
     }
 }
@@ -1507,6 +1518,21 @@ void BackendService::Start()
         notification_reconnect_timer_ = nullptr;
     }
 
+    const esp_timer_create_args_t heartbeat_timer_args = {
+        .callback = HeartbeatTimerCallback,
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "device_heartbeat",
+        .skip_unhandled_events = true,
+    };
+    timer_error = esp_timer_create(&heartbeat_timer_args, &heartbeat_timer_);
+    if (timer_error != ESP_OK)
+    {
+        ESP_LOGE(kTag, "设备心跳定时器创建失败，原因=%s",
+                 esp_err_to_name(timer_error));
+        heartbeat_timer_ = nullptr;
+    }
+
     ESP_LOGI(kTag, "囤囤AI后端服务已初始化，接口地址=%s，设备凭据=%s",
              CONFIG_TUNTUN_API_URL, device_access_token_.empty() ? "缺失" : "可用");
 }
@@ -1637,7 +1663,8 @@ void BackendService::RegisterMcpTools(McpServer &server)
         "Check whether this device is already bound. If it is bound, report that state directly. "
         "Otherwise generate a TuntunLife platform device binding code and show it on the screen. "
         "Call this tool only when the user explicitly asks to bind or connect this device to the "
-        "TuntunLife platform. The user must finish binding in the TuntunLife web application.",
+        "TuntunLife platform. The user must finish binding in the TuntunLife web application. "
+        "Do not read the web address aloud.",
         PropertyList(),
         [this](const PropertyList &properties, McpToolCompletion completion)
         {
@@ -1646,8 +1673,28 @@ void BackendService::RegisterMcpTools(McpServer &server)
                              [completion = std::move(completion)](const std::string &message,
                                                                   bool is_error) mutable
                              {
+                                 if (!is_error)
+                                 {
+                                     Application::GetInstance()
+                                         .RequestConversationEndAfterSpeaking();
+                                 }
                                  completion(McpToolResult{message, is_error});
                              });
+        });
+
+    server.AddTool(
+        "self.tuntun.exit_binding_page",
+        "关闭当前设备绑定页面。用户在绑定页面显示期间说退出绑定、关闭绑定页面、取消显示"
+        "或返回时必须调用。只关闭页面，不取消后台绑定会话。",
+        PropertyList(),
+        [this](const PropertyList &properties) -> ReturnValue
+        {
+            (void)properties;
+            const bool closed = ExitBindingPage();
+            Application::GetInstance().RequestConversationEndAfterSpeaking();
+            return closed
+                ? std::string("已退出设备绑定页面。")
+                : std::string("当前没有正在显示的设备绑定页面。");
         });
 
     // 解绑工具在设备 MCP 服务器上注册为同步工具，确保在语音会话中立即返回说明文本。
@@ -1655,7 +1702,8 @@ void BackendService::RegisterMcpTools(McpServer &server)
         "self.tuntun.unbind_device",
         "Explain how to unbind this device from the TuntunLife platform. Call this tool when the "
         "user explicitly asks to unbind or remove this device. Device-side voice unbinding is not "
-        "allowed; the user must sign in to the TuntunLife web application and unbind it there.",
+        "allowed; the user must sign in to the TuntunLife web application and unbind it there. "
+        "If the user only wants to close the binding page, call self.tuntun.exit_binding_page instead.",
         PropertyList(),
         [](const PropertyList &properties) -> ReturnValue
         {
@@ -1889,15 +1937,18 @@ void BackendService::RegisterMcpTools(McpServer &server)
 }
 
 /**
- * @brief 标记网络可用，并恢复未完成绑定会话的轮询。
+ * @brief 标记网络可用，并在后台静默恢复未完成绑定会话的轮询。
+ * @details 自动恢复只检查旧会话状态，不显示绑定页面；绑定页面只能由用户主动调用绑定工具打开。
  */
 void BackendService::OnNetworkConnected()
 {
     network_connected_.store(true);
     bool has_pending_session = false;
+    bool has_device_credential = false;
     {
         std::lock_guard<std::mutex> lock(binding_mutex_);
         has_pending_session = !binding_session_token_.empty() && !binding_code_.empty();
+        has_device_credential = !device_access_token_.empty();
     }
     if (has_pending_session)
     {
@@ -1905,8 +1956,20 @@ void BackendService::OnNetworkConnected()
     }
     if (screensaver_active_.load())
     {
-        StartWeatherSync(false);
-        StartMemoSync(false);
+        if (has_device_credential)
+        {
+            weather_refresh_requested_.store(true);
+            memo_refresh_requested_.store(true);
+            ShowWeatherStatusIfUnavailable("天气加载中");
+            ShowMemoStatusIfUnavailable("备忘录加载中");
+            StartWeatherSync(true);
+            StartMemoSync(true);
+        }
+        else
+        {
+            ShowWeatherStatusIfUnavailable("");
+            ShowMemoStatusIfUnavailable(kUnboundMemoPrompt);
+        }
     }
     StartMcpManifestSync();
     StartNotificationSync(true);
@@ -1918,6 +1981,12 @@ void BackendService::OnNetworkConnected()
 void BackendService::OnNetworkDisconnected()
 {
     network_connected_.store(false);
+    StopHeartbeatPublishing();
+    bool has_device_credential = false;
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        has_device_credential = !device_access_token_.empty();
+    }
     if (notification_reconnect_timer_ != nullptr)
     {
         esp_timer_stop(notification_reconnect_timer_);
@@ -1927,14 +1996,16 @@ void BackendService::OnNetworkDisconnected()
     {
         std::lock_guard<std::mutex> lock(notification_mutex_);
         active_notification_mqtt_.store(nullptr);
+        heartbeat_topic_.clear();
         mqtt = std::move(notification_mqtt_);
     }
     if (mqtt != nullptr)
     {
         mqtt->Disconnect();
     }
-    ShowWeatherStatusIfUnavailable("等待网络连接");
-    ShowMemoStatusIfUnavailable("等待网络连接");
+    ShowWeatherStatusIfUnavailable(has_device_credential ? "等待网络连接" : "");
+    ShowMemoStatusIfUnavailable(
+        has_device_credential ? "等待网络连接" : kUnboundMemoPrompt);
 }
 
 /**
@@ -1942,6 +2013,75 @@ void BackendService::OnNetworkDisconnected()
  */
 void BackendService::OnMcpDisconnected()
 {
+}
+
+/**
+ * @brief 判断设备绑定覆盖页面当前是否可见。
+ * @return 绑定页面正在显示时返回 true，否则返回 false。
+ */
+bool BackendService::IsBindingPageVisible() const
+{
+    return binding_page_visible_.load();
+}
+
+/**
+ * @brief 由用户主动退出绑定覆盖页面，同时保留绑定会话和后台轮询。
+ * @return 页面原本可见且已经关闭时返回 true，否则返回 false。
+ */
+bool BackendService::ExitBindingPage()
+{
+    std::lock_guard<std::mutex> lock(binding_mutex_);
+    if (!binding_page_visible_.load())
+    {
+        return false;
+    }
+    binding_page_dismissed_ = true;
+    binding_page_visible_.store(false);
+    Display *display = Board::GetInstance().GetDisplay();
+    if (display != nullptr)
+    {
+        display->HideDeviceBinding();
+    }
+    ESP_LOGI(kTag, "用户已退出设备绑定页面，后台绑定会话继续运行");
+    return true;
+}
+
+/**
+ * @brief 显示绑定流程状态，并确保用户可见背光已经恢复。
+ * @param binding_code 非空时显示大号数字绑定码；空字符串表示只显示状态。
+ * @param message 显示在绑定码下方的中文操作说明或结果。
+ */
+void BackendService::ShowBindingPage(
+    const std::string &binding_code,
+    const std::string &message)
+{
+    std::lock_guard<std::mutex> lock(binding_mutex_);
+    if (binding_page_dismissed_)
+    {
+        return;
+    }
+    auto &board = Board::GetInstance();
+    board.WakeUpScreen(true);
+    Display *display = board.GetDisplay();
+    if (display != nullptr)
+    {
+        display->ShowDeviceBinding(binding_code, message);
+        binding_page_visible_.store(true);
+    }
+}
+
+/**
+ * @brief 隐藏绑定页面并恢复页面下方的正常界面。
+ */
+void BackendService::HideBindingPage()
+{
+    std::lock_guard<std::mutex> lock(binding_mutex_);
+    binding_page_visible_.store(false);
+    Display *display = Board::GetInstance().GetDisplay();
+    if (display != nullptr)
+    {
+        display->HideDeviceBinding();
+    }
 }
 
 /**
@@ -3676,6 +3816,10 @@ void BackendService::StartBindingTask(bool request_new_session,
         {
             std::lock_guard<std::mutex> lock(binding_mutex_);
             device_is_bound = !device_id_.empty() && !device_access_token_.empty();
+            if (!device_is_bound)
+            {
+                binding_page_dismissed_ = false;
+            }
         }
         if (device_is_bound)
         {
@@ -3752,7 +3896,7 @@ void BackendService::StartBindingTask(bool request_new_session,
 
     if (!active_code.empty())
     {
-        ShowBindingPage(active_code, "请在囤囤AI网页端输入绑定码");
+        ShowBindingPage(active_code, kBindingPageMessage);
     }
     if (completion)
     {
@@ -3780,20 +3924,36 @@ void BackendService::BindingTaskEntry(void *context)
     catch (const std::exception &exception)
     {
         ESP_LOGE(kTag, "设备绑定任务异常，原因=%s", exception.what());
-        ShowBindingPage("", "绑定流程异常，请稍后重试");
+        const bool binding_page_visible = service->IsBindingPageVisible();
+        if (binding_page_visible)
+        {
+            service->ShowBindingPage("", "绑定流程异常，请稍后重试");
+        }
         FinishToolRequest(task_context->completion,
                           "设备绑定流程异常，请稍后重试。", true);
-        vTaskDelay(pdMS_TO_TICKS(3000));
-        HideBindingPage();
+        if (binding_page_visible)
+        {
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            service->HideBindingPage();
+            Application::GetInstance().EndCurrentConversationAndEnterScreensaver();
+        }
     }
     catch (...)
     {
         ESP_LOGE(kTag, "设备绑定任务发生未知异常");
-        ShowBindingPage("", "绑定流程异常，请稍后重试");
+        const bool binding_page_visible = service->IsBindingPageVisible();
+        if (binding_page_visible)
+        {
+            service->ShowBindingPage("", "绑定流程异常，请稍后重试");
+        }
         FinishToolRequest(task_context->completion,
                           "设备绑定流程异常，请稍后重试。", true);
-        vTaskDelay(pdMS_TO_TICKS(3000));
-        HideBindingPage();
+        if (binding_page_visible)
+        {
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            service->HideBindingPage();
+            Application::GetInstance().EndCurrentConversationAndEnterScreensaver();
+        }
     }
     if (task_context->completion)
     {
@@ -3823,8 +3983,8 @@ void BackendService::BindingTaskEntry(void *context)
 }
 
 /**
- * @brief 申请、显示、轮询并完成一次完整设备绑定流程。
- * @param request_new_session true 先创建新绑定会话。
+ * @brief 申请或恢复绑定会话，持续轮询并完成设备绑定流程。
+ * @param request_new_session true 创建新会话并显示绑定页面；false 在后台静默恢复已有会话。
  * @param completion 生成绑定码后返回 MCP 结果的一次性回调。
  */
 void BackendService::RunBindingTask(bool request_new_session,
@@ -3884,7 +4044,7 @@ void BackendService::RunBindingTask(bool request_new_session,
         }
 
         SavePendingBinding(binding_code, session_token);
-        ShowBindingPage(binding_code, "请在囤囤AI网页端输入绑定码");
+        ShowBindingPage(binding_code, kBindingPageMessage);
         FinishToolRequest(
             completion,
             "绑定码已经显示在设备屏幕上，请在囤囤AI网页端完成绑定。",
@@ -3896,7 +4056,6 @@ void BackendService::RunBindingTask(bool request_new_session,
         {
             return;
         }
-        ShowBindingPage(binding_code, "请在囤囤AI网页端输入绑定码");
     }
 
     while (true)
@@ -3929,10 +4088,15 @@ void BackendService::RunBindingTask(bool request_new_session,
         {
             if (status_response.status_code == 401 || status_response.status_code == 403)
             {
+                const bool binding_page_visible = IsBindingPageVisible();
                 ClearPendingBinding();
-                ShowBindingPage("", "绑定码已过期，请重新申请");
-                vTaskDelay(pdMS_TO_TICKS(3000));
-                HideBindingPage();
+                if (binding_page_visible)
+                {
+                    ShowBindingPage("", "绑定码已过期，请重新申请");
+                    vTaskDelay(pdMS_TO_TICKS(3000));
+                    HideBindingPage();
+                    Application::GetInstance().EndCurrentConversationAndEnterScreensaver();
+                }
                 return;
             }
             ESP_LOGW(kTag, "绑定状态查询失败，HTTP 状态码=%d",
@@ -3977,29 +4141,44 @@ void BackendService::RunBindingTask(bool request_new_session,
             }
 
             SaveDeviceCredential(device_id, access_token);
+            const bool binding_page_visible = IsBindingPageVisible();
             ClearPendingBinding();
-            ShowBindingPage("", "绑定成功");
-            vTaskDelay(pdMS_TO_TICKS(3000));
-            HideBindingPage();
+            if (binding_page_visible)
+            {
+                ShowBindingPage("", "绑定成功");
+                vTaskDelay(pdMS_TO_TICKS(3000));
+                HideBindingPage();
+                Application::GetInstance().EndCurrentConversationAndEnterScreensaver();
+            }
             ESP_LOGI(kTag, "设备绑定完成");
             return;
         }
         if (binding_status == kBindingStatusCompleted)
         {
+            const bool binding_page_visible = IsBindingPageVisible();
             ClearPendingBinding();
-            ShowBindingPage("", "设备已完成绑定");
-            vTaskDelay(pdMS_TO_TICKS(3000));
-            HideBindingPage();
+            if (binding_page_visible)
+            {
+                ShowBindingPage("", "设备已完成绑定");
+                vTaskDelay(pdMS_TO_TICKS(3000));
+                HideBindingPage();
+                Application::GetInstance().EndCurrentConversationAndEnterScreensaver();
+            }
             return;
         }
         if (binding_status == kBindingStatusExpired || binding_status == kBindingStatusFailed)
         {
+            const bool binding_page_visible = IsBindingPageVisible();
             ClearPendingBinding();
-            ShowBindingPage("", binding_status == kBindingStatusExpired
-                                    ? "绑定码已过期，请重新申请"
-                                    : "绑定失败，请重新申请");
-            vTaskDelay(pdMS_TO_TICKS(3000));
-            HideBindingPage();
+            if (binding_page_visible)
+            {
+                ShowBindingPage("", binding_status == kBindingStatusExpired
+                                        ? "绑定码已过期，请重新申请"
+                                        : "绑定失败，请重新申请");
+                vTaskDelay(pdMS_TO_TICKS(3000));
+                HideBindingPage();
+                Application::GetInstance().EndCurrentConversationAndEnterScreensaver();
+            }
             return;
         }
 
@@ -4135,6 +4314,7 @@ void BackendService::RunNotificationSync()
         {
             std::lock_guard<std::mutex> lock(notification_mutex_);
             active_notification_mqtt_.store(nullptr);
+            heartbeat_topic_.clear();
             disconnected_mqtt = std::move(notification_mqtt_);
         }
         if (disconnected_mqtt != nullptr)
@@ -4351,6 +4531,7 @@ bool BackendService::ConnectNotificationMqtt()
     std::string username;
     std::string password;
     std::string topic;
+    std::string heartbeat_topic;
     cJSON *port = cJSON_GetObjectItemCaseSensitive(data, "port");
     cJSON *use_tls = cJSON_GetObjectItemCaseSensitive(data, "use_tls");
     const bool valid = ReadBoundedString(data, "host", 255, host) &&
@@ -4358,6 +4539,7 @@ bool BackendService::ConnectNotificationMqtt()
                        ReadBoundedString(data, "username", 256, username) &&
                        ReadBoundedString(data, "password", 256, password) &&
                        ReadBoundedString(data, "topic", 255, topic) &&
+                       ReadBoundedString(data, "heartbeat_topic", 255, heartbeat_topic) &&
                        cJSON_IsNumber(port) && port->valueint > 0 && port->valueint <= 65535 &&
                        cJSON_IsTrue(use_tls);
     const int broker_port = cJSON_IsNumber(port) ? port->valueint : 0;
@@ -4479,6 +4661,7 @@ bool BackendService::ConnectNotificationMqtt()
         {
             esp_timer_stop(notification_reconnect_timer_);
         }
+        StartHeartbeatPublishing();
         ESP_LOGI(kTag, "业务EMQX已自动重连并恢复设备通知订阅");
         weather_refresh_requested_.store(true);
         Application::GetInstance().Schedule([this]()
@@ -4493,6 +4676,7 @@ bool BackendService::ConnectNotificationMqtt()
         {
             return;
         }
+        StopHeartbeatPublishing();
         ESP_LOGW(kTag, "业务EMQX连接已断开，准备指数退避重连");
         ScheduleNotificationMqttReconnect();
     });
@@ -4513,6 +4697,7 @@ bool BackendService::ConnectNotificationMqtt()
         previous_mqtt = std::move(notification_mqtt_);
         notification_mqtt_ = std::move(mqtt);
         active_notification_mqtt_.store(notification_mqtt_.get());
+        heartbeat_topic_ = heartbeat_topic;
     }
     if (previous_mqtt != nullptr)
     {
@@ -4523,6 +4708,7 @@ bool BackendService::ConnectNotificationMqtt()
     {
         esp_timer_stop(notification_reconnect_timer_);
     }
+    StartHeartbeatPublishing();
     ESP_LOGI(kTag, "业务EMQX连接成功并已订阅当前设备通知主题");
     weather_refresh_requested_.store(true);
     Application::GetInstance().Schedule([this]()
@@ -4970,4 +5156,61 @@ void BackendService::NotificationReconnectTimerCallback(void *context)
 {
     auto *service = static_cast<BackendService *>(context);
     service->StartNotificationSync(true);
+}
+
+/**
+ * @brief 启动两分钟心跳周期并立即安排一次心跳。
+ */
+void BackendService::StartHeartbeatPublishing()
+{
+    if (heartbeat_timer_ != nullptr)
+    {
+        esp_timer_stop(heartbeat_timer_);
+        const esp_err_t error = esp_timer_start_periodic(
+            heartbeat_timer_, kHeartbeatIntervalUs);
+        if (error != ESP_OK)
+        {
+            ESP_LOGW(kTag, "设备心跳定时器启动失败，原因=%s", esp_err_to_name(error));
+        }
+    }
+    EnqueueHeartbeat();
+}
+
+/**
+ * @brief 停止业务 EMQX 心跳周期。
+ */
+void BackendService::StopHeartbeatPublishing()
+{
+    if (heartbeat_timer_ != nullptr)
+    {
+        esp_timer_stop(heartbeat_timer_);
+    }
+    heartbeat_job_pending_.store(false);
+}
+
+/**
+ * @brief 在没有待处理心跳时把一次发布加入常驻后端 Worker。
+ */
+void BackendService::EnqueueHeartbeat()
+{
+    if (!network_connected_.load()
+        || heartbeat_job_pending_.exchange(true))
+    {
+        return;
+    }
+    if (!EnqueueBackendJob(BackendJobType::Heartbeat))
+    {
+        heartbeat_job_pending_.store(false);
+        ESP_LOGW(kTag, "后端 Worker 队列已满，无法安排设备心跳");
+    }
+}
+
+/**
+ * @brief 两分钟设备心跳定时器回调，只负责安排发布任务。
+ * @param context 指向当前 BackendService 单例。
+ */
+void BackendService::HeartbeatTimerCallback(void *context)
+{
+    auto *service = static_cast<BackendService *>(context);
+    service->EnqueueHeartbeat();
 }
