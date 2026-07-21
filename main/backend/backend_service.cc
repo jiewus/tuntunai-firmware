@@ -263,6 +263,7 @@ namespace
     constexpr int kNotificationSourceScheduledMcp = 1;
     constexpr int kNotificationSourceWeather = 2;
     constexpr int kNotificationSourceMemo = 3;
+    constexpr int kNotificationSourceCustomReminder = 4;
     constexpr int kNotificationAckReceived = 1;
     constexpr int kNotificationAckDeferred = 2;
     constexpr int kNotificationAckPlaying = 3;
@@ -4297,7 +4298,8 @@ void BackendService::RunNotificationSync()
         return;
     }
     NotificationHint hint;
-    if (DequeueNotificationHint(hint))
+    const bool has_hint = DequeueNotificationHint(hint);
+    if (has_hint)
     {
         ESP_LOGI(kTag, "正在处理主动通知提示，通知标识=%s，投递标识=%s",
                  hint.notification_id.data(), hint.delivery_id.data());
@@ -4332,9 +4334,12 @@ void BackendService::RunNotificationSync()
         std::lock_guard<std::mutex> lock(binding_mutex_);
         access_token = device_access_token_;
     }
+    const std::string notification_path = has_hint
+        ? "/api/device/notifications/" + std::string(hint.notification_id.data())
+        : kNotificationPendingPath;
     const HttpResponse response = SendJsonRequest(
         "GET",
-        kNotificationPendingPath,
+        notification_path.c_str(),
         access_token,
         "",
         kNotificationResponseMaxBytes);
@@ -4352,13 +4357,14 @@ void BackendService::RunNotificationSync()
     }
     cJSON *code = cJSON_GetObjectItemCaseSensitive(root, "code");
     cJSON *data = cJSON_GetObjectItemCaseSensitive(root, "data");
-    if (!cJSON_IsNumber(code) || code->valueint != 0 || !cJSON_IsArray(data))
+    if (!cJSON_IsNumber(code) || code->valueint != 0
+        || (has_hint ? !cJSON_IsObject(data) : !cJSON_IsArray(data)))
     {
         cJSON_Delete(root);
         ESP_LOGW(kTag, "主动通知响应结构无效");
         return;
     }
-    cJSON *item = cJSON_GetArrayItem(data, 0);
+    cJSON *item = has_hint ? data : cJSON_GetArrayItem(data, 0);
     if (!cJSON_IsObject(item))
     {
         cJSON_Delete(root);
@@ -4386,7 +4392,7 @@ void BackendService::RunNotificationSync()
                            notification.display_text) &&
                        cJSON_IsNumber(source_type) &&
                        source_type->valueint >= kNotificationSourceScheduledMcp &&
-                       source_type->valueint <= kNotificationSourceMemo &&
+                       source_type->valueint <= kNotificationSourceCustomReminder &&
                        cJSON_IsNumber(notification_mode) &&
                        (notification_mode->valueint == kNotificationModeDirect ||
                         notification_mode->valueint == kNotificationModeConfirm) &&
@@ -4395,6 +4401,12 @@ void BackendService::RunNotificationSync()
     {
         cJSON_Delete(root);
         ESP_LOGW(kTag, "主动通知字段校验失败");
+        return;
+    }
+    if (has_hint && notification.delivery_id != hint.delivery_id.data())
+    {
+        cJSON_Delete(root);
+        ESP_LOGW(kTag, "主动通知详情投递标识不匹配");
         return;
     }
     notification.notification_mode = notification_mode->valueint;
@@ -4408,9 +4420,18 @@ void BackendService::RunNotificationSync()
     }
     else
     {
-        notification.source_title = source_type->valueint == kNotificationSourceWeather
-            ? "天气播报"
-            : "备忘录提醒";
+        if (source_type->valueint == kNotificationSourceWeather)
+        {
+            notification.source_title = "天气播报";
+        }
+        else if (source_type->valueint == kNotificationSourceMemo)
+        {
+            notification.source_title = "备忘录提醒";
+        }
+        else
+        {
+            notification.source_title = "自定义提醒";
+        }
     }
     notification.valid = true;
     cJSON_Delete(root);

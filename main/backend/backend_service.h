@@ -357,7 +357,7 @@ private:
         std::string delivery_id;
         /** @brief 设备页面显示文本。 */
         std::string display_text;
-        /** @brief MCP 名称、天气播报或备忘录提醒。 */
+        /** @brief MCP 名称、天气播报、备忘录提醒或自定义提醒。 */
         std::string source_title;
         /** @brief 1直接播报，2询问后播报。 */
         int notification_mode = 1;
