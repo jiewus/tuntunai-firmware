@@ -11,7 +11,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
-#include "application.h"
+#include "app/application.h"
 
 #define TAG "main"
 

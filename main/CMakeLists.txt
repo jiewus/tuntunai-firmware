@@ -12,6 +12,10 @@ set(SOURCES
     "led/single_led.cc"
     "display/display.cc"
     "display/lcd_display.cc"
+    "display/lcd_screensaver.cc"
+    "display/lcd_mcp_view.cc"
+    "display/lcd_binding_view.cc"
+    "display/lcd_chat_view.cc"
     "display/lvgl_display/lvgl_display.cc"
     "display/lvgl_display/emoji_collection.cc"
     "display/lvgl_display/lvgl_theme.cc"
@@ -21,24 +25,34 @@ set(SOURCES
     "display/lvgl_display/gif/lvgl_gif.cc"
     "display/lvgl_display/gif/gifdec.c"
     "display/lvgl_display/jpg/image_to_jpeg.cpp"
-    "protocols/protocol.cc"
-    "protocols/mqtt_protocol.cc"
-    "protocols/websocket_protocol.cc"
+    "xiaozhi/protocol/protocol.cc"
+    "xiaozhi/protocol/protocol_message.cc"
+    "xiaozhi/protocol/mqtt_protocol.cc"
+    "xiaozhi/protocol/websocket_protocol.cc"
+    "xiaozhi/client/xiaozhi_client.cc"
+    "xiaozhi/provisioning/ota.cc"
+    "mcp/mcp_server.cc"
+    "mcp/tools/press_to_talk_mcp_tool.cc"
     "boards/common/board.cc"
     "boards/common/wifi_board.cc"
     "boards/common/adc_battery_monitor.cc"
     "boards/common/backlight.cc"
     "boards/common/button.cc"
     "boards/common/power_save_timer.cc"
-    "boards/common/press_to_talk_mcp_tool.cc"
-    "boards/tuntun-moji2-esp32c5/tuntun_moji2_esp32c5.cc"
-    "backend/backend_service.cc"
-    "mcp_server.cc"
-    "system_info.cc"
-    "application.cc"
-    "ota.cc"
-    "settings.cc"
-    "device_state_machine.cc"
+    "boards/movecall-moji2-esp32c5/movecall_moji2_esp32c5.cc"
+    "tuntun/backend/backend_service.cc"
+    "tuntun/backend/backend_dynamic_mcp.cc"
+    "tuntun/backend/backend_memo.cc"
+    "tuntun/backend/backend_custom_reminder.cc"
+    "tuntun/backend/backend_weather.cc"
+    "tuntun/backend/backend_binding.cc"
+    "tuntun/backend/backend_notification.cc"
+    "system/system_info.cc"
+    "system/settings.cc"
+    "app/application.cc"
+    "app/application_conversation.cc"
+    "app/application_lifecycle.cc"
+    "app/device_state_machine.cc"
     "assets.cc"
     "main.cc"
 )
@@ -51,15 +65,13 @@ set(INCLUDE_DIRS
     "display"
     "display/lvgl_display"
     "display/lvgl_display/jpg"
-    "protocols"
     "boards/common"
-    "backend"
 )
 
 # 唯一板型、内置字体和表情资源选择，同时传给 C++ 宏和资源构建脚本。
 # 360x360 圆屏对话字幕使用 30 px 中文字形源，界面中缩放为约 25 px 显示；
 # 状态栏在 LCD 实现中单独使用 20 px 字体。
-set(BOARD_TYPE "tuntun-moji2-esp32c5")
+set(BOARD_TYPE "movecall-moji2-esp32c5")
 set(BOARD_NAME "Tuntun Moji2 ESP32-C5")
 set(BUILTIN_TEXT_FONT font_puhui_basic_30_4)
 set(BUILTIN_ICON_FONT font_awesome_20_4)
@@ -67,7 +79,7 @@ set(DEFAULT_EMOJI_COLLECTION twemoji_64)
 
 # 保留带 CONFIG 条件的板型赋值，发布脚本和 menuconfig 都依赖该声明识别板型。
 if(CONFIG_BOARD_TYPE_TUNTUN_MOJI2_ESP32C5)
-    set(BOARD_TYPE "tuntun-moji2-esp32c5")
+    set(BOARD_TYPE "movecall-moji2-esp32c5")
 endif()
 
 # 中文语言 JSON 会生成 lang_config.h；对应 OGG 文件直接嵌入 main 组件二进制。

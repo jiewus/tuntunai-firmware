@@ -3,7 +3,7 @@
  * @brief backlight.cc 中各类和辅助函数的具体实现。
  */
 #include "backlight.h"
-#include "settings.h"
+#include "system/settings.h"
 
 #include <esp_log.h>
 #include <driver/ledc.h>

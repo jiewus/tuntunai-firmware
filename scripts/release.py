@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-BOARD = "tuntun-moji2-esp32c5"
+BOARD = "movecall-moji2-esp32c5"
 BOARD_DIR = PROJECT_ROOT / "main" / "boards" / BOARD
 
 

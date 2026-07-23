@@ -3,8 +3,8 @@
  * @brief power_save_timer.cc 中各类和辅助函数的具体实现。
  */
 #include "power_save_timer.h"
-#include "application.h"
-#include "settings.h"
+#include "app/application.h"
+#include "system/settings.h"
 
 #include <esp_log.h>
 

@@ -3,8 +3,8 @@
  * @brief board.cc 中各类和辅助函数的具体实现。
  */
 #include "board.h"
-#include "system_info.h"
-#include "settings.h"
+#include "system/system_info.h"
+#include "system/settings.h"
 #include "display/display.h"
 #include "assets/lang_config.h"
 

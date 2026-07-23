@@ -5,7 +5,7 @@
 #include "assets.h"
 #include "board.h"
 #include "display.h"
-#include "application.h"
+#include "app/application.h"
 #include "lvgl_theme.h"
 #if HAVE_LVGL
 #include "display/lcd_display.h"
