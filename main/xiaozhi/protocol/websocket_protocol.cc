@@ -17,6 +17,13 @@
 
 #define TAG "WS"
 
+namespace {
+
+/** @brief 单个下行 Opus 包允许占用的最大字节数，防止异常帧触发大块堆内存分配。 */
+constexpr size_t kMaximumIncomingAudioPayloadBytes = 4096;
+
+}  // namespace
+
 /**
  * @brief 创建事件组，但尚不连接服务器。
  * @details 事件组用于 OpenAudioChannel() 等待服务端 hello，网络对象按需创建。
@@ -159,30 +166,74 @@ bool WebsocketProtocol::OpenAudioChannel() {
         if (binary) {
             if (on_incoming_audio_ != nullptr) {
                 if (version_ == 2) {
-                    BinaryProtocol2* bp2 = (BinaryProtocol2*)data;
-                    bp2->version = ntohs(bp2->version);
-                    bp2->type = ntohs(bp2->type);
-                    bp2->timestamp = ntohl(bp2->timestamp);
-                    bp2->payload_size = ntohl(bp2->payload_size);
-                    auto payload = (uint8_t*)bp2->payload;
+                    if (data == nullptr || len < sizeof(BinaryProtocol2)) {
+                        ESP_LOGW(TAG, "已丢弃过短的 WebSocket v2 音频帧，实际字节数=%u",
+                                 static_cast<unsigned>(len));
+                        return;
+                    }
+
+                    BinaryProtocol2 header{};
+                    memcpy(&header, data, sizeof(header));
+                    const uint16_t frame_version = ntohs(header.version);
+                    const uint16_t frame_type = ntohs(header.type);
+                    const uint32_t timestamp = ntohl(header.timestamp);
+                    const size_t payload_size = ntohl(header.payload_size);
+                    const size_t actual_payload_size = len - sizeof(BinaryProtocol2);
+                    if (frame_version != 2 || frame_type != 0 ||
+                        payload_size != actual_payload_size ||
+                        payload_size > kMaximumIncomingAudioPayloadBytes) {
+                        ESP_LOGW(
+                            TAG,
+                            "已丢弃无效的 WebSocket v2 音频帧，版本=%u，类型=%u，声明字节数=%u，实际字节数=%u",
+                            static_cast<unsigned>(frame_version),
+                            static_cast<unsigned>(frame_type),
+                            static_cast<unsigned>(payload_size),
+                            static_cast<unsigned>(actual_payload_size));
+                        return;
+                    }
+
+                    const auto* payload = reinterpret_cast<const uint8_t*>(data) + sizeof(BinaryProtocol2);
                     on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
                         .sample_rate = server_sample_rate_,
                         .frame_duration = server_frame_duration_,
-                        .timestamp = bp2->timestamp,
-                        .payload = std::vector<uint8_t>(payload, payload + bp2->payload_size)
+                        .timestamp = timestamp,
+                        .payload = std::vector<uint8_t>(payload, payload + payload_size)
                     }));
                 } else if (version_ == 3) {
-                    BinaryProtocol3* bp3 = (BinaryProtocol3*)data;
-                    bp3->type = bp3->type;
-                    bp3->payload_size = ntohs(bp3->payload_size);
-                    auto payload = (uint8_t*)bp3->payload;
+                    if (data == nullptr || len < sizeof(BinaryProtocol3)) {
+                        ESP_LOGW(TAG, "已丢弃过短的 WebSocket v3 音频帧，实际字节数=%u",
+                                 static_cast<unsigned>(len));
+                        return;
+                    }
+
+                    BinaryProtocol3 header{};
+                    memcpy(&header, data, sizeof(header));
+                    const size_t payload_size = ntohs(header.payload_size);
+                    const size_t actual_payload_size = len - sizeof(BinaryProtocol3);
+                    if (header.type != 0 || payload_size != actual_payload_size ||
+                        payload_size > kMaximumIncomingAudioPayloadBytes) {
+                        ESP_LOGW(
+                            TAG,
+                            "已丢弃无效的 WebSocket v3 音频帧，类型=%u，声明字节数=%u，实际字节数=%u",
+                            static_cast<unsigned>(header.type),
+                            static_cast<unsigned>(payload_size),
+                            static_cast<unsigned>(actual_payload_size));
+                        return;
+                    }
+
+                    const auto* payload = reinterpret_cast<const uint8_t*>(data) + sizeof(BinaryProtocol3);
                     on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
                         .sample_rate = server_sample_rate_,
                         .frame_duration = server_frame_duration_,
                         .timestamp = 0,
-                        .payload = std::vector<uint8_t>(payload, payload + bp3->payload_size)
+                        .payload = std::vector<uint8_t>(payload, payload + payload_size)
                     }));
                 } else {
+                    if (data == nullptr || len == 0 || len > kMaximumIncomingAudioPayloadBytes) {
+                        ESP_LOGW(TAG, "已丢弃长度无效的 WebSocket 兼容音频帧，实际字节数=%u",
+                                 static_cast<unsigned>(len));
+                        return;
+                    }
                     on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
                         .sample_rate = server_sample_rate_,
                         .frame_duration = server_frame_duration_,

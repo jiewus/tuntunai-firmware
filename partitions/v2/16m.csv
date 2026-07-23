@@ -1,9 +1,9 @@
 # 16 MB Flash 分区表：双 OTA 应用槽 + 8 MB 资源分区。
 # Name,   Type, SubType, Offset,  Size, Flags
 # NVS 保存 Wi-Fi、UUID、音量和亮度；otadata 保存当前启动槽和回滚状态。
-nvs,      data, nvs,     0x9000,    0x4000,
-otadata,  data, ota,     0xd000,    0x2000,
-phy_init, data, phy,     0xf000,    0x1000,
+nvs,      data, nvs,     0x11000,   0x4000,
+otadata,  data, ota,     0x15000,   0x2000,
+phy_init, data, phy,     0x17000,   0x1000,
 # 两个 0x3f0000 应用槽支持 HTTPS OTA，任一槽都可容纳当前约 2.5 MB 固件。
 ota_0,    app,  ota_0,   0x20000,   0x3f0000,
 ota_1,    app,  ota_1,   ,          0x3f0000,

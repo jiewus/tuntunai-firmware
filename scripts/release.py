@@ -14,6 +14,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BOARD = "movecall-moji2-esp32c5"
 BOARD_DIR = PROJECT_ROOT / "main" / "boards" / BOARD
+SECURE_BOOT_SIGNING_KEY = PROJECT_ROOT / "secure_boot_signing_key.pem"
+RELEASE_DEFAULTS = PROJECT_ROOT / "sdkconfig.release.defaults"
 
 
 def find_idf_py() -> str:
@@ -96,15 +98,33 @@ def package_firmware(name: str) -> Path:
 
 
 def build() -> Path:
-    """设置 ESP32-C5 目标、编译、合并 0x0 完整镜像并返回最终发布包路径。"""
+    """使用发布安全配置编译、合并 0x0 完整镜像并返回最终发布包路径。"""
+    if not SECURE_BOOT_SIGNING_KEY.is_file():
+        raise RuntimeError(
+            "缺少 Secure Boot 签名私钥。请在 Git 之外执行："
+            "espsecure.py generate_signing_key --version 2 --scheme ecdsa256 "
+            "secure_boot_signing_key.pem"
+        )
+
     config = load_board_config()
     target = config["target"]
     build_config = config["builds"][0]
     name = build_config["name"]
 
-    run("idf.py", "set-target", target)
+    sdkconfig_defaults = ";".join([
+        "sdkconfig.defaults",
+        "sdkconfig.defaults.esp32c5",
+        RELEASE_DEFAULTS.name,
+    ])
+    run("idf.py", f"-DSDKCONFIG_DEFAULTS={sdkconfig_defaults}", "set-target", target)
     append_sdkconfig(build_config.get("sdkconfig_append", []))
-    run("idf.py", f"-DBOARD_NAME={name}", f"-DBOARD_TYPE={BOARD}", "build")
+    run(
+        "idf.py",
+        f"-DSDKCONFIG_DEFAULTS={sdkconfig_defaults}",
+        f"-DBOARD_NAME={name}",
+        f"-DBOARD_TYPE={BOARD}",
+        "build",
+    )
     run("idf.py", "merge-bin", "-o", "build/tuntun-binary.bin")
     return package_firmware(name)
 

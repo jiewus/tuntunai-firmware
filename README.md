@@ -19,6 +19,18 @@ idf.py set-target esp32c5
 python scripts/release.py movecall-moji2-esp32c5
 ```
 
+发布脚本固定启用 Secure Boot V2、Release 模式 Flash Encryption 和固件防降级。首次构建前需要在
+项目根目录生成不会提交到 Git 的 ECDSA-256 签名私钥：
+
+```bash
+espsecure.py generate_signing_key --version 2 --scheme ecdsa256 secure_boot_signing_key.pem
+```
+
+该私钥必须离线备份，后续 OTA 固件必须继续使用同一私钥签名。发布固件首次启动会写入不可逆 eFuse，
+只能在已经验证量产流程的设备上烧录；普通 `idf.py build` 和开发烧录不会启用这些不可逆发布配置。
+从旧版固件首次升级到安全发布固件时，必须烧录发布脚本生成的完整镜像；只执行应用 OTA 不会更新
+Bootloader 和分区表，也不会启用 Secure Boot 与 Flash Encryption。首次完整烧录会清空原有 NVS 配置。
+
 也可以通过 `idf.py menuconfig` 配置显示样式、资源和调试选项，然后执行：
 
 ```bash
