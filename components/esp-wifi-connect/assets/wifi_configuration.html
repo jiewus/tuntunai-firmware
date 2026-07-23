@@ -1,0 +1,976 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+    <meta name="theme-color" content="#165dff">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; connect-src 'self'">
+    <title>囤囤AI设备配网</title>
+    <style>
+        :root {
+            color-scheme: light;
+            --primary: #165dff;
+            --primary-dark: #0e42d2;
+            --primary-light: #e8f0ff;
+            --text: #1d2129;
+            --muted: #86909c;
+            --line: #e5e6eb;
+            --surface: #ffffff;
+            --background: #f2f3f5;
+            --danger: #f53f3f;
+            --success: #00b42a;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html, body {
+            min-height: 100%;
+            margin: 0;
+        }
+
+        body {
+            background: var(--background);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+            font-size: 15px;
+            line-height: 1.5;
+            letter-spacing: 0;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        button, input, select {
+            font: inherit;
+            letter-spacing: 0;
+        }
+
+        button {
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .topbar {
+            min-height: 148px;
+            padding: calc(24px + env(safe-area-inset-top)) 22px 46px;
+            background: var(--primary);
+            color: #ffffff;
+        }
+
+        .topbar-inner,
+        .page {
+            width: min(100%, 560px);
+            margin: 0 auto;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 18px;
+            font-size: 15px;
+            font-weight: 700;
+        }
+
+        .brand-mark {
+            position: relative;
+            width: 28px;
+            height: 28px;
+            border: 2px solid rgba(255, 255, 255, .96);
+            border-radius: 50%;
+        }
+
+        .brand-mark::before,
+        .brand-mark::after {
+            content: "";
+            position: absolute;
+            top: 8px;
+            width: 5px;
+            height: 7px;
+            background: #ffffff;
+            border-radius: 50%;
+        }
+
+        .brand-mark::before { left: 5px; }
+        .brand-mark::after { right: 5px; }
+
+        h1 {
+            margin: 0;
+            font-size: 26px;
+            line-height: 1.25;
+            font-weight: 750;
+        }
+
+        .topbar p {
+            margin: 8px 0 0;
+            color: rgba(255, 255, 255, .82);
+            font-size: 14px;
+        }
+
+        .page {
+            position: relative;
+            margin-top: -28px;
+            padding: 0 14px calc(24px + env(safe-area-inset-bottom));
+        }
+
+        .panel {
+            overflow: hidden;
+            background: var(--surface);
+            border: 1px solid rgba(22, 93, 255, .08);
+            border-radius: 8px;
+            box-shadow: 0 8px 24px rgba(29, 33, 41, .08);
+        }
+
+        .section {
+            padding: 20px;
+        }
+
+        .section + .section {
+            border-top: 1px solid var(--line);
+        }
+
+        .section-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            min-height: 32px;
+            margin-bottom: 14px;
+        }
+
+        .section-title {
+            margin: 0;
+            font-size: 17px;
+            font-weight: 700;
+        }
+
+        .text-button {
+            min-height: 32px;
+            padding: 0 2px;
+            border: 0;
+            background: transparent;
+            color: var(--primary);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .text-button:disabled {
+            color: var(--muted);
+            cursor: default;
+        }
+
+        .network-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-height: 44px;
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        .spinner {
+            width: 18px;
+            height: 18px;
+            border: 2px solid #c9d8ff;
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: rotate .8s linear infinite;
+        }
+
+        @keyframes rotate {
+            to { transform: rotate(360deg); }
+        }
+
+        .network-list {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            border-top: 1px solid var(--line);
+        }
+
+        .network-item {
+            display: grid;
+            grid-template-columns: 24px minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 12px;
+            width: 100%;
+            min-height: 56px;
+            padding: 8px 4px;
+            border: 0;
+            border-bottom: 1px solid var(--line);
+            background: transparent;
+            color: inherit;
+            text-align: left;
+            cursor: pointer;
+        }
+
+        .network-item:last-child {
+            border-bottom: 0;
+        }
+
+        .network-item.selected {
+            color: var(--primary);
+            background: var(--primary-light);
+        }
+
+        .network-name {
+            overflow: hidden;
+            font-weight: 600;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .network-meta {
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .signal {
+            display: flex;
+            align-items: flex-end;
+            gap: 2px;
+            width: 22px;
+            height: 18px;
+        }
+
+        .signal i {
+            display: block;
+            width: 4px;
+            background: #c9cdd4;
+            border-radius: 1px 1px 0 0;
+        }
+
+        .signal i:nth-child(1) { height: 5px; }
+        .signal i:nth-child(2) { height: 9px; }
+        .signal i:nth-child(3) { height: 13px; }
+        .signal i:nth-child(4) { height: 17px; }
+        .signal.level-1 i:nth-child(-n+1),
+        .signal.level-2 i:nth-child(-n+2),
+        .signal.level-3 i:nth-child(-n+3),
+        .signal.level-4 i:nth-child(-n+4) {
+            background: var(--primary);
+        }
+
+        .field {
+            margin-bottom: 16px;
+        }
+
+        .field:last-child {
+            margin-bottom: 0;
+        }
+
+        .field-label {
+            display: block;
+            margin-bottom: 7px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .input-wrap {
+            position: relative;
+        }
+
+        input[type="text"],
+        input[type="password"],
+        input[type="url"],
+        select {
+            width: 100%;
+            height: 46px;
+            padding: 0 13px;
+            border: 1px solid #c9cdd4;
+            border-radius: 6px;
+            outline: none;
+            background: #ffffff;
+            color: var(--text);
+            font-size: 16px;
+        }
+
+        input:focus,
+        select:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(22, 93, 255, .12);
+        }
+
+        input[readonly] {
+            background: #f7f8fa;
+            color: #4e5969;
+        }
+
+        .password-input {
+            padding-right: 66px !important;
+        }
+
+        .password-toggle {
+            position: absolute;
+            top: 0;
+            right: 0;
+            height: 46px;
+            padding: 0 13px;
+            border: 0;
+            background: transparent;
+            color: var(--primary);
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .manual-row {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 7px;
+        }
+
+        .error {
+            display: none;
+            margin: 0 0 14px;
+            padding: 10px 12px;
+            border-left: 3px solid var(--danger);
+            background: #fff2f0;
+            color: #cb2634;
+            font-size: 14px;
+        }
+
+        .error.show {
+            display: block;
+        }
+
+        .primary-button,
+        .secondary-button,
+        .danger-button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 44px;
+            padding: 0 18px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 650;
+            cursor: pointer;
+        }
+
+        .primary-button {
+            width: 100%;
+            border: 1px solid var(--primary);
+            background: var(--primary);
+            color: #ffffff;
+        }
+
+        .primary-button:active {
+            background: var(--primary-dark);
+        }
+
+        .primary-button:disabled {
+            border-color: #94bfff;
+            background: #94bfff;
+            cursor: default;
+        }
+
+        .secondary-button {
+            border: 1px solid #c9cdd4;
+            background: #ffffff;
+            color: #4e5969;
+        }
+
+        .danger-button {
+            min-height: 32px;
+            padding: 0 8px;
+            border: 1px solid #ffccc7;
+            background: #ffffff;
+            color: var(--danger);
+            font-size: 12px;
+        }
+
+        details {
+            border-top: 1px solid var(--line);
+            background: var(--surface);
+        }
+
+        summary {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            min-height: 54px;
+            padding: 0 20px;
+            font-weight: 650;
+            cursor: pointer;
+            list-style: none;
+        }
+
+        summary::-webkit-details-marker {
+            display: none;
+        }
+
+        summary::after {
+            content: "+";
+            color: var(--muted);
+            font-size: 20px;
+            font-weight: 400;
+        }
+
+        details[open] summary::after {
+            content: "−";
+        }
+
+        .details-body {
+            padding: 0 20px 20px;
+        }
+
+        .saved-list {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+        }
+
+        .saved-item {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 10px;
+            min-height: 48px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .saved-item:last-child {
+            border-bottom: 0;
+        }
+
+        .saved-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .saved-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .switch-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            min-height: 48px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .switch-row input {
+            width: 20px;
+            height: 20px;
+            accent-color: var(--primary);
+        }
+
+        .advanced-actions {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 16px;
+        }
+
+        .empty {
+            padding: 18px 0;
+            color: var(--muted);
+            text-align: center;
+            font-size: 14px;
+        }
+
+        .footer {
+            padding: 18px 8px 0;
+            color: var(--muted);
+            text-align: center;
+            font-size: 12px;
+        }
+
+        .overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 100;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background: rgba(29, 33, 41, .55);
+        }
+
+        .overlay.show {
+            display: flex;
+        }
+
+        .loading-box {
+            width: min(100%, 280px);
+            padding: 24px;
+            border-radius: 8px;
+            background: #ffffff;
+            text-align: center;
+        }
+
+        .loading-box .spinner {
+            width: 34px;
+            height: 34px;
+            margin: 0 auto 14px;
+            border-width: 3px;
+        }
+
+        .loading-title {
+            margin: 0;
+            font-size: 17px;
+            font-weight: 700;
+        }
+
+        .loading-note {
+            margin: 6px 0 0;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .toast {
+            position: fixed;
+            left: 50%;
+            bottom: calc(24px + env(safe-area-inset-bottom));
+            z-index: 120;
+            max-width: calc(100% - 32px);
+            padding: 10px 16px;
+            transform: translate(-50%, 20px);
+            border-radius: 6px;
+            background: #1d2129;
+            color: #ffffff;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .2s ease, transform .2s ease;
+            text-align: center;
+            font-size: 14px;
+        }
+
+        .toast.show {
+            transform: translate(-50%, 0);
+            opacity: 1;
+        }
+
+        @media (min-width: 640px) {
+            .topbar { padding-top: 34px; }
+            .page { padding-left: 0; padding-right: 0; }
+            .section { padding: 24px; }
+            summary { padding-left: 24px; padding-right: 24px; }
+            .details-body { padding-left: 24px; padding-right: 24px; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                scroll-behavior: auto !important;
+                animation-duration: .01ms !important;
+                transition-duration: .01ms !important;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header class="topbar">
+        <div class="topbar-inner">
+            <div class="brand"><span class="brand-mark" aria-hidden="true"></span>囤囤AI</div>
+            <h1>连接设备到 Wi-Fi</h1>
+            <p>选择可用网络并输入密码，连接成功后设备将自动继续启动。</p>
+        </div>
+    </header>
+
+    <main class="page">
+        <div class="panel">
+            <section class="section">
+                <div class="section-head">
+                    <h2 class="section-title">选择网络</h2>
+                    <button id="refreshButton" class="text-button" type="button">重新扫描</button>
+                </div>
+                <div id="networkStatus" class="network-status">
+                    <span class="spinner" aria-hidden="true"></span>
+                    <span>正在搜索附近的 Wi-Fi...</span>
+                </div>
+                <ul id="networkList" class="network-list" aria-live="polite"></ul>
+            </section>
+
+            <section class="section">
+                <h2 class="section-title" style="margin-bottom:14px">连接信息</h2>
+                <div id="formError" class="error" role="alert"></div>
+                <form id="wifiForm">
+                    <div class="field">
+                        <label class="field-label" for="ssid">Wi-Fi 名称</label>
+                        <input id="ssid" name="ssid" type="text" maxlength="32" autocomplete="off"
+                               placeholder="请先选择网络" readonly required>
+                        <div class="manual-row">
+                            <button id="manualButton" class="text-button" type="button">手动输入网络</button>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label class="field-label" for="password">Wi-Fi 密码</label>
+                        <div class="input-wrap">
+                            <input id="password" class="password-input" name="password" type="password"
+                                   maxlength="64" autocomplete="current-password" placeholder="开放网络可不填写">
+                            <button id="passwordToggle" class="password-toggle" type="button">显示</button>
+                        </div>
+                    </div>
+                    <button id="connectButton" class="primary-button" type="submit" disabled>连接 Wi-Fi</button>
+                </form>
+            </section>
+
+            <details id="savedDetails">
+                <summary>已保存的网络</summary>
+                <div class="details-body">
+                    <ul id="savedList" class="saved-list"></ul>
+                    <div id="savedEmpty" class="empty">暂无已保存网络</div>
+                </div>
+            </details>
+
+            <details id="advancedDetails">
+                <summary>高级设置</summary>
+                <div class="details-body">
+                    <form id="advancedForm">
+                        <div id="advancedError" class="error" role="alert"></div>
+                        <div class="field">
+                            <label class="field-label" for="otaUrl">自定义 OTA 地址</label>
+                            <input id="otaUrl" name="ota_url" type="url" maxlength="512"
+                                   placeholder="不设置请留空">
+                        </div>
+                        <div class="field">
+                            <label class="field-label" for="maxTxPower">Wi-Fi 发射功率</label>
+                            <select id="maxTxPower" name="max_tx_power">
+                                <option value="8">2 dBm</option>
+                                <option value="20">5 dBm</option>
+                                <option value="28">7 dBm</option>
+                                <option value="34">8 dBm</option>
+                                <option value="44">11 dBm</option>
+                                <option value="52">13 dBm</option>
+                                <option value="56">14 dBm</option>
+                                <option value="60">15 dBm</option>
+                                <option value="66">16 dBm</option>
+                                <option value="72">18 dBm</option>
+                                <option value="80">20 dBm</option>
+                            </select>
+                        </div>
+                        <label class="switch-row" for="rememberBssid">
+                            <span>连接时记住接入点 BSSID</span>
+                            <input id="rememberBssid" type="checkbox">
+                        </label>
+                        <label class="switch-row" for="sleepMode">
+                            <span>启用 Wi-Fi 省电模式</span>
+                            <input id="sleepMode" type="checkbox">
+                        </label>
+                        <div class="advanced-actions">
+                            <button id="saveAdvancedButton" class="secondary-button" type="submit">保存高级设置</button>
+                        </div>
+                    </form>
+                </div>
+            </details>
+        </div>
+        <div class="footer">设备配网仅在当前热点内完成，Wi-Fi 密码不会上传到云端。</div>
+    </main>
+
+    <div id="loadingOverlay" class="overlay" role="status" aria-live="assertive">
+        <div class="loading-box">
+            <div class="spinner" aria-hidden="true"></div>
+            <p class="loading-title">正在连接 Wi-Fi</p>
+            <p class="loading-note">连接过程可能需要十几秒，请不要关闭页面。</p>
+        </div>
+    </div>
+    <div id="toast" class="toast" role="status"></div>
+
+    <script>
+        (function () {
+            var state = {
+                scanning: false,
+                connecting: false,
+                manual: false,
+                scanTimer: null
+            };
+
+            var networkList = document.getElementById('networkList');
+            var networkStatus = document.getElementById('networkStatus');
+            var refreshButton = document.getElementById('refreshButton');
+            var ssidInput = document.getElementById('ssid');
+            var passwordInput = document.getElementById('password');
+            var connectButton = document.getElementById('connectButton');
+            var manualButton = document.getElementById('manualButton');
+            var passwordToggle = document.getElementById('passwordToggle');
+            var formError = document.getElementById('formError');
+            var loadingOverlay = document.getElementById('loadingOverlay');
+
+            function escapeText(value) {
+                return String(value == null ? '' : value);
+            }
+
+            function setError(element, message) {
+                element.textContent = message || '';
+                element.classList.toggle('show', Boolean(message));
+            }
+
+            function showToast(message) {
+                var toast = document.getElementById('toast');
+                toast.textContent = message;
+                toast.classList.add('show');
+                window.setTimeout(function () { toast.classList.remove('show'); }, 2600);
+            }
+
+            function signalLevel(rssi) {
+                if (rssi >= -55) return 4;
+                if (rssi >= -67) return 3;
+                if (rssi >= -78) return 2;
+                return 1;
+            }
+
+            function selectNetwork(name) {
+                state.manual = false;
+                ssidInput.readOnly = true;
+                ssidInput.value = name;
+                manualButton.textContent = '手动输入网络';
+                connectButton.disabled = !name || state.connecting;
+                Array.prototype.forEach.call(networkList.querySelectorAll('.network-item'), function (item) {
+                    item.classList.toggle('selected', item.getAttribute('data-ssid') === name);
+                });
+                passwordInput.focus();
+            }
+
+            function renderNetworks(data) {
+                networkList.innerHTML = '';
+                var strongest = {};
+                (data.aps || []).forEach(function (ap) {
+                    if (!ap.ssid) return;
+                    if (!strongest[ap.ssid] || Number(ap.rssi) > Number(strongest[ap.ssid].rssi)) {
+                        strongest[ap.ssid] = ap;
+                    }
+                });
+                var networks = Object.keys(strongest).map(function (key) { return strongest[key]; });
+                networks.sort(function (left, right) { return Number(right.rssi) - Number(left.rssi); });
+
+                if (!networks.length) {
+                    networkStatus.innerHTML = '<span>暂未发现可用网络，请点击“重新扫描”。</span>';
+                    networkStatus.style.display = 'flex';
+                    return;
+                }
+
+                networkStatus.innerHTML = '<span>' + (data.support_5g
+                    ? '请选择设备需要连接的 Wi-Fi。'
+                    : '当前设备仅显示可连接的 2.4GHz Wi-Fi。') + '</span>';
+                networkStatus.style.display = 'flex';
+                networks.forEach(function (ap) {
+                    var item = document.createElement('button');
+                    item.type = 'button';
+                    item.className = 'network-item';
+                    item.setAttribute('data-ssid', ap.ssid);
+                    item.setAttribute('aria-label', '选择网络 ' + ap.ssid);
+
+                    var signal = document.createElement('span');
+                    signal.className = 'signal level-' + signalLevel(Number(ap.rssi));
+                    signal.setAttribute('aria-hidden', 'true');
+                    signal.innerHTML = '<i></i><i></i><i></i><i></i>';
+
+                    var name = document.createElement('span');
+                    name.className = 'network-name';
+                    name.textContent = escapeText(ap.ssid);
+
+                    var meta = document.createElement('span');
+                    meta.className = 'network-meta';
+                    meta.textContent = Number(ap.authmode) === 0 ? '开放' : '需密码';
+
+                    item.appendChild(signal);
+                    item.appendChild(name);
+                    item.appendChild(meta);
+                    item.addEventListener('click', function () { selectNetwork(ap.ssid); });
+                    networkList.appendChild(item);
+                });
+                if (ssidInput.value) selectNetwork(ssidInput.value);
+            }
+
+            function scanNetworks() {
+                if (state.scanning || state.connecting) return;
+                state.scanning = true;
+                refreshButton.disabled = true;
+                networkStatus.innerHTML = '<span class="spinner" aria-hidden="true"></span><span>正在搜索附近的 Wi-Fi...</span>';
+                networkStatus.style.display = 'flex';
+
+                fetch('/scan', { cache: 'no-store' })
+                    .then(function (response) {
+                        if (!response.ok) throw new Error('扫描失败');
+                        return response.json();
+                    })
+                    .then(renderNetworks)
+                    .catch(function () {
+                        networkStatus.innerHTML = '<span>网络扫描暂时失败，请稍后重新扫描。</span>';
+                    })
+                    .then(function () {
+                        state.scanning = false;
+                        refreshButton.disabled = false;
+                        window.clearTimeout(state.scanTimer);
+                        state.scanTimer = window.setTimeout(scanNetworks, 8000);
+                    });
+            }
+
+            function translateConnectionError(message) {
+                if (message === 'Invalid SSID') return 'Wi-Fi 名称无效，请重新选择或输入。';
+                if (message === 'Failed to connect to the Access Point') return '无法连接该 Wi-Fi，请检查密码和信号后重试。';
+                if (message === 'Wi-Fi 名称无效') return 'Wi-Fi 名称无效，请重新选择或输入。';
+                if (message.indexOf('无法连接该 Wi-Fi') === 0) return message + '后重试。';
+                return '连接失败，请检查 Wi-Fi 信息后重试。';
+            }
+
+            document.getElementById('wifiForm').addEventListener('submit', function (event) {
+                event.preventDefault();
+                var ssid = ssidInput.value.trim();
+                if (!ssid) {
+                    setError(formError, '请选择 Wi-Fi，或手动输入网络名称。');
+                    return;
+                }
+                state.connecting = true;
+                connectButton.disabled = true;
+                refreshButton.disabled = true;
+                setError(formError, '');
+                loadingOverlay.classList.add('show');
+                window.clearTimeout(state.scanTimer);
+
+                fetch('/submit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ssid: ssid, password: passwordInput.value })
+                })
+                    .then(function (response) { return response.json(); })
+                    .then(function (data) {
+                        if (!data.success) throw new Error(data.error || '连接失败');
+                        window.location.replace('/done.html');
+                    })
+                    .catch(function (error) {
+                        state.connecting = false;
+                        loadingOverlay.classList.remove('show');
+                        connectButton.disabled = false;
+                        refreshButton.disabled = false;
+                        setError(formError, translateConnectionError(error.message));
+                        state.scanTimer = window.setTimeout(scanNetworks, 5000);
+                    });
+            });
+
+            manualButton.addEventListener('click', function () {
+                state.manual = !state.manual;
+                ssidInput.readOnly = !state.manual;
+                if (state.manual) {
+                    ssidInput.value = '';
+                    ssidInput.placeholder = '输入隐藏网络的名称';
+                    manualButton.textContent = '返回选择网络';
+                    Array.prototype.forEach.call(networkList.querySelectorAll('.network-item'), function (item) {
+                        item.classList.remove('selected');
+                    });
+                    ssidInput.focus();
+                } else {
+                    ssidInput.value = '';
+                    ssidInput.placeholder = '请先选择网络';
+                    manualButton.textContent = '手动输入网络';
+                }
+                connectButton.disabled = !ssidInput.value.trim();
+            });
+
+            ssidInput.addEventListener('input', function () {
+                connectButton.disabled = !ssidInput.value.trim() || state.connecting;
+            });
+
+            passwordToggle.addEventListener('click', function () {
+                var visible = passwordInput.type === 'text';
+                passwordInput.type = visible ? 'password' : 'text';
+                passwordToggle.textContent = visible ? '显示' : '隐藏';
+            });
+
+            refreshButton.addEventListener('click', scanNetworks);
+
+            function loadSavedNetworks() {
+                fetch('/saved/list', { cache: 'no-store' })
+                    .then(function (response) { return response.json(); })
+                    .then(function (items) {
+                        var list = document.getElementById('savedList');
+                        var empty = document.getElementById('savedEmpty');
+                        list.innerHTML = '';
+                        empty.style.display = items.length ? 'none' : 'block';
+                        items.forEach(function (name, index) {
+                            var row = document.createElement('li');
+                            row.className = 'saved-item';
+
+                            var label = document.createElement('span');
+                            label.className = 'saved-name';
+                            label.textContent = name + (index === 0 ? '（默认）' : '');
+
+                            var actions = document.createElement('span');
+                            actions.className = 'saved-actions';
+                            if (index > 0) {
+                                var defaultButton = document.createElement('button');
+                                defaultButton.type = 'button';
+                                defaultButton.className = 'text-button';
+                                defaultButton.textContent = '设为默认';
+                                defaultButton.addEventListener('click', function () {
+                                    defaultButton.disabled = true;
+                                    fetch('/saved/set_default?index=' + index)
+                                        .then(loadSavedNetworks)
+                                        .catch(function () { showToast('设置默认网络失败'); });
+                                });
+                                actions.appendChild(defaultButton);
+                            }
+                            var deleteButton = document.createElement('button');
+                            deleteButton.type = 'button';
+                            deleteButton.className = 'danger-button';
+                            deleteButton.textContent = '删除';
+                            deleteButton.addEventListener('click', function () {
+                                deleteButton.disabled = true;
+                                fetch('/saved/delete?index=' + index)
+                                    .then(loadSavedNetworks)
+                                    .catch(function () { showToast('删除网络失败'); });
+                            });
+                            actions.appendChild(deleteButton);
+                            row.appendChild(label);
+                            row.appendChild(actions);
+                            list.appendChild(row);
+                        });
+                    })
+                    .catch(function () {
+                        document.getElementById('savedEmpty').textContent = '读取已保存网络失败';
+                    });
+            }
+
+            function loadAdvancedSettings() {
+                fetch('/advanced/config', { cache: 'no-store' })
+                    .then(function (response) { return response.json(); })
+                    .then(function (data) {
+                        document.getElementById('otaUrl').value = data.ota_url || '';
+                        if (data.max_tx_power != null) {
+                            document.getElementById('maxTxPower').value = String(data.max_tx_power);
+                        }
+                        document.getElementById('rememberBssid').checked = Boolean(data.remember_bssid);
+                        document.getElementById('sleepMode').checked = Boolean(data.sleep_mode);
+                    })
+                    .catch(function () {
+                        setError(document.getElementById('advancedError'), '读取高级设置失败。');
+                    });
+            }
+
+            document.getElementById('advancedForm').addEventListener('submit', function (event) {
+                event.preventDefault();
+                var saveButton = document.getElementById('saveAdvancedButton');
+                var advancedError = document.getElementById('advancedError');
+                saveButton.disabled = true;
+                setError(advancedError, '');
+                fetch('/advanced/submit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        ota_url: document.getElementById('otaUrl').value.trim(),
+                        max_tx_power: Number(document.getElementById('maxTxPower').value),
+                        remember_bssid: document.getElementById('rememberBssid').checked,
+                        sleep_mode: document.getElementById('sleepMode').checked
+                    })
+                })
+                    .then(function (response) { return response.json(); })
+                    .then(function (data) {
+                        if (!data.success) throw new Error(data.error || '保存失败');
+                        showToast('高级设置已保存');
+                    })
+                    .catch(function () { setError(advancedError, '高级设置保存失败，请重试。'); })
+                    .then(function () { saveButton.disabled = false; });
+            });
+
+            loadSavedNetworks();
+            loadAdvancedSettings();
+            scanNetworks();
+        })();
+    </script>
+</body>
+</html>

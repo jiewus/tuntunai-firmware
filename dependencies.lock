@@ -16,20 +16,16 @@ dependencies:
       type: service
     version: 3.6.5
   78/esp-wifi-connect:
-    component_hash: 2774077ebdc43a871ad134b9048aaeb59b10d4599e839be2b5a634f5b2a023e9
     dependencies:
     - matches:
       - if: idf_version >=6.0
       name: espressif/cjson
-      registry_url: https://components.espressif.com
-      require: private
       version: ^1.7.19
     - name: idf
-      require: private
       version: '>=5.3'
     source:
-      registry_url: https://components.espressif.com/
-      type: service
+      path: /Users/jiewus/projects/J/TuntunLife/ESP32-C5.Firmware/components/esp-wifi-connect
+      type: local
     version: 3.1.5
   78/uart-uhci:
     component_hash: d33e4cd9f634a561bfddcad79be6fa30f0ee279a9e4d1a2df91eabccbca5d362
@@ -246,6 +242,6 @@ direct_dependencies:
 - espressif/led_strip
 - idf
 - lvgl/lvgl
-manifest_hash: 47d8da7226a8d252442916e797ec22e5ac56d714109c813206ba24c32ef01248
+manifest_hash: 3e3eb0c343e7fef38ce458aeffe4dac12eb6c0c3b93fe495fae5b85fd9b2190b
 target: esp32c5
 version: 2.0.0
