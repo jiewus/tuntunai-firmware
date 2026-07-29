@@ -38,6 +38,77 @@
 
 using namespace tuntun::backend_internal;
 
+namespace
+{
+template <size_t N>
+void KeepTextAfterFirstBoundary(
+    std::string &value,
+    const std::array<const char *, N> &boundaries)
+{
+    size_t first_boundary_end = std::string::npos;
+    for (const char *boundary : boundaries)
+    {
+        size_t position = 0;
+        const size_t boundary_length = std::strlen(boundary);
+        while ((position = value.find(boundary, position)) != std::string::npos)
+        {
+            const size_t boundary_end = position + boundary_length;
+            if (position > 0 && boundary_end < value.size() &&
+                (first_boundary_end == std::string::npos ||
+                 boundary_end < first_boundary_end))
+            {
+                first_boundary_end = boundary_end;
+            }
+            position = boundary_end;
+        }
+    }
+    if (first_boundary_end != std::string::npos)
+    {
+        value.erase(0, first_boundary_end);
+    }
+}
+
+std::string FormatWeatherLocationForDisplay(const std::string &location_name)
+{
+    const size_t first_character = location_name.find_first_not_of(" \t\r\n");
+    if (first_character == std::string::npos)
+    {
+        return location_name;
+    }
+    const size_t last_character = location_name.find_last_not_of(" \t\r\n");
+    std::string display_name = location_name.substr(
+        first_character, last_character - first_character + 1);
+    const std::string original_name = display_name;
+
+    // 先去掉省级前缀，再按市、自治州等上级边界提取最终展示的行政区。
+    KeepTextAfterFirstBoundary(
+        display_name,
+        std::array<const char *, 3>{"特别行政区", "自治区", "省"});
+    KeepTextAfterFirstBoundary(
+        display_name,
+        std::array<const char *, 4>{"自治州", "地区", "盟", "市"});
+
+    constexpr std::array<const char *, 12> kTerminalSuffixes = {
+        "特别行政区", "自治州", "自治县", "自治旗", "新区", "地区",
+        "林区", "市", "区", "县", "旗", "盟"};
+    for (const char *suffix : kTerminalSuffixes)
+    {
+        const size_t suffix_length = std::strlen(suffix);
+        if (display_name.size() > suffix_length &&
+            display_name.compare(
+                display_name.size() - suffix_length,
+                suffix_length,
+                suffix) == 0)
+        {
+            display_name.erase(display_name.size() - suffix_length);
+            break;
+        }
+    }
+
+    return display_name.empty() ? original_name : display_name;
+}
+} // namespace
+
 /**
  * @brief 在天气缓存确实需要更新时把请求加入常驻后端 Worker。
  * @param force_refresh true 忽略最近成功时间；false 遵守 30 分钟本地新鲜周期。
@@ -140,6 +211,11 @@ void BackendService::RunWeatherSync()
                      data, "location_name", kWeatherLocationMaxBytes,
                      snapshot.location_name) &&
                  ReadTemperature(data, "temperature", snapshot.temperature) && ReadBoundedString(data, "weather", kWeatherDescriptionMaxBytes, snapshot.weather) && ReadTemperature(data, "low_temperature", snapshot.low_temperature) && ReadTemperature(data, "high_temperature", snapshot.high_temperature) && snapshot.low_temperature <= snapshot.high_temperature;
+        if (parsed)
+        {
+            snapshot.location_name = FormatWeatherLocationForDisplay(
+                snapshot.location_name);
+        }
     }
     cJSON_Delete(root);
 

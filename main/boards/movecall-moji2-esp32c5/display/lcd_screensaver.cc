@@ -858,7 +858,7 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
 
 /**
  * @brief 更新表盘天气位置、当前温度、天气描述和最低/最高温三列。
- * @param location 当前天气位置名称，例如“上海市松江区”。
+ * @param location 当前天气位置的简短显示名称，例如“松江”。
  * @param temperature 当前摄氏温度。
  * @param weather 中文天气描述。
  * @param low_temperature 当天最低摄氏温度。
