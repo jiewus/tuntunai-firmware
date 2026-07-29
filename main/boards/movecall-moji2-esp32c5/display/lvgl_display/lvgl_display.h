@@ -44,7 +44,7 @@ public:
      * @param quality 编码质量 1-100，数值越高体积越大。
      * @return 快照和编码均成功时返回 true。
      */
-    virtual bool SnapshotToJpeg(std::string& jpeg_data, int quality = 80);
+    virtual bool SnapshotToJpeg(std::string& jpeg_data, int quality = 80) override;
 
 protected:
     esp_pm_lock_handle_t pm_lock_ = nullptr;

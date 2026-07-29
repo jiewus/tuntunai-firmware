@@ -120,7 +120,7 @@ void WifiBoard::TryWifiConnect() {
     if (have_ssid) {
         /*
          * 启动 STA 后立即固定为高性能模式，关闭 Wi-Fi Modem Sleep。
-         * ESP32-C5 在部分 5 GHz 路由器上使用 WIFI_PS_MAX_MODEM 时，可能因为长时间
+         * 部分 ESP32 芯片在某些路由器上使用 WIFI_PS_MAX_MODEM 时，可能因为长时间
          * 跳过 Beacon 而触发 Beacon Timeout 或被 AP 判断为不活跃。项目以连接稳定性
          * 为优先，因此从首次连接阶段开始就不启用无线省电。
          */

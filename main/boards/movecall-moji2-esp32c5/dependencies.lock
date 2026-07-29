@@ -15,18 +15,6 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 3.6.5
-  78/esp-wifi-connect:
-    dependencies:
-    - matches:
-      - if: idf_version >=6.0
-      name: espressif/cjson
-      version: ^1.7.19
-    - name: idf
-      version: '>=5.3'
-    source:
-      path: /Users/jiewus/projects/J/TuntunLife/ESP32-C5.Firmware/components/esp-wifi-connect
-      type: local
-    version: 3.1.5
   78/uart-uhci:
     component_hash: d33e4cd9f634a561bfddcad79be6fa30f0ee279a9e4d1a2df91eabccbca5d362
     dependencies:
@@ -227,7 +215,6 @@ dependencies:
     version: 9.5.0
 direct_dependencies:
 - 78/esp-ml307
-- 78/esp-wifi-connect
 - 78/xiaozhi-fonts
 - espressif/adc_battery_estimation
 - espressif/button
@@ -242,6 +229,6 @@ direct_dependencies:
 - espressif/led_strip
 - idf
 - lvgl/lvgl
-manifest_hash: 3e3eb0c343e7fef38ce458aeffe4dac12eb6c0c3b93fe495fae5b85fd9b2190b
+manifest_hash: abd1c5e627c15ab6a7c30e68cca62e9379fe586d49fd6acb284b9960e61798e1
 target: esp32c5
 version: 2.0.0

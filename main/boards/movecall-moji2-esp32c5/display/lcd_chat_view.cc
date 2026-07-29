@@ -1449,7 +1449,7 @@ void LcdDisplay::SetTheme(Theme* theme) {
  * @details 先在 LVGL 锁内将天气和日期标签切换回主题字体，再释放指向旧 mmap 区域的
  *          cbin 字体描述符，避免资源下载后继续访问失效的字形数据。
  */
-void LcdDisplay::ReleaseScreensaverWeatherFontForAssetsReload() {
+void LcdDisplay::ReleaseAssetsForReload() {
     if (screensaver_weather_font_ == nullptr) {
         return;
     }

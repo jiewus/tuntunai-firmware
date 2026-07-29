@@ -1,7 +1,7 @@
-# Tuntun Moji2 ESP32-C5 语音助手
+# TuntunLife 多板型语音助手固件
 
-本项目基于 `xiaozhi-esp32` v2.2.6 裁剪，仅支持
-`movecall-moji2-esp32c5` 开发板。
+本项目基于 `xiaozhi-esp32` v2.2.6 裁剪。当前已验证
+`movecall-moji2-esp32c5`，构建系统支持通过独立板型目录扩展其他 ESP32 芯片和硬件。
 
 ## 硬件
 
@@ -15,9 +15,20 @@
 要求 ESP-IDF 5.5.2 或更高版本。
 
 ```bash
-idf.py set-target esp32c5
-python scripts/release.py movecall-moji2-esp32c5
+python scripts/build.py --list-boards
+python scripts/build.py movecall-moji2-esp32c5 build
 ```
+
+开发构建固定输出到 `build/<board>/debug`。目标芯片和 sdkconfig 默认值由板型目录
+自动提供，不需要先执行 `idf.py set-target`。也可以直接使用：
+
+```bash
+idf.py -B build/movecall-moji2-esp32c5/debug \
+  -DBOARD_TYPE=movecall-moji2-esp32c5 build
+```
+
+新增板型只需增加 `main/boards/<board>/`，无需修改公共 CMake、Kconfig 或构建脚本。
+板型目录契约见 [main/boards/README.md](main/boards/README.md)。
 
 发布脚本固定启用 Secure Boot V2、Release 模式 Flash Encryption 和固件防降级。首次构建前需要在
 项目根目录生成不会提交到 Git 的 ECDSA-256 签名私钥：
@@ -27,15 +38,15 @@ espsecure.py generate_signing_key --version 2 --scheme ecdsa256 secure_boot_sign
 ```
 
 该私钥必须离线备份，后续 OTA 固件必须继续使用同一私钥签名。发布固件首次启动会写入不可逆 eFuse，
-只能在已经验证量产流程的设备上烧录；普通 `idf.py build` 和开发烧录不会启用这些不可逆发布配置。
+只能在已经验证量产流程的设备上烧录；普通板型开发构建和开发烧录不会启用这些不可逆发布配置。
 从旧版固件首次升级到安全发布固件时，必须烧录发布脚本生成的完整镜像；只执行应用 OTA 不会更新
 Bootloader 和分区表，也不会启用 Secure Boot 与 Flash Encryption。首次完整烧录会清空原有 NVS 配置。
 
-也可以通过 `idf.py menuconfig` 配置显示样式、资源和调试选项，然后执行：
+也可以通过板型构建脚本配置显示样式、资源和调试选项：
 
 ```bash
-idf.py build
-idf.py flash monitor
+python scripts/build.py movecall-moji2-esp32c5 menuconfig
+python scripts/build.py movecall-moji2-esp32c5 flash-monitor -p /dev/cu.usbmodemXXXX
 ```
 
 硬件和固件设计说明位于 `docs/hardware` 与 `docs/firmware`。
@@ -81,6 +92,6 @@ MCP”等问题时，小智会读取设备当前已经加载的动态工具快�
 顶部，25px 粗体内容每次只显示一个 MCP，并在圆角区域中垂直居中；存在多项时每 5 秒切换下一项。
 语音播报结束后页面立即退出并恢复聊天界面，对话结束后仍按原逻辑进入普通屏保。
 
-默认平台地址为 `https://api.tuntun.life`，可通过 `idf.py menuconfig` 中的
-`TuntunLife API URL` 修改。完整协议和状态处理见
+默认平台地址为 `https://api.tuntun.life`，可通过板型构建脚本的 `menuconfig` 操作，在
+`TuntunLife API URL` 中修改。完整协议和状态处理见
 [`docs/后端API接入说明.md`](docs/后端API接入说明.md)。

@@ -3,18 +3,12 @@
  * @brief display.cc 中各类和辅助函数的具体实现。
  */
 #include <esp_log.h>
-#include <esp_err.h>
+#include <esp_heap_caps.h>
 #include <string>
 #include <cstdlib>
-#include <cstring>
-#include <font_awesome.h>
 
 #include "display.h"
-#include "board.h"
-#include "app/application.h"
-#include "audio_codec.h"
 #include "system/settings.h"
-#include "assets/lang_config.h"
 
 #define TAG "Display"
 
@@ -123,4 +117,10 @@ void Display::SetPowerSaveMode(bool on) {
  */
 void Display::SetScreensaverMode(bool enabled) {
     (void)enabled;
+}
+
+bool Display::SetPreviewImageData(void* data, size_t size) {
+    (void)size;
+    heap_caps_free(data);
+    return false;
 }

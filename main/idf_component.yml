@@ -1,25 +1,11 @@
 dependencies:
-  # 圆形 LCD 的 ST77916 面板驱动。
-  espressif/esp_lcd_st77916: ^1.0.1
-  # Wi-Fi STA 连接、SoftAP 配网和统一网络客户端抽象。
-  78/esp-wifi-connect:
-    version: ~3.1.3
-    override_path: ../components/esp-wifi-connect
   # 名称虽包含 ML307，但同时提供项目使用的 Http/WebSocket/Mqtt/Udp 公共接口。
-  78/esp-ml307: ~3.6.5
-  # 音频编解码、ES8311 设备层、WakeNet 和电池/按键等硬件组件。
+  78/esp-ml307: "3.6.5"
+  # 公共音频、WakeNet 和状态图标依赖。板级 UI 与外设依赖由 boards/<board> 声明。
   espressif/esp_audio_effects: ~1.2.1
   espressif/esp_audio_codec: ~2.4.1
   78/xiaozhi-fonts: ~1.6.0
-  espressif/led_strip: ~3.0.2
-  espressif/esp_codec_dev: ~1.5.6
   espressif/esp-sr: ~2.3.0
-  espressif/button: ~4.1.5
-  lvgl/lvgl: ~9.5.0
-  esp_lvgl_port: ~2.7.2
-  espressif/adc_battery_estimation: ^0.2.1
-  espressif/esp_new_jpeg: ^0.6.1
-  espressif/esp_image_effects: ^1.0.1
   idf:
     # 项目已在 ESP-IDF 5.5.4 验证；6.x 暂不兼容当前 esp-sr 依赖。
     version: ">=5.5.2"

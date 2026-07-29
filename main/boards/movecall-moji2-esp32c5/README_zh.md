@@ -1,57 +1,23 @@
-# 编译配置指南
+# Tuntun Moji2 ESP32-C5 板型
 
-本文档介绍了如何为板型 `movecall-moji2-esp32c5` 配置和编译固件。
+本目录完整描述 `movecall-moji2-esp32c5` 的 ESP32-C5 目标、GPIO、LCD、
+ES8311 Codec、电池检测、组件依赖和 sdkconfig 默认值。硬件设计参考：
+[立创开源硬件平台](https://oshwhub.com/movecall/moji2)。
+圆屏界面、表盘资源、专用字体和 ES8311 实现也只保存在本目录，不进入公共源码。
 
-## 🛠 环境要求
-*   **ESP-IDF 版本**: v5.5
-*   **芯片型号**: ESP32-C5
+从固件根目录构建：
 
-## 🔗 硬件开源信息
-本项目基于以下开源硬件设计：
-*   **立创开源硬件平台**: [https://oshwhub.com/movecall/moji2](https://oshwhub.com/movecall/moji2)
-
----
-
-## 🚀 编译步骤
-
-### 1. 设置编译目标
-首先，将项目目标芯片设置为 ESP32-C5：
 ```bash
-idf.py set-target esp32c5
+python scripts/build.py movecall-moji2-esp32c5 build
 ```
 
-### 2. 配置开发板型号
-运行以下命令打开配置菜单进行板型选择：
+配置、清理、烧录和监视均通过同一脚本执行：
+
 ```bash
-idf.py menuconfig
+python scripts/build.py movecall-moji2-esp32c5 menuconfig
+python scripts/build.py movecall-moji2-esp32c5 fullclean
+python scripts/build.py movecall-moji2-esp32c5 flash-monitor -p /dev/cu.usbmodemXXXX
 ```
 
-**请在菜单中按照以下路径进行操作：**
-> **Tuntun Moji2 Assistant** -> **Board Type** -> **Tuntun Moji2 ESP32-C5**
-
-*操作提示：配置完成后，按 **S** 保存并按回车确认，按 **Q** 退出。*
-
-### 3. 执行编译
-运行以下命令开始构建项目：
-```bash
-idf.py build
-```
-
----
-
-## 🔧 常用维护命令
-
-**清理编译缓存 (遇到报错建议执行)：**
-```bash
-idf.py fullclean
-```
-
-**烧录固件：**
-```bash
-idf.py flash
-```
-
-**查看串口日志：**
-```bash
-idf.py monitor
-```
+目标芯片由 `config.json` 自动设置，不要执行 `idf.py set-target`。新增板型时复制
+本目录并替换其中的板级文件，公共契约见相邻的 [README.md](../README.md)。

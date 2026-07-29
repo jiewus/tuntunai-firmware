@@ -405,10 +405,13 @@ public:
      * @brief 将主题颜色、字体、背景和表情集合应用到已创建控件。
      */
     virtual void SetTheme(Theme* theme) override;
+    virtual bool SetThemeByName(const std::string& theme_name) override;
+    virtual bool ApplyAssets(Assets& assets, cJSON* index, bool refresh_theme) override;
+    virtual bool SetPreviewImageData(void* data, size_t size) override;
     /**
      * @brief 在资源分区即将重新映射前释放屏保专用字体并回退到主题字体。
      */
-    void ReleaseScreensaverWeatherFontForAssetsReload();
+    void ReleaseAssetsForReload() override;
     /**
      * @brief 刷新普通状态栏，并在屏保显示期间同步刷新表盘时间和电量。
      * @param update_all true 强制刷新网络等全部状态；false 使用周期刷新策略。
@@ -468,7 +471,7 @@ public:
      * @brief 设置是否隐藏字幕。
      * @param hide true 隐藏并清空当前字幕。
      */
-    void SetHideSubtitle(bool hide);
+    void SetHideSubtitle(bool hide) override;
 };
 
 /**

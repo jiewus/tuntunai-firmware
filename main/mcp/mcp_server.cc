@@ -20,8 +20,6 @@
 #include "display.h"
 #include "board.h"
 #include "system/settings.h"
-#include "lvgl_theme.h"
-#include "lvgl_display.h"
 
 #define TAG "MCP"
 
@@ -127,7 +125,6 @@ void McpServer::AddCommonTools() {
             });
     }
 
-#ifdef HAVE_LVGL
     auto display = board.GetDisplay();
     if (display && display->GetTheme() != nullptr) {
         AddTool("self.screen.set_theme",
@@ -137,18 +134,13 @@ void McpServer::AddCommonTools() {
             }),
             [&board, display](const PropertyList& properties) -> ReturnValue {
                 auto theme_name = properties["theme"].value<std::string>();
-                auto& theme_manager = LvglThemeManager::GetInstance();
-                auto theme = theme_manager.GetTheme(theme_name);
-                if (theme != nullptr) {
+                if (display->SetThemeByName(theme_name)) {
                     board.WakeUpScreen();
-                    display->SetTheme(theme);
                     return true;
                 }
                 return false;
             });
     }
-
-#endif
 
     // 恢复原工具列表，并保持通用工具优先的稳定顺序。
     tools_.insert(tools_.end(), original_tools.begin(), original_tools.end());
@@ -202,10 +194,8 @@ void McpServer::AddUserOnlyTools() {
             return true;
         });
 
-    // 仅在编译启用 LVGL 且运行时存在显示对象时注册屏幕工具。
-#ifdef HAVE_LVGL
-    auto display = dynamic_cast<LvglDisplay*>(Board::GetInstance().GetDisplay());
-    if (display) {
+    auto display = Board::GetInstance().GetDisplay();
+    if (display != nullptr && display->width() > 0 && display->height() > 0) {
         AddUserOnlyTool("self.screen.get_info", "Information about the screen, including width, height, etc.",
             PropertyList(),
             [display](const PropertyList& properties) -> ReturnValue {
@@ -306,13 +296,13 @@ void McpServer::AddUserOnlyTools() {
                 }
                 http->Close();
 
-                auto image = std::make_unique<LvglAllocatedImage>(data, content_length);
-                display->SetPreviewImage(std::move(image));
+                if (!display->SetPreviewImageData(data, content_length)) {
+                    throw std::runtime_error("Failed to preview image: " + url);
+                }
                 return true;
             });
 #endif // CONFIG_LV_USE_SNAPSHOT
     }
-#endif // HAVE_LVGL
 
     // 资源下载地址始终可写入 Settings，不依赖当前分区表是否启用了资源分区。
     AddUserOnlyTool("self.assets.set_download_url", "Set the download url for the assets",

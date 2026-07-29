@@ -95,7 +95,7 @@ private:
         virtual bool GetAssetData(Assets* assets, const std::string& name, void*& ptr, size_t& size) = 0;
     };
     
-    class LvglStrategy : public AssetStrategy {
+    class MmapStrategy : public AssetStrategy {
     public:
         bool Apply(Assets* assets, bool refresh_display_theme = true) override;
         bool InitializePartition(Assets* assets) override;

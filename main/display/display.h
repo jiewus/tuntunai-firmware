@@ -1,18 +1,14 @@
 #ifndef DISPLAY_H
 #define DISPLAY_H
 
-#include "emoji_collection.h"
-
-#define HAVE_LVGL 1
-#include <lvgl.h>
-
-#include <esp_timer.h>
 #include <esp_log.h>
-#include <esp_pm.h>
 
+#include <cstddef>
 #include <string>
-#include <chrono>
 #include <vector>
+
+class Assets;
+struct cJSON;
 
 /**
  * @file display.h
@@ -81,6 +77,10 @@ public:
      */
     virtual void SetTheme(Theme* theme);
     virtual Theme* GetTheme() { return current_theme_; }
+    virtual bool SetThemeByName(const std::string& theme_name) {
+        (void)theme_name;
+        return false;
+    }
     /**
      * @brief 刷新网络、电池、静音和时钟。
      * @param update_all true 强制刷新未变化字段。
@@ -179,6 +179,41 @@ public:
      */
     virtual void HideDeviceBinding() {
     }
+    /**
+     * @brief 设置显示实现是否隐藏对话字幕。
+     * @details 默认实现为空操作，无字幕显示能力的板型无需覆盖。
+     */
+    virtual void SetHideSubtitle(bool hide) {
+        (void)hide;
+    }
+    /**
+     * @brief 在资源分区解除映射前释放显示实现持有的资源引用。
+     * @details 默认实现为空操作。引用 assets 分区数据的显示实现必须在此释放相关对象。
+     */
+    virtual void ReleaseAssetsForReload() {
+    }
+    /**
+     * @brief 应用资源索引中与具体显示实现有关的字体、表情和皮肤配置。
+     */
+    virtual bool ApplyAssets(Assets& assets, cJSON* index, bool refresh_theme) {
+        (void)assets;
+        (void)index;
+        (void)refresh_theme;
+        return true;
+    }
+    /**
+     * @brief 将当前画面编码为 JPEG；不支持截图的显示实现返回 false。
+     */
+    virtual bool SnapshotToJpeg(std::string& jpeg_data, int quality = 80) {
+        (void)jpeg_data;
+        (void)quality;
+        return false;
+    }
+    /**
+     * @brief 接管图片文件内存并临时预览。
+     * @details 调用后 data 的所有权始终转移给显示实现。
+     */
+    virtual bool SetPreviewImageData(void* data, size_t size);
     /**
      * @brief 创建基础 UI；子类覆盖时必须设置 setup_ui_called_。
      */

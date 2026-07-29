@@ -1,5 +1,5 @@
-# 本文件只保留 Tuntun Moji2 ESP32-C5 实际使用的产品配置项。
-menu "Tuntun Moji2 Assistant"
+# 本文件只定义所有 TuntunLife 板型共享的产品配置项。板型由 CMake BOARD_TYPE 选择。
+menu "TuntunLife Assistant"
 
 config OTA_URL
     string "Default OTA URL"
@@ -30,37 +30,15 @@ config CUSTOM_ASSETS_FILE
     default "assets.bin"
     depends on FLASH_CUSTOM_ASSETS
 
-choice BOARD_TYPE
-    prompt "Board Type"
-    # 裁剪后的仓库只有一个板型，保留 choice 是为了兼容现有 CONFIG 宏。
-    default BOARD_TYPE_TUNTUN_MOJI2_ESP32C5
-
-    config BOARD_TYPE_TUNTUN_MOJI2_ESP32C5
-        bool "Tuntun Moji2 ESP32-C5"
-        depends on IDF_TARGET_ESP32C5
-endchoice
-
-choice DISPLAY_STYLE
-    prompt "Display Style"
-    # 控制字幕区域布局，不改变 LCD 驱动和分辨率。
-    default USE_DEFAULT_MESSAGE_STYLE
-
-    config USE_DEFAULT_MESSAGE_STYLE
-        bool "Default message style"
-    config USE_WECHAT_MESSAGE_STYLE
-        bool "WeChat message style"
-endchoice
-
 choice WAKE_WORD_TYPE
     prompt "Wake Word"
-    # ESP32-C5 不启用 AFE，仅运行 WakeNet9s 离线唤醒模型。
+    # 具体模型和 AFE 能力由板型 sdkconfig.defaults 选择。
     default USE_ESP_WAKE_WORD
 
     config WAKE_WORD_DISABLED
         bool "Disabled"
     config USE_ESP_WAKE_WORD
-        bool "WakeNet9s without AFE"
-        depends on IDF_TARGET_ESP32C5
+        bool "ESP-SR wake word"
 endchoice
 
 config USE_AUDIO_DEBUGGER

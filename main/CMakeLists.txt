@@ -1,30 +1,14 @@
-# Tuntun Moji2 ESP32-C5 产品组件构建入口。
+# TuntunLife 所有板型共享的产品组件构建入口。
 
 # 项目自有源码清单；新增模块必须在此登记，否则不会参与编译和链接。
 set(SOURCES
     "audio/audio_codec.cc"
     "audio/audio_service.cc"
     "audio/demuxer/ogg_demuxer.cc"
-    "audio/codecs/es8311_audio_codec.cc"
     "audio/processors/audio_debugger.cc"
     "audio/processors/no_audio_processor.cc"
     "audio/wake_words/esp_wake_word.cc"
-    "led/single_led.cc"
     "display/display.cc"
-    "display/lcd_display.cc"
-    "display/lcd_screensaver.cc"
-    "display/lcd_mcp_view.cc"
-    "display/lcd_binding_view.cc"
-    "display/lcd_chat_view.cc"
-    "display/lvgl_display/lvgl_display.cc"
-    "display/lvgl_display/emoji_collection.cc"
-    "display/lvgl_display/lvgl_theme.cc"
-    "display/lvgl_display/lvgl_font.cc"
-    "display/lvgl_display/lvgl_image.cc"
-    "display/fonts/font_puhui_time_64.cc"
-    "display/lvgl_display/gif/lvgl_gif.cc"
-    "display/lvgl_display/gif/gifdec.c"
-    "display/lvgl_display/jpg/image_to_jpeg.cpp"
     "xiaozhi/protocol/protocol.cc"
     "xiaozhi/protocol/protocol_message.cc"
     "xiaozhi/protocol/mqtt_protocol.cc"
@@ -35,11 +19,6 @@ set(SOURCES
     "mcp/tools/press_to_talk_mcp_tool.cc"
     "boards/common/board.cc"
     "boards/common/wifi_board.cc"
-    "boards/common/adc_battery_monitor.cc"
-    "boards/common/backlight.cc"
-    "boards/common/button.cc"
-    "boards/common/power_save_timer.cc"
-    "boards/movecall-moji2-esp32c5/movecall_moji2_esp32c5.cc"
     "tuntun/backend/backend_service.cc"
     "tuntun/backend/backend_dynamic_mcp.cc"
     "tuntun/backend/backend_memo.cc"
@@ -63,24 +42,8 @@ set(INCLUDE_DIRS
     "audio"
     "audio/demuxer"
     "display"
-    "display/lvgl_display"
-    "display/lvgl_display/jpg"
     "boards/common"
 )
-
-# 唯一板型、内置字体和表情资源选择，同时传给 C++ 宏和资源构建脚本。
-# 360x360 圆屏对话字幕使用 30 px 中文字形源，界面中缩放为约 25 px 显示；
-# 状态栏在 LCD 实现中单独使用 20 px 字体。
-set(BOARD_TYPE "movecall-moji2-esp32c5")
-set(BOARD_NAME "Tuntun Moji2 ESP32-C5")
-set(BUILTIN_TEXT_FONT font_puhui_basic_30_4)
-set(BUILTIN_ICON_FONT font_awesome_20_4)
-set(DEFAULT_EMOJI_COLLECTION twemoji_64)
-
-# 保留带 CONFIG 条件的板型赋值，发布脚本和 menuconfig 都依赖该声明识别板型。
-if(CONFIG_BOARD_TYPE_TUNTUN_MOJI2_ESP32C5)
-    set(BOARD_TYPE "movecall-moji2-esp32c5")
-endif()
 
 # 中文语言 JSON 会生成 lang_config.h；对应 OGG 文件直接嵌入 main 组件二进制。
 set(LANG_DIR "zh-CN")
@@ -89,35 +52,45 @@ set(LANG_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/assets/lang_config.h")
 file(GLOB LANG_SOUNDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/locales/${LANG_DIR}/*.ogg)
 file(GLOB COMMON_SOUNDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/common/*.ogg)
 
-# 注册 main 组件。WHOLE_ARCHIVE 确保 DECLARE_BOARD 创建函数不会被链接器裁剪。
+# 注册共享 main 组件。具体板型作为独立 WHOLE_ARCHIVE 组件参与最终链接。
 idf_component_register(
     SRCS ${SOURCES}
     EMBED_FILES
         ${LANG_SOUNDS}
         ${COMMON_SOUNDS}
-        "display/assets/screensaver_dial.rgb565"
     INCLUDE_DIRS ${INCLUDE_DIRS}
-    WHOLE_ARCHIVE
-    PRIV_REQUIRES
+    # 板型组件会直接包含 Board、Display、AudioCodec 等共享头文件。这里公开这些头文件
+    # 暴露的依赖，确保新板型只需声明自身 LCD、Codec、电池等硬件专属组件。
+    REQUIRES
+        78__esp-ml307
+        78__xiaozhi-fonts
+        espressif__esp_audio_codec
+        espressif__esp_audio_effects
+        espressif__esp-sr
+        json
+        nvs_flash
+        esp_driver_gpio
+        esp_driver_i2s
         esp_pm
+        spi_flash
+    PRIV_REQUIRES
         esp_psram
         esp_netif
-        esp_driver_gpio
         esp_driver_spi
         esp_driver_i2c
-        esp_driver_i2s
         esp_app_format
         app_update
-        spi_flash
         console
         efuse
+        esp-wifi-connect
 )
 
-# 将板型和字体符号作为编译期宏传给业务源码。
+# 将板型标识作为编译期宏传给共享业务源码。
 target_compile_definitions(${COMPONENT_LIB}
-    PRIVATE BOARD_TYPE=\"${BOARD_TYPE}\" BOARD_NAME=\"${BOARD_NAME}\"
-    PRIVATE BUILTIN_TEXT_FONT=${BUILTIN_TEXT_FONT} BUILTIN_ICON_FONT=${BUILTIN_ICON_FONT}
-    PRIVATE LV_GIF_CACHE_DECODE_DATA=1
+    PRIVATE
+        BOARD_TYPE=\"${TUNTUN_BOARD_TYPE}\"
+        BOARD_NAME=\"${TUNTUN_BOARD_NAME}\"
+        BOARD_DEVICE_MODEL=${TUNTUN_BOARD_DEVICE_MODEL}
 )
 
 # language.json 或生成器变化时自动重新生成中文语言头文件。
@@ -145,40 +118,24 @@ endfunction()
 
 find_component_by_pattern("espressif__esp-sr" ESP_SR_COMPONENT_PATH)
 find_component_by_pattern("xiaozhi-fonts" XIAOZHI_FONTS_PATH)
-find_component_by_pattern("lvgl__lvgl" LVGL_COMPONENT_PATH)
-
-# LVGL 9.5 的图像解码器和缓存实现位于同一个静态归档中。干净链接时，链接器会先提取
-# 解码器对象，但不会再次扫描归档中靠后的缓存对象，导致 lv_image_cache_* 未定义引用。
-# 将两个原始缓存实现直接加入 main 组件，可稳定解决归档顺序问题，且不会修改第三方源码。
-if(LVGL_COMPONENT_PATH)
-    target_sources(${COMPONENT_LIB} PRIVATE
-        "${LVGL_COMPONENT_PATH}/src/misc/cache/class/lv_cache_lru_rb.c"
-        "${LVGL_COMPONENT_PATH}/src/misc/cache/instance/lv_image_cache.c"
-        "${LVGL_COMPONENT_PATH}/src/misc/cache/instance/lv_image_header_cache.c"
-    )
-endif()
+file(GLOB_RECURSE TUNTUN_BOARD_ASSET_FILES CONFIGURE_DEPENDS
+    "${TUNTUN_BOARD_ASSETS_DIR}/*")
 
 function(build_default_assets_bin)
-    # 根据 sdkconfig 中的唤醒模型、字体和表情生成可直接烧录的 assets.bin。
+    # 根据 sdkconfig 和当前板型资源目录生成可直接烧录的 assets.bin。
     set(GENERATED_ASSETS_BIN "${CMAKE_BINARY_DIR}/generated_assets.bin")
-    set(SCREENSAVER_FONT_ASSET_DIR "${CMAKE_CURRENT_BINARY_DIR}/screensaver_font_asset")
-    file(MAKE_DIRECTORY "${SCREENSAVER_FONT_ASSET_DIR}")
-    configure_file(
-        "${CMAKE_CURRENT_SOURCE_DIR}/display/fonts/puhui3_heavy_24_2.bin"
-        "${SCREENSAVER_FONT_ASSET_DIR}/puhui3_heavy_24_2.bin"
-        COPYONLY)
     add_custom_command(
         OUTPUT ${GENERATED_ASSETS_BIN}
         COMMAND python ${PROJECT_DIR}/scripts/build_default_assets.py
                 --sdkconfig "${SDKCONFIG}"
                 --output "${GENERATED_ASSETS_BIN}"
-                --builtin_text_font "${BUILTIN_TEXT_FONT}"
-                --emoji_collection "${DEFAULT_EMOJI_COLLECTION}"
+                --builtin_text_font "${TUNTUN_BOARD_BUILTIN_TEXT_FONT}"
+                --emoji_collection "${TUNTUN_BOARD_EMOJI_COLLECTION}"
                 --esp_sr_model_path "${ESP_SR_COMPONENT_PATH}/model"
                 --xiaozhi_fonts_path "${XIAOZHI_FONTS_PATH}"
-                --extra_files "${SCREENSAVER_FONT_ASSET_DIR}"
+                --extra_files "${TUNTUN_BOARD_ASSETS_DIR}"
         DEPENDS ${SDKCONFIG} ${PROJECT_DIR}/scripts/build_default_assets.py
-                "${CMAKE_CURRENT_SOURCE_DIR}/display/fonts/puhui3_heavy_24_2.bin"
+                ${TUNTUN_BOARD_ASSET_FILES}
         COMMENT "Building default assets.bin"
         VERBATIM
     )

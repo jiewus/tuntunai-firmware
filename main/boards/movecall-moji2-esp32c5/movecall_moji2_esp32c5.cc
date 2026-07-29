@@ -3,8 +3,9 @@
  * @brief Tuntun Moji2 ESP32-C5 板级硬件初始化和外设绑定实现。
  */
 #include "wifi_board.h"
-#include "codecs/es8311_audio_codec.h"
+#include "audio/es8311_audio_codec.h"
 #include "display/lcd_display.h"
+#include "display/pwm_backlight.h"
 #include "app/application.h"
 #include "button.h"
 #include "config.h"

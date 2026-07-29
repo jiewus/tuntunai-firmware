@@ -48,7 +48,7 @@ namespace tuntun::backend_internal
 
     /**
      * @brief 串行调度囤囤AI后端的 TLS 连接，并让通知音频优先于普通业务请求。
-     * @details ESP32-C5 在证书校验阶段需要较大的连续内存，因此仍然只允许一个 HTTP/TLS
+     * @details 资源受限芯片在证书校验阶段需要较大的连续内存，因此仍然只允许一个 HTTP/TLS
      *          连接活动；通知音频等待网络时会优先获得连接，普通请求继续排队而不并发握手。
      */
     class BackendHttpGate {
@@ -157,11 +157,6 @@ namespace tuntun::backend_internal
      */
     constexpr const char *kNotificationPendingPath = "/api/device/notifications/pending";
     constexpr const char *kNotificationMqttConfigPath = "/api/device/mqtt/config";
-
-    /**
-     * @brief 设备型号在后端 DeviceModelEnum 中对应 Tuntun Moji2 ESP32-C5 的数值。
-     */
-    constexpr int kDeviceModelTuntunMoji2Esp32C5 = 1;
 
     /**
      * @brief 绑定状态轮询周期和 HTTP 超时，单位均为毫秒。
@@ -309,7 +304,7 @@ namespace tuntun::backend_internal
     /**
      * @brief 单次后端 JSON 响应允许占用的最大字节数和分段读取缓冲区大小。
      * @details 绑定接口响应均远小于 4KB。设置硬上限可以避免异常网关或错误页面返回大正文时
-     *          持续占用 ESP32-C5 堆内存；超过上限的响应会被当作传输失败处理。
+     *          持续占用设备堆内存；超过上限的响应会被当作传输失败处理。
      */
     constexpr size_t kMaxApiResponseBytes = 4096;
     constexpr size_t kMcpManifestResponseMaxBytes = 12288;
@@ -611,7 +606,7 @@ namespace tuntun::backend_internal
             return {};
         }
         cJSON_AddStringToObject(root, "hardware_id", SystemInfo::GetMacAddress().c_str());
-        cJSON_AddNumberToObject(root, "device_model", kDeviceModelTuntunMoji2Esp32C5);
+        cJSON_AddNumberToObject(root, "device_model", BOARD_DEVICE_MODEL);
         cJSON_AddStringToObject(root, "client_id", board.GetUuid().c_str());
         cJSON_AddStringToObject(root, "firmware_version", app_description->version);
         char *json_text = cJSON_PrintUnformatted(root);

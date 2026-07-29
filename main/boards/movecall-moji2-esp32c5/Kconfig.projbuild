@@ -1,0 +1,13 @@
+menu "Tuntun Moji2 ESP32-C5"
+
+choice DISPLAY_STYLE
+    prompt "Display Style"
+    default USE_DEFAULT_MESSAGE_STYLE
+
+    config USE_DEFAULT_MESSAGE_STYLE
+        bool "Default message style"
+    config USE_WECHAT_MESSAGE_STYLE
+        bool "WeChat message style"
+endchoice
+
+endmenu

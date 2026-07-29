@@ -132,8 +132,9 @@ ID，大模型必须先查询目标记录，再把准确 ID 传给修改或删�
 CONFIG_TUNTUN_API_URL="https://api.tuntun.life"
 ```
 
-默认值位于 `sdkconfig.defaults`。需要切换环境时，通过 `idf.py menuconfig` 修改
-`TuntunLife API URL`，不要在业务代码中硬编码不同环境地址。固件会去除根地址末尾的斜杠，
+默认值位于 `sdkconfig.defaults`。需要切换环境时，通过
+`python scripts/build.py <board> menuconfig` 修改 `TuntunLife API URL`，不要在业务代码中
+硬编码不同环境地址。固件会去除根地址末尾的斜杠，
 再拼接固定接口路径。
 
 ## 4. 绑定协议

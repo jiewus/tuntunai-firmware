@@ -1,7 +1,7 @@
 #ifndef _SINGLE_LED_H_
 #define _SINGLE_LED_H_
 
-#include "led.h"
+#include "led/led.h"
 #include <driver/gpio.h>
 #include <led_strip.h>
 #include <esp_timer.h>

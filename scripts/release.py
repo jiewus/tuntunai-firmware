@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""为唯一保留的 Tuntun Moji2 ESP32-C5 板型构建并打包发布固件。"""
+"""Build and package a secure release for any board declared under main/boards."""
 
 import argparse
-import json
 import os
 import re
 import shutil
@@ -10,16 +9,17 @@ import subprocess
 import zipfile
 from pathlib import Path
 
+from board_config import BOARD_ROOT, load_board
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-BOARD = "movecall-moji2-esp32c5"
-BOARD_DIR = PROJECT_ROOT / "main" / "boards" / BOARD
+DEFAULT_BOARD = "movecall-moji2-esp32c5"
 SECURE_BOOT_SIGNING_KEY = PROJECT_ROOT / "secure_boot_signing_key.pem"
 RELEASE_DEFAULTS = PROJECT_ROOT / "sdkconfig.release.defaults"
 
 
 def find_idf_py() -> str:
-    """查找当前终端可用的 idf.py；只发现 SDK 未加载时给出对应 export.sh 命令。"""
+    """Locate idf.py and report how to load an installed ESP-IDF environment."""
     executable = shutil.which("idf.py")
     if executable:
         return executable
@@ -38,20 +38,18 @@ def find_idf_py() -> str:
     ]
     installed = [path for path in sdk_candidates if (path / "tools" / "idf.py").exists()]
     if installed:
-        export_script = installed[0] / "export.sh"
         raise RuntimeError(
             "ESP-IDF is installed but its environment is not loaded. "
-            f"Run: source {export_script}"
+            f"Run: source {installed[0] / 'export.sh'}"
         )
 
     raise RuntimeError(
-        "ESP-IDF SDK is not installed. In VS Code run "
-        "'ESP-IDF: Open ESP-IDF Installation Manager' and install ESP-IDF 5.5.4."
+        "ESP-IDF SDK is not installed. Install ESP-IDF 5.5.4 before building firmware."
     )
 
 
 def run(*args: str) -> None:
-    """在项目根目录执行命令；参数按独立 argv 传递，遇到非零退出码立即抛出异常。"""
+    """Run idf.py from the project root and fail on the first build error."""
     command = list(args)
     if command[0] == "idf.py":
         command[0] = find_idf_py()
@@ -59,7 +57,7 @@ def run(*args: str) -> None:
 
 
 def project_version() -> str:
-    """从根 CMakeLists.txt 读取 PROJECT_VER；缺少版本声明时拒绝生成错误命名的包。"""
+    """Read PROJECT_VER from the root CMake file."""
     cmake = (PROJECT_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
     match = re.search(r'set\(PROJECT_VER\s+"([^"]+)"\)', cmake)
     if not match:
@@ -67,38 +65,33 @@ def project_version() -> str:
     return match.group(1)
 
 
-def load_board_config() -> dict:
-    """读取板级 config.json，返回目标芯片和 sdkconfig 追加项组成的字典。"""
-    with (BOARD_DIR / "config.json").open(encoding="utf-8") as file:
-        return json.load(file)
+def available_boards() -> list[str]:
+    """Return all valid board directory names."""
+    boards: list[str] = []
+    for config_path in sorted(BOARD_ROOT.glob("*/config.json")):
+        board = config_path.parent.name
+        load_board(board)
+        boards.append(board)
+    return boards
 
 
-def append_sdkconfig(entries: list[str]) -> None:
-    """把板型选择和额外 Kconfig 项追加到 sdkconfig；entries 中每项必须是完整 CONFIG_ 行。"""
-    sdkconfig = PROJECT_ROOT / "sdkconfig"
-    with sdkconfig.open("a", encoding="utf-8") as file:
-        file.write("\n# Tuntun Moji2 build configuration\n")
-        file.write("CONFIG_BOARD_TYPE_TUNTUN_MOJI2_ESP32C5=y\n")
-        for entry in entries:
-            file.write(f"{entry}\n")
-
-
-def package_firmware(name: str) -> Path:
-    """将 tuntun-binary.bin 压缩到 releases；name 用于输出文件名，返回 ZIP 完整路径。"""
-    merged = PROJECT_ROOT / "build" / "tuntun-binary.bin"
+def package_firmware(board: str, build_dir: Path) -> Path:
+    """Compress the board's merged image without mixing artifacts from other targets."""
+    merged = build_dir / "tuntun-binary.bin"
     if not merged.exists():
         raise RuntimeError(f"Merged firmware not found: {merged}")
 
     releases = PROJECT_ROOT / "releases"
     releases.mkdir(exist_ok=True)
-    output = releases / f"v{project_version()}_{name}.zip"
+    output = releases / f"v{project_version()}_{board}.zip"
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(merged, arcname="tuntun-binary.bin")
     return output
 
 
-def build() -> Path:
-    """使用发布安全配置编译、合并 0x0 完整镜像并返回最终发布包路径。"""
+def build(board: str) -> Path:
+    """Build one board with release security defaults and create its merged image."""
+    board_dir, _ = load_board(board)
     if not SECURE_BOOT_SIGNING_KEY.is_file():
         raise RuntimeError(
             "缺少 Secure Boot 签名私钥。请在 Git 之外执行："
@@ -106,45 +99,42 @@ def build() -> Path:
             "secure_boot_signing_key.pem"
         )
 
-    config = load_board_config()
-    target = config["target"]
-    build_config = config["builds"][0]
-    name = build_config["name"]
-
-    sdkconfig_defaults = ";".join([
-        "sdkconfig.defaults",
-        "sdkconfig.defaults.esp32c5",
-        RELEASE_DEFAULTS.name,
-    ])
-    run("idf.py", f"-DSDKCONFIG_DEFAULTS={sdkconfig_defaults}", "set-target", target)
-    append_sdkconfig(build_config.get("sdkconfig_append", []))
-    run(
-        "idf.py",
-        f"-DSDKCONFIG_DEFAULTS={sdkconfig_defaults}",
-        f"-DBOARD_NAME={name}",
-        f"-DBOARD_TYPE={BOARD}",
-        "build",
+    build_dir = PROJECT_ROOT / "build" / board / "release"
+    sdkconfig_defaults = ";".join(
+        [
+            str(PROJECT_ROOT / "sdkconfig.defaults"),
+            str(board_dir / "sdkconfig.defaults"),
+            str(RELEASE_DEFAULTS),
+        ]
     )
-    run("idf.py", "merge-bin", "-o", "build/tuntun-binary.bin")
-    return package_firmware(name)
+    common_args = (
+        "idf.py",
+        "-B",
+        str(build_dir),
+        f"-DBOARD_TYPE={board}",
+        f"-DSDKCONFIG={build_dir / 'sdkconfig'}",
+        f"-DSDKCONFIG_DEFAULTS={sdkconfig_defaults}",
+    )
+    run(*common_args, "build")
+    run(*common_args, "merge-bin", "-o", str(build_dir / "tuntun-binary.bin"))
+    return package_firmware(board, build_dir)
 
 
 def main() -> None:
-    """解析命令行；支持列出唯一板型，或执行完整发布构建。"""
-    parser = argparse.ArgumentParser(description="Build Tuntun Moji2 ESP32-C5 firmware")
-    parser.add_argument("board", nargs="?", default=BOARD)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("board", nargs="?", default=DEFAULT_BOARD)
     parser.add_argument("--list-boards", action="store_true")
     args = parser.parse_args()
 
-    if args.list_boards:
-        print(BOARD)
-        return
-    if args.board != BOARD:
-        parser.error(f"only {BOARD} is supported")
-
     try:
-        output = build()
-    except RuntimeError as error:
+        boards = available_boards()
+        if args.list_boards:
+            print("\n".join(boards))
+            return
+        if args.board not in boards:
+            parser.error(f"unknown board '{args.board}'; available: {', '.join(boards)}")
+        output = build(args.board)
+    except (RuntimeError, ValueError) as error:
         parser.error(str(error))
     print(f"Firmware package: {output}")
 
