@@ -161,6 +161,10 @@ void BackendService::RunNotificationSync()
     cJSON *source_type = cJSON_GetObjectItemCaseSensitive(item, "source_type");
     cJSON *notification_mode = cJSON_GetObjectItemCaseSensitive(item, "notification_mode");
     cJSON *has_audio = cJSON_GetObjectItemCaseSensitive(item, "has_audio");
+    cJSON *audio_segment_count = cJSON_GetObjectItemCaseSensitive(item, "audio_segment_count");
+    const int parsed_audio_segment_count = cJSON_IsNumber(audio_segment_count)
+        ? audio_segment_count->valueint
+        : (cJSON_IsTrue(has_audio) ? 1 : 0);
     const bool valid = ReadBoundedString(
                            item,
                            "notification_id",
@@ -178,11 +182,16 @@ void BackendService::RunNotificationSync()
                            notification.display_text) &&
                        cJSON_IsNumber(source_type) &&
                        source_type->valueint >= kNotificationSourceScheduledMcp &&
-                       source_type->valueint <= kNotificationSourceCustomReminder &&
+                       source_type->valueint <= kNotificationSourceDailyNewsBriefing &&
                        cJSON_IsNumber(notification_mode) &&
                        (notification_mode->valueint == kNotificationModeDirect ||
                         notification_mode->valueint == kNotificationModeConfirm) &&
-                       cJSON_IsBool(has_audio);
+                       cJSON_IsBool(has_audio) &&
+                       parsed_audio_segment_count >= 0 &&
+                       parsed_audio_segment_count <= kNotificationMaximumAudioSegments &&
+                       (cJSON_IsTrue(has_audio)
+                            ? parsed_audio_segment_count > 0
+                            : parsed_audio_segment_count == 0);
     if (!valid)
     {
         cJSON_Delete(root);
@@ -197,6 +206,7 @@ void BackendService::RunNotificationSync()
     }
     notification.notification_mode = notification_mode->valueint;
     notification.has_audio = cJSON_IsTrue(has_audio);
+    notification.audio_segment_count = parsed_audio_segment_count;
     if (source_type->valueint == kNotificationSourceScheduledMcp)
     {
         cJSON *tool_name = cJSON_GetObjectItemCaseSensitive(item, "mcp_tool_name");
@@ -213,6 +223,10 @@ void BackendService::RunNotificationSync()
         else if (source_type->valueint == kNotificationSourceMemo)
         {
             notification.source_title = "备忘录提醒";
+        }
+        else if (source_type->valueint == kNotificationSourceDailyNewsBriefing)
+        {
+            notification.source_title = "每日简报";
         }
         else
         {
@@ -870,15 +884,35 @@ void BackendService::RunPendingNotificationPlayback()
             std::lock_guard<std::mutex> lock(binding_mutex_);
             access_token = device_access_token_;
         }
-        const std::string audio_path =
-            "/api/device/notifications/" + notification.notification_id + "/audio";
-        Application::GetInstance().GetAudioService().ResetDecoder();
-        played = StreamNotificationAudio(audio_path, access_token);
-        if (played && !notification_playback_interrupted_.load())
+        played = true;
+        for (int segment_number = 1;
+             segment_number <= notification.audio_segment_count;
+             ++segment_number)
         {
-            Application::GetInstance().GetAudioService().WaitForPlaybackQueueEmpty();
+            if (notification_playback_interrupted_.load())
+            {
+                played = false;
+                break;
+            }
+            std::string audio_path =
+                "/api/device/notifications/" + notification.notification_id + "/audio";
+            if (segment_number > 1)
+            {
+                audio_path += "/" + std::to_string(segment_number);
+            }
+            auto &audio_service = Application::GetInstance().GetAudioService();
+            audio_service.ResetDecoder();
+            if (!StreamNotificationAudio(audio_path, access_token))
+            {
+                played = false;
+                break;
+            }
+            if (!notification_playback_interrupted_.load())
+            {
+                audio_service.WaitForPlaybackQueueEmpty();
+            }
         }
-        else if (!notification_playback_interrupted_.load())
+        if (!played && !notification_playback_interrupted_.load())
         {
             Application::GetInstance().GetAudioService().ResetDecoder();
         }

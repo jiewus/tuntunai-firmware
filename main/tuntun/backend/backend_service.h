@@ -187,7 +187,8 @@ private:
         WeatherLocation,
         WeatherAnnouncement,
         NotificationSync,
-        Heartbeat
+        Heartbeat,
+        NewsBriefing
     };
 
     /**
@@ -318,6 +319,12 @@ private:
         DynamicToolCompletion completion;
     };
 
+    /** @brief 传递给每日新闻简报异步工具的固定上下文。 */
+    struct NewsBriefingTaskContext {
+        /** @brief 请求完成后回复小智的一次性回调。 */
+        DynamicToolCompletion completion;
+    };
+
     /**
      * @brief 一个固定环形队列中的后端任务描述。
      */
@@ -407,6 +414,10 @@ private:
         int notification_mode = 1;
         /** @brief true 表示后端已经准备可播放 Ogg/Opus。 */
         bool has_audio = false;
+        /**
+         * @brief 后端已经准备并需要按顺序播放的独立 Ogg/Opus 音频段数。
+         */
+        int audio_segment_count = 0;
         /** @brief true 表示其余字段包含有效通知。 */
         bool valid = false;
     };
@@ -474,6 +485,8 @@ private:
     void ExecuteNotificationSyncJob();
     /** @brief 通过业务 EMQX 发布一次设备心跳。 */
     void ExecuteHeartbeatJob();
+    /** @brief 执行每日新闻简报任务并释放任务上下文。 */
+    void ExecuteNewsBriefingJob(NewsBriefingTaskContext* context);
 
     /**
      * @brief 检查已有绑定状态，并按需启动申请新会话或恢复旧会话的独立任务。
@@ -580,6 +593,12 @@ private:
         const std::string& tool_name,
         uint32_t tool_revision,
         DynamicToolCompletion& completion);
+
+    /** @brief 把今日新闻简报请求加入常驻后端 Worker。 */
+    void StartNewsBriefingTask(DynamicToolCompletion completion);
+
+    /** @brief 请求平台已处理的今日简报并返回固定中文播报文本。 */
+    void RunNewsBriefingTask(DynamicToolCompletion& completion);
 
     /**
      * @brief 在主任务中清空全部后端动态工具和本地清单修订状态。
@@ -910,6 +929,8 @@ private:
      * @brief 当前动态 MCP 工具执行占用标记；第一版同一时间只执行一个自定义工具。
      */
     TaskHandle_t dynamic_tool_task_handle_ = nullptr;
+    /** @brief 当前新闻简报请求占用标记。 */
+    TaskHandle_t news_briefing_task_handle_ = nullptr;
     /**
      * @brief 最近一次成功安装到设备 MCP 服务器的后端清单修订号。
      */

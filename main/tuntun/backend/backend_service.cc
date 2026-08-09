@@ -248,6 +248,34 @@ void BackendService::ExecuteCustomReminderToolJob(CustomReminderToolTaskContext*
 }
 
 /**
+ * @brief 执行每日新闻简报请求并释放任务上下文和占用标记。
+ */
+void BackendService::ExecuteNewsBriefingJob(NewsBriefingTaskContext* context)
+{
+    std::unique_ptr<NewsBriefingTaskContext> task_context(context);
+    try
+    {
+        RunNewsBriefingTask(task_context->completion);
+    }
+    catch (const std::exception &exception)
+    {
+        ESP_LOGE(kTag, "每日新闻简报任务异常，原因=%s", exception.what());
+        FinishToolRequest(task_context->completion, "每日新闻简报获取失败，请稍后重试。", true);
+    }
+    catch (...)
+    {
+        ESP_LOGE(kTag, "每日新闻简报任务发生未知异常");
+        FinishToolRequest(task_context->completion, "每日新闻简报获取失败，请稍后重试。", true);
+    }
+    if (task_context->completion)
+    {
+        FinishToolRequest(task_context->completion, "每日新闻简报未能完成，请稍后重试。", true);
+    }
+    std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
+    news_briefing_task_handle_ = nullptr;
+}
+
+/**
  * @brief 执行备忘录屏保同步任务。
  */
 void BackendService::ExecuteMemoSyncJob()
@@ -473,6 +501,9 @@ void BackendService::ExecuteBackendJob(const BackendJob& job)
         break;
     case BackendJobType::Heartbeat:
         ExecuteHeartbeatJob();
+        break;
+    case BackendJobType::NewsBriefing:
+        ExecuteNewsBriefingJob(static_cast<NewsBriefingTaskContext*>(job.context));
         break;
     }
 }
@@ -1206,6 +1237,22 @@ void BackendService::RegisterMcpTools(McpServer &server)
                     completion(McpToolResult{message, is_error});
                 };
             StartCustomReminderToolTask(context);
+        });
+
+    server.AddAsyncTool(
+        "self.tuntun.get_daily_news_briefing",
+        "获取当前用户已经订阅的今日新闻简报。当用户询问今天有什么新闻、今日简报或订阅领域最新消息时调用。"
+        "分类、去重、排序和摘要由囤囤AI平台完成，不要自行补充新闻内容。",
+        PropertyList(),
+        [this](const PropertyList &properties, McpToolCompletion completion)
+        {
+            (void)properties;
+            StartNewsBriefingTask(
+                [completion = std::move(completion)](const std::string &message,
+                                                     bool is_error) mutable
+                {
+                    completion(McpToolResult{message, is_error});
+                });
         });
 }
 

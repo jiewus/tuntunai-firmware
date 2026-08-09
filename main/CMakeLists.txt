@@ -26,6 +26,7 @@ set(SOURCES
     "tuntun/backend/backend_weather.cc"
     "tuntun/backend/backend_binding.cc"
     "tuntun/backend/backend_notification.cc"
+    "tuntun/backend/backend_news.cc"
     "system/system_info.cc"
     "system/settings.cc"
     "app/application.cc"
@@ -173,6 +174,7 @@ if("${size}" AND "${offset}")
     if(CONFIG_FLASH_DEFAULT_ASSETS)
         build_default_assets_bin()
         esptool_py_flash_to_partition(flash "assets" "${GENERATED_ASSETS_LOCAL_FILE}")
+        add_dependencies(flash generated_default_assets)
     elseif(CONFIG_FLASH_CUSTOM_ASSETS)
         get_assets_local_file("${CONFIG_CUSTOM_ASSETS_FILE}" ASSETS_LOCAL_FILE)
         esptool_py_flash_to_partition(flash "assets" "${ASSETS_LOCAL_FILE}")
