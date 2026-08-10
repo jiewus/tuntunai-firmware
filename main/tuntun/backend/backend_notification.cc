@@ -666,6 +666,7 @@ void BackendService::StartPendingNotificationPlayback()
         return;
     }
     notification_playback_interrupted_.store(false);
+    notification_playback_active_.store(true);
     if (CreatePsramBackendTask(
             NotificationPlaybackTaskEntry,
             "notify_play",
@@ -675,6 +676,7 @@ void BackendService::StartPendingNotificationPlayback()
             &notification_playback_task_handle_) != pdPASS)
     {
         notification_playback_task_handle_ = nullptr;
+        notification_playback_active_.store(false);
         ESP_LOGE(kTag, "主动通知播放任务创建失败");
     }
 }
@@ -687,6 +689,7 @@ void BackendService::NotificationPlaybackTaskEntry(void *context)
 {
     auto *service = static_cast<BackendService *>(context);
     service->RunPendingNotificationPlayback();
+    service->notification_playback_active_.store(false);
     bool continue_sync = false;
     {
         std::lock_guard<std::mutex> lock(service->notification_mutex_);
@@ -697,6 +700,24 @@ void BackendService::NotificationPlaybackTaskEntry(void *context)
     if (continue_sync)
     {
         service->StartNotificationSync(false);
+    }
+    bool refresh_manifest = false;
+    {
+        std::lock_guard<std::mutex> lock(service->dynamic_mcp_mutex_);
+        refresh_manifest = service->mcp_manifest_refresh_requested_;
+        service->mcp_manifest_refresh_requested_ = false;
+    }
+    if (refresh_manifest)
+    {
+        service->StartMcpManifestSync();
+    }
+    if (service->weather_refresh_requested_.load())
+    {
+        service->StartWeatherSync(true);
+    }
+    if (service->memo_refresh_requested_.load() || service->memo_retry_due_.load())
+    {
+        service->StartMemoSync(true);
     }
     DeleteCurrentPsramTask();
 }
@@ -732,12 +753,8 @@ bool BackendService::StreamNotificationAudio(
             {
                 return;
             }
-            auto packet = std::make_unique<AudioStreamPacket>();
-            packet->sample_rate = sample_rate;
-            packet->frame_duration = frame_duration;
-            packet->payload.assign(data, data + size);
-            if (Application::GetInstance().GetAudioService().PushPacketToDecodeQueue(
-                    std::move(packet), true))
+            if (Application::GetInstance().GetAudioService().PushDataToDecodeQueue(
+                    data, size, sample_rate, frame_duration, true))
             {
                 ++packet_count;
             }
@@ -780,7 +797,7 @@ bool BackendService::StreamNotificationAudio(
     }
 
     size_t received_size = 0;
-    std::array<char, kHttpReadChunkBytes> read_buffer{};
+    std::array<char, kNotificationAudioReadChunkBytes> read_buffer{};
     while (true)
     {
         if (notification_playback_interrupted_.load())
@@ -870,6 +887,7 @@ void BackendService::RunPendingNotificationPlayback()
         auto *display = board.GetDisplay();
         if (display != nullptr)
         {
+            display->SetAudioPlaybackMode(true);
             display->SetScreensaverMode(false);
             display->SetStatus(notification.source_title.c_str());
             display->SetChatMessage("assistant", notification.display_text.c_str());
@@ -902,14 +920,22 @@ void BackendService::RunPendingNotificationPlayback()
             }
             auto &audio_service = Application::GetInstance().GetAudioService();
             audio_service.ResetDecoder();
-            if (!StreamNotificationAudio(audio_path, access_token))
+            audio_service.BeginStreamPlayback(kNotificationAudioPrebufferDurationMs);
+            const bool streamed = StreamNotificationAudio(audio_path, access_token);
+            if (streamed && !notification_playback_interrupted_.load())
+            {
+                audio_service.FinishStreamInput();
+                audio_service.WaitForPlaybackQueueEmpty();
+            }
+            else
+            {
+                audio_service.ResetDecoder();
+            }
+            audio_service.EndStreamPlayback();
+            if (!streamed)
             {
                 played = false;
                 break;
-            }
-            if (!notification_playback_interrupted_.load())
-            {
-                audio_service.WaitForPlaybackQueueEmpty();
             }
         }
         if (!played && !notification_playback_interrupted_.load())
@@ -937,9 +963,13 @@ void BackendService::RunPendingNotificationPlayback()
                                         {
         auto &app = Application::GetInstance();
         auto *display = Board::GetInstance().GetDisplay();
-        if (display != nullptr && app.GetDeviceState() == kDeviceStateIdle)
+        if (display != nullptr)
         {
-            display->SetScreensaverMode(true);
+            if (app.GetDeviceState() == kDeviceStateIdle)
+            {
+                display->SetScreensaverMode(true);
+            }
+            display->SetAudioPlaybackMode(false);
         }
     });
 }

@@ -218,7 +218,8 @@ void LcdDisplay::HideDeviceBinding() {
     if (binding_container_ != nullptr) {
         lv_obj_add_flag(binding_container_, LV_OBJ_FLAG_HIDDEN);
     }
-    if (!screensaver_active_ && conversation_face_timer_ != nullptr) {
+    if (!screensaver_active_ && !audio_playback_mode_
+        && conversation_face_timer_ != nullptr) {
         lv_timer_resume(conversation_face_timer_);
         lv_timer_reset(conversation_face_timer_);
         conversation_face_last_frame_key_ = UINT32_MAX;

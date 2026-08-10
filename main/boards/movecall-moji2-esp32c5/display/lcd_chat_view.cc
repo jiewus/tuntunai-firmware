@@ -96,7 +96,7 @@ void LcdDisplay::UpdateConversationFaceMode(const char* status) {
     conversation_face_tick_ = 2;
     conversation_face_last_frame_key_ = UINT32_MAX;
     if (conversation_face_timer_ != nullptr) {
-        if (screensaver_active_) {
+        if (screensaver_active_ || audio_playback_mode_) {
             lv_timer_pause(conversation_face_timer_);
         } else {
             lv_timer_resume(conversation_face_timer_);
@@ -151,6 +151,7 @@ void LcdDisplay::UpdateConversationFaceExpression(const char* emotion) {
 void LcdDisplay::UpdateConversationFaceFrame() {
     if (conversation_face_ == nullptr || conversation_left_eye_ == nullptr
         || conversation_right_eye_ == nullptr || screensaver_active_
+        || audio_playback_mode_
         || lv_obj_has_flag(conversation_face_, LV_OBJ_FLAG_HIDDEN)) {
         return;
     }
@@ -1014,7 +1015,8 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
             conversation_face_last_frame_key_ = UINT32_MAX;
             UpdateConversationFaceFrame();
         }
-        if (!screensaver_active_ && conversation_face_timer_ != nullptr) {
+        if (!screensaver_active_ && !audio_playback_mode_
+            && conversation_face_timer_ != nullptr) {
             lv_timer_resume(conversation_face_timer_);
             lv_timer_reset(conversation_face_timer_);
         }
@@ -1072,7 +1074,9 @@ void LcdDisplay::SetChatMessage(const char* role, const char* content) {
 
     const char* complete_text = content != nullptr ? content : "";
     lv_label_set_text(chat_message_label_, complete_text);
-    UpdateSubtitleScroll();
+    if (!audio_playback_mode_) {
+        UpdateSubtitleScroll();
+    }
     lv_obj_invalidate(chat_message_label_);
 
     // Show bottom_bar_ only when there is content (and subtitle is not globally hidden)
@@ -1173,7 +1177,9 @@ void LcdDisplay::SetEmotion(const char* emotion) {
 
             // Set initial frame and start animation
             lv_image_set_src(emoji_image_, gif_controller_->image_dsc());
-            gif_controller_->Start();
+            if (!audio_playback_mode_ && !screensaver_active_) {
+                gif_controller_->Start();
+            }
 
             // Show GIF, hide others
             lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);

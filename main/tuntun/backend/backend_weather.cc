@@ -115,6 +115,14 @@ std::string FormatWeatherLocationForDisplay(const std::string &location_name)
  */
 void BackendService::StartWeatherSync(bool force_refresh)
 {
+    if (notification_playback_active_.load())
+    {
+        if (force_refresh)
+        {
+            weather_refresh_requested_.store(true);
+        }
+        return;
+    }
     if (!screensaver_active_.load() || !network_connected_.load())
     {
         return;
@@ -180,6 +188,11 @@ void BackendService::WeatherTimerCallback(void *context)
  */
 void BackendService::RunWeatherSync()
 {
+    if (notification_playback_active_.load())
+    {
+        weather_refresh_requested_.store(true);
+        return;
+    }
     if (!screensaver_active_.load() || !network_connected_.load())
     {
         return;

@@ -119,6 +119,14 @@ void Display::SetScreensaverMode(bool enabled) {
     (void)enabled;
 }
 
+/**
+ * @brief 切换音频优先显示模式。
+ * @param active true 暂停非必要显示动画，false 恢复当前页面动画。
+ */
+void Display::SetAudioPlaybackMode(bool active) {
+    (void)active;
+}
+
 bool Display::SetPreviewImageData(void* data, size_t size) {
     (void)size;
     heap_caps_free(data);

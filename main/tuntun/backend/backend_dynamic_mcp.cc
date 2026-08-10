@@ -43,6 +43,12 @@ using namespace tuntun::backend_internal;
  */
 void BackendService::StartMcpManifestSync()
 {
+    if (notification_playback_active_.load())
+    {
+        std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
+        mcp_manifest_refresh_requested_ = true;
+        return;
+    }
     if (!network_connected_.load())
     {
         return;
@@ -76,6 +82,12 @@ void BackendService::StartMcpManifestSync()
  */
 void BackendService::RunMcpManifestSync()
 {
+    if (notification_playback_active_.load())
+    {
+        std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
+        mcp_manifest_refresh_requested_ = true;
+        return;
+    }
     if (!network_connected_.load())
     {
         return;

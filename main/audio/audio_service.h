@@ -40,7 +40,7 @@
 #define OPUS_FRAME_DURATION_MS 60
 #define MAX_ENCODE_TASKS_IN_QUEUE 2
 #define MAX_PLAYBACK_TASKS_IN_QUEUE 8
-#define MAX_DECODE_PACKETS_IN_QUEUE (2400 / OPUS_FRAME_DURATION_MS)
+#define MAX_DECODE_PACKETS_IN_QUEUE 64
 #define MAX_SEND_PACKETS_IN_QUEUE (2400 / OPUS_FRAME_DURATION_MS)
 #define AUDIO_TESTING_MAX_DURATION_MS 10000
 
@@ -189,6 +189,32 @@ public:
      * @param wait 队列满时是否等待空间；网络回调通常传 false，避免阻塞收包线程。
      */
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
+    /**
+     * @brief 复制一帧 Opus 数据到可复用数据包并加入解码队列。
+     * @param data Opus 数据首地址。
+     * @param size Opus 数据字节数。
+     * @param sample_rate 音频采样率 Hz。
+     * @param frame_duration 当前包覆盖的音频时长 ms。
+     * @param wait 队列满时是否等待空间。
+     * @return 数据成功入队时返回 true。
+     * @details 通知流式播放使用该接口复用包对象和 payload 容量，减少连续播报期间的堆分配。
+     */
+    bool PushDataToDecodeQueue(const uint8_t* data, size_t size, int sample_rate,
+                               int frame_duration, bool wait = false);
+    /**
+     * @brief 开始一次带启动水位的流式播放。
+     * @param prebuffer_duration_ms 开始解码前至少缓存的音频时长 ms。
+     * @details 仅影响显式开启的通知流，实时对话音频仍然收到后立即解码。
+     */
+    void BeginStreamPlayback(size_t prebuffer_duration_ms);
+    /**
+     * @brief 标记当前流已经接收完毕，并释放不足启动水位的短音频。
+     */
+    void FinishStreamInput();
+    /**
+     * @brief 结束当前流式播放并输出缓冲欠载统计。
+     */
+    void EndStreamPlayback();
 
     /**
      * @brief 取出最早的上行 Opus 包。
@@ -254,6 +280,8 @@ private:
     std::mutex audio_queue_mutex_;
     std::condition_variable audio_queue_cv_;
     std::deque<std::unique_ptr<AudioStreamPacket>> audio_decode_queue_;
+    /** @brief 已完成解码、可复用 payload 容量的 Opus 数据包，数量不超过解码队列容量。 */
+    std::deque<std::unique_ptr<AudioStreamPacket>> reusable_decode_packets_;
     std::deque<std::unique_ptr<AudioStreamPacket>> audio_send_queue_;
     std::deque<std::unique_ptr<AudioStreamPacket>> audio_testing_queue_;
     std::deque<std::unique_ptr<AudioTask>> audio_encode_queue_;
@@ -264,6 +292,22 @@ private:
     bool audio_decode_active_ = false;
     /** @brief true 表示音频输出任务已经取出一帧并正在向 Codec 写入。 */
     bool audio_output_active_ = false;
+    /** @brief true 表示当前通知流需要在达到启动水位前暂停解码。 */
+    bool stream_prebuffering_ = false;
+    /** @brief true 表示当前正在统计一条通知流的缓冲状态。 */
+    bool stream_playback_active_ = false;
+    /** @brief true 表示当前通知流的 HTTP 输入已经结束。 */
+    bool stream_input_finished_ = true;
+    /** @brief true 表示当前通知流已经向 Codec 输出过音频。 */
+    bool stream_output_started_ = false;
+    /** @brief 通知流开始解码所需的目标缓存时长 ms。 */
+    size_t stream_prebuffer_target_ms_ = 0;
+    /** @brief 当前解码队列内通知 Opus 包的累计时长 ms。 */
+    size_t stream_queued_duration_ms_ = 0;
+    /** @brief 本次通知实际达到的启动缓存时长 ms。 */
+    size_t stream_initial_buffer_ms_ = 0;
+    /** @brief HTTP 尚未结束时播放队列耗尽的累计次数。 */
+    uint32_t stream_underrun_count_ = 0;
     bool wake_word_initialized_ = false;
     bool audio_processor_initialized_ = false;
     bool voice_detected_ = false;

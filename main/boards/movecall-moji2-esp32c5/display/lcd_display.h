@@ -193,6 +193,8 @@ protected:
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
     bool hide_subtitle_ = false;  ///< true 时不在屏幕显示对话字幕。
     bool screensaver_active_ = false;  ///< true 时金属黑表盘覆盖正常对话界面。
+    /** @brief true 时暂停表情、GIF 和文字滚动，为音频输出让出处理时间。 */
+    bool audio_playback_mode_ = false;
     /**
      * @brief true 时表盘只显示外圈和自定义 MCP 清单。
      */
@@ -422,6 +424,11 @@ public:
      * @param enabled true 进入屏保；false 退出屏保并恢复正常对话界面。
      */
     virtual void SetScreensaverMode(bool enabled) override;
+    /**
+     * @brief 暂停或恢复当前页面的非必要动画。
+     * @param active true 进入音频优先模式，false 恢复当前页面所需动画。
+     */
+    void SetAudioPlaybackMode(bool active) override;
     /**
      * @brief 线程安全地更新表盘天气位置和天气三列。
      */

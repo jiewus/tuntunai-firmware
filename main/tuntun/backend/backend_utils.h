@@ -206,6 +206,10 @@ namespace tuntun::backend_internal
     constexpr uint32_t kNotificationPlaybackTaskStackSize = 16384;
     constexpr size_t kNotificationResponseMaxBytes = 12288;
     constexpr size_t kNotificationAudioMaxBytes = 512 * 1024;
+    /** @brief 通知 Ogg 流的单次网络读取大小，减少短读和解封装调用次数。 */
+    constexpr size_t kNotificationAudioReadChunkBytes = 4096;
+    /** @brief 通知音频开始解码前的目标缓存时长，单位为毫秒。 */
+    constexpr size_t kNotificationAudioPrebufferDurationMs = 800;
     constexpr size_t kNotificationTextMaxBytes = 1500;
     constexpr int kNotificationMaximumAudioSegments = 32;
     constexpr uint32_t kNotificationConfirmationTimeoutMs = 30000;

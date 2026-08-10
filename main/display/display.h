@@ -98,6 +98,12 @@ public:
      */
     virtual void SetScreensaverMode(bool enabled);
     /**
+     * @brief 切换音频优先显示模式。
+     * @param active true 暂停非必要显示动画，为后台音频播放让出 CPU 和内存带宽。
+     * @details 默认实现为空操作；带动画的显示实现应在退出时恢复当前页面需要的动画。
+     */
+    virtual void SetAudioPlaybackMode(bool active);
+    /**
      * @brief 更新屏保天气位置和天气三列内容。
      * @param location 当前天气位置的简短显示名称，例如“松江”。
      * @param temperature 当前温度，单位为摄氏度。

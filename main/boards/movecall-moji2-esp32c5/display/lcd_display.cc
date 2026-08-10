@@ -460,6 +460,10 @@ void LcdDisplay::UpdateSubtitleScroll() {
     if (text == nullptr || text[0] == '\0') {
         return;
     }
+    if (audio_playback_mode_) {
+        lv_obj_align(chat_message_label_, LV_ALIGN_CENTER, 0, 0);
+        return;
+    }
 
     auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
     const lv_font_t* text_font = lvgl_theme->text_font()->font();

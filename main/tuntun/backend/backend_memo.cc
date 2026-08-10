@@ -452,6 +452,14 @@ void BackendService::RunMemoToolTask(MemoToolTaskContext &context)
  */
 void BackendService::StartMemoSync(bool force_refresh)
 {
+    if (notification_playback_active_.load())
+    {
+        if (force_refresh || memo_retry_due_.load() || memo_refresh_requested_.load())
+        {
+            memo_refresh_requested_.store(true);
+        }
+        return;
+    }
     if (!screensaver_active_.load() || !network_connected_.load())
     {
         return;
@@ -514,6 +522,11 @@ void BackendService::StartMemoSync(bool force_refresh)
  */
 void BackendService::RunMemoSync()
 {
+    if (notification_playback_active_.load())
+    {
+        memo_refresh_requested_.store(true);
+        return;
+    }
     if (!screensaver_active_.load() || !network_connected_.load())
     {
         return;

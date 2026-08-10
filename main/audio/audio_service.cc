@@ -187,7 +187,7 @@ void AudioService::Start() {
         AudioService* audio_service = (AudioService*)arg;
         audio_service->OpusCodecTask();
         vTaskDelete(NULL);
-    }, "opus_codec", 2048 * 12, this, 2, &opus_codec_task_handle_);
+    }, "opus_codec", 2048 * 12, this, 3, &opus_codec_task_handle_);
 }
 
 /**
@@ -205,8 +205,15 @@ void AudioService::Stop() {
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
     audio_encode_queue_.clear();
     audio_decode_queue_.clear();
+    reusable_decode_packets_.clear();
     audio_playback_queue_.clear();
     audio_testing_queue_.clear();
+    stream_prebuffering_ = false;
+    stream_playback_active_ = false;
+    stream_input_finished_ = true;
+    stream_output_started_ = false;
+    stream_prebuffer_target_ms_ = 0;
+    stream_queued_duration_ms_ = 0;
     audio_queue_cv_.notify_all();
 }
 
@@ -376,6 +383,15 @@ void AudioService::AudioOutputTask() {
         debug_statistics_.playback_count++;
 
         lock.lock();
+        if (stream_playback_active_) {
+            stream_output_started_ = true;
+            if (!stream_input_finished_
+                && audio_playback_queue_.empty()
+                && audio_decode_queue_.empty()
+                && !audio_decode_active_) {
+                ++stream_underrun_count_;
+            }
+        }
 #if CONFIG_USE_SERVER_AEC
         /* 服务端 AEC 启用时保存播放时间戳，用于关联回声参考帧。 */
         if (task->timestamp > 0) {
@@ -404,16 +420,26 @@ void AudioService::OpusCodecTask() {
         audio_queue_cv_.wait(lock, [this]() {
             return service_stopped_ ||
                 (!audio_encode_queue_.empty() && audio_send_queue_.size() < MAX_SEND_PACKETS_IN_QUEUE) ||
-                (!audio_decode_queue_.empty() && audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE);
+                (!stream_prebuffering_ && !audio_decode_queue_.empty()
+                    && audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE);
         });
         if (service_stopped_) {
             break;
         }
 
         // 优先把云端下发的 Opus 包解码为 PCM，并推入扬声器播放队列。
-        if (!audio_decode_queue_.empty() && audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE) {
+        if (!stream_prebuffering_ && !audio_decode_queue_.empty()
+            && audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE) {
             auto packet = std::move(audio_decode_queue_.front());
             audio_decode_queue_.pop_front();
+            if (stream_playback_active_) {
+                const size_t packet_duration = packet->frame_duration > 0
+                    ? static_cast<size_t>(packet->frame_duration)
+                    : 0;
+                stream_queued_duration_ms_ = packet_duration < stream_queued_duration_ms_
+                    ? stream_queued_duration_ms_ - packet_duration
+                    : 0;
+            }
             audio_decode_active_ = true;
             audio_queue_cv_.notify_all();
             std::unique_ptr<AudioTask> task;
@@ -461,7 +487,6 @@ void AudioService::OpusCodecTask() {
                     lock.lock();
                     audio_playback_queue_.push_back(std::move(task));
                     audio_queue_cv_.notify_all();
-                    debug_statistics_.decode_count++;
                 } else {
                     ESP_LOGE(TAG, "音频解码失败，错误码=%d", ret);
                     lock.lock();
@@ -475,6 +500,11 @@ void AudioService::OpusCodecTask() {
                 reusable_audio_tasks_.push_back(std::move(task));
             }
             audio_decode_active_ = false;
+            packet->timestamp = 0;
+            packet->payload.clear();
+            if (reusable_decode_packets_.size() < MAX_DECODE_PACKETS_IN_QUEUE) {
+                reusable_decode_packets_.push_back(std::move(packet));
+            }
             audio_queue_cv_.notify_all();
             debug_statistics_.decode_count++;
         }
@@ -614,14 +644,112 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
     if (audio_decode_queue_.size() >= MAX_DECODE_PACKETS_IN_QUEUE) {
         if (wait) {
-            audio_queue_cv_.wait(lock, [this]() { return audio_decode_queue_.size() < MAX_DECODE_PACKETS_IN_QUEUE; });
+            audio_queue_cv_.wait(lock, [this]() {
+                return service_stopped_
+                    || audio_decode_queue_.size() < MAX_DECODE_PACKETS_IN_QUEUE;
+            });
+            if (service_stopped_) {
+                return false;
+            }
         } else {
             return false;
         }
     }
+    if (stream_playback_active_ && packet->frame_duration > 0) {
+        stream_queued_duration_ms_ += static_cast<size_t>(packet->frame_duration);
+    }
     audio_decode_queue_.push_back(std::move(packet));
+    if (stream_prebuffering_
+        && (stream_queued_duration_ms_ >= stream_prebuffer_target_ms_
+            || audio_decode_queue_.size() >= MAX_DECODE_PACKETS_IN_QUEUE * 3 / 4)) {
+        stream_prebuffering_ = false;
+        stream_initial_buffer_ms_ = stream_queued_duration_ms_;
+        ESP_LOGI(TAG, "通知音频预缓冲完成，缓存时长=%u毫秒，数据包=%u",
+                 static_cast<unsigned>(stream_initial_buffer_ms_),
+                 static_cast<unsigned>(audio_decode_queue_.size()));
+    }
     audio_queue_cv_.notify_all();
     return true;
+}
+
+/**
+ * @brief 复用已消费的包对象，把一帧 Opus 数据加入解码队列。
+ */
+bool AudioService::PushDataToDecodeQueue(const uint8_t* data, size_t size, int sample_rate,
+                                         int frame_duration, bool wait) {
+    if (data == nullptr || size == 0) {
+        return false;
+    }
+    std::unique_ptr<AudioStreamPacket> packet;
+    {
+        std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+        if (!reusable_decode_packets_.empty()) {
+            packet = std::move(reusable_decode_packets_.front());
+            reusable_decode_packets_.pop_front();
+        }
+    }
+    if (packet == nullptr) {
+        packet = std::make_unique<AudioStreamPacket>();
+    }
+    packet->sample_rate = sample_rate;
+    packet->frame_duration = frame_duration;
+    packet->timestamp = 0;
+    packet->payload.assign(data, data + size);
+    return PushPacketToDecodeQueue(std::move(packet), wait);
+}
+
+/**
+ * @brief 开启通知流预缓冲并重置本次统计。
+ */
+void AudioService::BeginStreamPlayback(size_t prebuffer_duration_ms) {
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    stream_playback_active_ = true;
+    stream_input_finished_ = false;
+    stream_output_started_ = false;
+    stream_prebuffer_target_ms_ = prebuffer_duration_ms;
+    stream_queued_duration_ms_ = 0;
+    stream_initial_buffer_ms_ = 0;
+    stream_underrun_count_ = 0;
+    stream_prebuffering_ = prebuffer_duration_ms > 0;
+    audio_queue_cv_.notify_all();
+}
+
+/**
+ * @brief 标记通知 HTTP 输入结束并确保短音频可以开始解码。
+ */
+void AudioService::FinishStreamInput() {
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    stream_input_finished_ = true;
+    if (stream_prebuffering_) {
+        stream_prebuffering_ = false;
+        stream_initial_buffer_ms_ = stream_queued_duration_ms_;
+        ESP_LOGI(TAG, "通知音频输入已结束，使用当前缓存开始播放，缓存时长=%u毫秒",
+                 static_cast<unsigned>(stream_initial_buffer_ms_));
+    }
+    audio_queue_cv_.notify_all();
+}
+
+/**
+ * @brief 结束通知流缓冲统计并恢复实时解码模式。
+ */
+void AudioService::EndStreamPlayback() {
+    uint32_t underrun_count = 0;
+    size_t initial_buffer_ms = 0;
+    {
+        std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+        underrun_count = stream_underrun_count_;
+        initial_buffer_ms = stream_initial_buffer_ms_;
+        stream_prebuffering_ = false;
+        stream_playback_active_ = false;
+        stream_input_finished_ = true;
+        stream_output_started_ = false;
+        stream_prebuffer_target_ms_ = 0;
+        stream_queued_duration_ms_ = 0;
+        audio_queue_cv_.notify_all();
+    }
+    ESP_LOGI(TAG, "通知音频播放缓冲统计，启动缓存=%u毫秒，欠载次数=%u",
+             static_cast<unsigned>(initial_buffer_ms),
+             static_cast<unsigned>(underrun_count));
 }
 
 /**
@@ -816,9 +944,29 @@ void AudioService::ResetDecoder() {
         esp_opus_dec_reset(opus_decoder_);
     }
     decoder_lock.unlock();
-    audio_decode_queue_.clear();
-    audio_playback_queue_.clear();
+    while (!audio_decode_queue_.empty()) {
+        auto packet = std::move(audio_decode_queue_.front());
+        audio_decode_queue_.pop_front();
+        packet->timestamp = 0;
+        packet->payload.clear();
+        if (reusable_decode_packets_.size() < MAX_DECODE_PACKETS_IN_QUEUE) {
+            reusable_decode_packets_.push_back(std::move(packet));
+        }
+    }
+    while (!audio_playback_queue_.empty()) {
+        auto task = std::move(audio_playback_queue_.front());
+        audio_playback_queue_.pop_front();
+        task->timestamp = 0;
+        task->pcm.clear();
+        reusable_audio_tasks_.push_back(std::move(task));
+    }
     audio_testing_queue_.clear();
+    stream_prebuffering_ = false;
+    stream_playback_active_ = false;
+    stream_input_finished_ = true;
+    stream_output_started_ = false;
+    stream_prebuffer_target_ms_ = 0;
+    stream_queued_duration_ms_ = 0;
     audio_queue_cv_.notify_all();
 }
 

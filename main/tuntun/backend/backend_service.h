@@ -192,6 +192,24 @@ private:
     };
 
     /**
+     * @brief 判断任务是否直接服务于当前语音对话。
+     * @param type 后端 Worker 任务类型。
+     * @return MCP 对话操作返回 true，后台同步和心跳返回 false。
+     */
+    static bool IsConversationBackendJob(BackendJobType type);
+    /**
+     * @brief 判断任务是否用于准备主动通知音频播放。
+     * @param type 后端 Worker 任务类型。
+     * @return 主动通知同步返回 true，其他任务返回 false。
+     */
+    static bool IsPlaybackBackendJob(BackendJobType type);
+    /**
+     * @brief 判断普通后台任务当前是否应为对话或音频播放让行。
+     * @return 设备不空闲、通知播放待处理或音频队列非空时返回 true。
+     */
+    bool ShouldDeferNormalBackendJob();
+
+    /**
      * @brief 传递给独立绑定任务的启动参数。
      */
     struct BindingTaskContext {
@@ -1067,6 +1085,10 @@ private:
      * @brief 当前通知音频播放任务句柄。
      */
     TaskHandle_t notification_playback_task_handle_ = nullptr;
+    /**
+     * @brief true 表示主动通知正在等待播放、下载或输出音频，普通后台同步应暂时避让。
+     */
+    std::atomic<bool> notification_playback_active_{false};
     /**
      * @brief true 表示用户唤醒已经要求当前通知停止下载和播放。
      */

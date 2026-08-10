@@ -51,8 +51,8 @@ BackendService &BackendService::GetInstance()
 /**
  * @brief 把排队的后端操作逐个取出并执行。
  * @param context 指向 BackendService 单例。
- * @details Worker 常驻运行并通过任务通知休眠；单个任务异常只记录日志，不会退出 Worker，
- *          从而保证后续天气、备忘录、MCP 和通知请求仍能继续处理。
+ * @details Worker 常驻运行并通过任务通知休眠。对话任务优先于通知播放准备任务，普通同步只在
+ *          设备和音频都空闲时执行；单个任务异常只记录日志，不会阻断后续任务。
  */
 void BackendService::BackendWorkerTaskEntry(void *context)
 {
@@ -63,17 +63,69 @@ void BackendService::BackendWorkerTaskEntry(void *context)
         while (true)
         {
             BackendJob job;
+            bool defer_normal_job = false;
+            const bool normal_job_should_defer =
+                service->ShouldDeferNormalBackendJob();
             {
                 std::lock_guard<std::mutex> lock(service->backend_job_mutex_);
                 if (service->backend_job_count_ == 0)
                 {
                     break;
                 }
-                job = service->backend_jobs_[service->backend_job_head_];
-                service->backend_jobs_[service->backend_job_head_] = {};
-                service->backend_job_head_ =
-                    (service->backend_job_head_ + 1) % kBackendWorkerQueueCapacity;
-                --service->backend_job_count_;
+
+                size_t selected_offset = 0;
+                bool conversation_job_found = false;
+                bool playback_job_found = false;
+                for (size_t offset = 0; offset < service->backend_job_count_; ++offset)
+                {
+                    const size_t index =
+                        (service->backend_job_head_ + offset) % kBackendWorkerQueueCapacity;
+                    if (IsConversationBackendJob(service->backend_jobs_[index].type))
+                    {
+                        selected_offset = offset;
+                        conversation_job_found = true;
+                        break;
+                    }
+                    if (!playback_job_found
+                        && IsPlaybackBackendJob(service->backend_jobs_[index].type))
+                    {
+                        selected_offset = offset;
+                        playback_job_found = true;
+                    }
+                }
+
+                defer_normal_job = !conversation_job_found
+                    && normal_job_should_defer;
+                if (!defer_normal_job)
+                {
+                    const size_t selected_index =
+                        (service->backend_job_head_ + selected_offset)
+                        % kBackendWorkerQueueCapacity;
+                    job = service->backend_jobs_[selected_index];
+                    for (size_t offset = selected_offset;
+                         offset + 1 < service->backend_job_count_;
+                         ++offset)
+                    {
+                        const size_t current_index =
+                            (service->backend_job_head_ + offset)
+                            % kBackendWorkerQueueCapacity;
+                        const size_t next_index =
+                            (service->backend_job_head_ + offset + 1)
+                            % kBackendWorkerQueueCapacity;
+                        service->backend_jobs_[current_index] =
+                            service->backend_jobs_[next_index];
+                    }
+                    service->backend_job_tail_ =
+                        (service->backend_job_tail_ + kBackendWorkerQueueCapacity - 1)
+                        % kBackendWorkerQueueCapacity;
+                    service->backend_jobs_[service->backend_job_tail_] = {};
+                    --service->backend_job_count_;
+                }
+            }
+            if (defer_normal_job)
+            {
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
             }
             try
             {
@@ -89,6 +141,49 @@ void BackendService::BackendWorkerTaskEntry(void *context)
             }
         }
     }
+}
+
+/**
+ * @brief 判断任务是否直接服务于当前语音对话。
+ * @param type 后端 Worker 任务类型。
+ * @return MCP 对话操作返回 true，后台同步和心跳返回 false。
+ */
+bool BackendService::IsConversationBackendJob(BackendJobType type)
+{
+    switch (type)
+    {
+    case BackendJobType::DynamicTool:
+    case BackendJobType::MemoTool:
+    case BackendJobType::CustomReminderTool:
+    case BackendJobType::WeatherLocation:
+    case BackendJobType::WeatherAnnouncement:
+    case BackendJobType::NewsBriefing:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/**
+ * @brief 判断任务是否用于准备主动通知音频播放。
+ * @param type 后端 Worker 任务类型。
+ * @return 主动通知同步返回 true，其他任务返回 false。
+ */
+bool BackendService::IsPlaybackBackendJob(BackendJobType type)
+{
+    return type == BackendJobType::NotificationSync;
+}
+
+/**
+ * @brief 判断普通后台任务当前是否应为对话或音频播放让行。
+ * @return 设备不空闲、通知播放待处理或音频队列非空时返回 true。
+ */
+bool BackendService::ShouldDeferNormalBackendJob()
+{
+    auto &app = Application::GetInstance();
+    return app.GetDeviceState() != kDeviceStateIdle
+        || notification_playback_active_.load()
+        || !app.GetAudioService().IsIdle();
 }
 
 /**

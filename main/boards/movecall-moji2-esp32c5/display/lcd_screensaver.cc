@@ -816,11 +816,13 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
          */
         if (screensaver_memo_labels_[0] != nullptr) {
             const char* memo_text = lv_label_get_text(screensaver_memo_labels_[0]);
-            if (memo_text != nullptr && std::strchr(memo_text, '\n') == nullptr) {
+            if (!audio_playback_mode_ && memo_text != nullptr
+                && std::strchr(memo_text, '\n') == nullptr) {
                 UpdateScreensaverMemoScroll();
             }
         }
-        if (screensaver_memo_timer_ != nullptr && screensaver_memos_.size() > 1) {
+        if (!audio_playback_mode_ && screensaver_memo_timer_ != nullptr
+            && screensaver_memos_.size() > 1) {
             lv_timer_resume(screensaver_memo_timer_);
             lv_timer_reset(screensaver_memo_timer_);
         }
@@ -844,14 +846,72 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
             }
         }
         lv_obj_add_flag(screensaver_container_, LV_OBJ_FLAG_HIDDEN);
-        if (conversation_face_timer_ != nullptr) {
+        if (!audio_playback_mode_ && conversation_face_timer_ != nullptr) {
             lv_timer_resume(conversation_face_timer_);
             lv_timer_reset(conversation_face_timer_);
         }
         UpdateConversationFaceFrame();
-        if (gif_controller_) {
+        if (!audio_playback_mode_ && gif_controller_) {
             gif_controller_->Start();
         }
+        if (!audio_playback_mode_) {
+            UpdateSubtitleScroll();
+        }
+    }
+}
+
+/**
+ * @brief 切换音频优先模式并暂停或恢复当前页面的非必要动画。
+ * @param active true 暂停表情、GIF、字幕和备忘录动画，false 恢复当前页面需要的动画。
+ */
+void LcdDisplay::SetAudioPlaybackMode(bool active) {
+    DisplayLockGuard lock(this);
+    if (audio_playback_mode_ == active) {
+        return;
+    }
+
+    audio_playback_mode_ = active;
+    if (active) {
+        if (conversation_face_timer_ != nullptr) {
+            lv_timer_pause(conversation_face_timer_);
+        }
+        if (gif_controller_) {
+            gif_controller_->Stop();
+        }
+        if (chat_message_label_ != nullptr) {
+            lv_anim_delete(chat_message_label_, nullptr);
+            lv_obj_set_style_translate_y(chat_message_label_, 0, 0);
+        }
+        if (screensaver_memo_timer_ != nullptr) {
+            lv_timer_pause(screensaver_memo_timer_);
+        }
+        lv_anim_delete(this, ScreensaverMemoScrollAnimationCallback);
+        for (lv_obj_t* memo_label : screensaver_memo_labels_) {
+            if (memo_label != nullptr) {
+                lv_obj_set_style_translate_y(memo_label, 0, 0);
+            }
+        }
+        return;
+    }
+
+    if (screensaver_active_) {
+        UpdateScreensaverMemoScroll();
+        if (screensaver_memo_timer_ != nullptr && screensaver_memos_.size() > 1) {
+            lv_timer_resume(screensaver_memo_timer_);
+            lv_timer_reset(screensaver_memo_timer_);
+        }
+        return;
+    }
+
+    if (!binding_active_ && conversation_face_timer_ != nullptr) {
+        lv_timer_resume(conversation_face_timer_);
+        lv_timer_reset(conversation_face_timer_);
+    }
+    UpdateConversationFaceFrame();
+    if (!binding_active_ && gif_controller_) {
+        gif_controller_->Start();
+    }
+    if (!binding_active_) {
         UpdateSubtitleScroll();
     }
 }
@@ -914,7 +974,7 @@ void LcdDisplay::SetScreensaverMemos(const std::vector<std::string>& memos) {
     screensaver_memo_index_ = 0;
     UpdateScreensaverMemo();
     if (screensaver_memo_timer_ != nullptr) {
-        if (screensaver_active_ && screensaver_memos_.size() > 1) {
+        if (screensaver_active_ && !audio_playback_mode_ && screensaver_memos_.size() > 1) {
             lv_timer_resume(screensaver_memo_timer_);
             lv_timer_reset(screensaver_memo_timer_);
         } else {
@@ -1140,6 +1200,7 @@ void LcdDisplay::ScreensaverMemoScrollAnimationCallback(void* target, int32_t va
 void LcdDisplay::ScreensaverMemoTimerCallback(lv_timer_t* timer) {
     auto* display = static_cast<LcdDisplay*>(lv_timer_get_user_data(timer));
     if (display == nullptr || !display->screensaver_active_
+        || display->audio_playback_mode_
         || display->screensaver_memos_.empty()) {
         return;
     }
