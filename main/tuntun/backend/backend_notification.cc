@@ -739,7 +739,8 @@ bool BackendService::StreamNotificationAudio(
         return false;
     }
 
-    OggDemuxer demuxer;
+    // 豆包语音固定请求 24000 Hz；容器缺少 OpusHead 时按此采样率回退解封装。
+    OggDemuxer demuxer(24000);
     size_t packet_count = 0;
     bool queue_succeeded = true;
     demuxer.OnDemuxerFinished(

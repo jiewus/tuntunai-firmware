@@ -15,7 +15,8 @@
  * @brief 将任意分片到达的 Ogg 页面重组为连续 Opus 数据包。
  *
  * 解析器不要求一次输入完整页面；Process() 会保存状态并在下一段数据继续。
- * 固定 8 KB 包缓冲避免播放提示音时频繁动态分配。
+ * 固定 8 KB 包缓冲避免播放提示音时频繁动态分配。容器缺少 OpusHead/OpusTags
+ * 时，使用构造参数指定的回退采样率继续拆分 Opus 包，兼容平台豆包语音输出。
  */
 class OggDemuxer {
 private:
@@ -50,7 +51,8 @@ private:
     };
     
 public:
-    OggDemuxer() {
+    explicit OggDemuxer(int fallback_sample_rate = 48000)
+        : fallback_sample_rate_(fallback_sample_rate) {
         Reset();
     }
     
@@ -84,6 +86,7 @@ private:
      */
     static int GetPacketDurationMilliseconds(const uint8_t* data, size_t size);
 
+    int         fallback_sample_rate_ = 48000;
     ParseState  state_ = ParseState::FIND_PAGE;
     context_t   ctx_;
     Opus_t      opus_info_;
