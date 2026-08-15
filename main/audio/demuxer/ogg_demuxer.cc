@@ -346,8 +346,10 @@ size_t OggDemuxer::Process(const uint8_t* data, size_t size)
                             ctx_.seg_remaining = 0;
                             continue;
                         }
-                        if (ctx_.packet_len >= 8
-                            && memcmp(ctx_.packet_buf, "fishead", 7) == 0) {
+                        if (ctx_.packet_len >= 7
+                            && (memcmp(ctx_.packet_buf, "fishead", 7) == 0
+                                || memcmp(ctx_.packet_buf, "fisbone", 7) == 0)) {
+                            ESP_LOGD(TAG, "跳过 Ogg Skeleton 元数据包: %.7s", ctx_.packet_buf);
                             ctx_.packet_len = 0;
                             ctx_.packet_continued = false;
                             ctx_.seg_index++;
