@@ -101,7 +101,6 @@ std::unique_ptr<Http> Ota::SetupHttp() {
  * @return 请求和 JSON 解析成功时返回 ESP_OK；URL、网络、HTTP 状态或响应格式异常时返回对应错误码。
  * @details 使用设备系统信息作为 POST 请求体。成功响应中的 MQTT/WebSocket 参数会写入 NVS，
  * 激活字段保存到对象供后续轮询，服务器时间用于校准系统时钟，固件字段用于判断是否升级。
- * @see 
  */
 esp_err_t Ota::CheckVersion() {
     auto& board = Board::GetInstance();

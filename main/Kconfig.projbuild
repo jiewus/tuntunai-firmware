@@ -4,11 +4,13 @@ menu "TuntunLife Assistant"
 config OTA_URL
     string "Default OTA URL"
     # 设备启动时向该服务查询协议参数、激活状态和新固件地址。
+    # 这是开放的 OTA 服务，默认对所有外部硬件开放；可通过 menuconfig 改成你自己的服务地址。
     default "https://your-ota.example.com/xiaozhi/ota/"
 
 config TUNTUN_API_URL
     string "TuntunLife API URL"
-    # 设备绑定、天气、备忘录和动态 MCP 能力统一使用的自建平台根地址。
+    # 设备绑定、天气、备忘录和动态 MCP 能力统一使用的开放平台根地址。
+    # 该服务对所有外部硬件开放；通过 menuconfig 可改为自建后端或留空禁用该组能力。
     default "https://api.tuntun.life"
 
 choice

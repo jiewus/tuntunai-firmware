@@ -1,0 +1,60 @@
+# === 构建产物 ===
+build/
+build-*/
+build_5.5.4_keep/
+releases/
+dist/
+out/
+compile_commands.json
+
+# === ESP-IDF 依赖与本地状态 ===
+managed_components/
+sdkconfig
+sdkconfig.old
+sdkconfig.*.old
+
+# === 构建时生成的头文件 ===
+main/assets/lang_config.h
+
+# === 平台构建工具 ===
+.pio/
+.platformio/
+
+# === 编辑器 / 静态分析 ===
+.vscode/
+.idea/
+.clangd
+.clangd-index/
+.cache/
+
+# === macOS / Windows 元数据 ===
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+
+# === Python ===
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# === 密钥 / 证书 / 环境变量 ===
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+.env
+.env.*
+!.env.example
+
+# === 日志 / 临时 / 备份 ===
+*.log
+*.tmp
+*.swp
+*.swo
+*~

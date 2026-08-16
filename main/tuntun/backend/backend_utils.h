@@ -125,6 +125,7 @@ namespace tuntun::backend_internal
 
     /**
      * @brief 绑定码页面固定显示的后台输入提示和访问域名。
+     * @note 绑定后台对所有外部硬件开放；接入自有后端时可改成你的平台名称与后台地址。
      */
     constexpr const char *kBindingPageMessage =
         "请在囤囤AI后台输入\nweb.tuntun.life";

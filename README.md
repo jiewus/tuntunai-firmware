@@ -12,7 +12,7 @@
 
 ## 构建
 
-要求 ESP-IDF 5.5.2 或更高版本。
+要求 **ESP-IDF 6.0.2**（本项目已按 IDF 6.0.2 适配；使用 5.5.x 会因组件与结构体差异无法编译）。
 
 ```bash
 python scripts/build.py --list-boards
@@ -92,6 +92,7 @@ MCP”等问题时，小智会读取设备当前已经加载的动态工具快�
 顶部，25px 粗体内容每次只显示一个 MCP，并在圆角区域中垂直居中；存在多项时每 5 秒切换下一项。
 语音播报结束后页面立即退出并恢复聊天界面，对话结束后仍按原逻辑进入普通屏保。
 
-默认平台地址为 `https://api.tuntun.life`，可通过板型构建脚本的 `menuconfig` 操作，在
-`TuntunLife API URL` 中修改。完整协议和状态处理见
+默认平台地址为 `https://api.tuntun.life`，通过 `CONFIG_TUNTUN_API_URL` 配置，可用板型构建脚本的
+`menuconfig` 操作修改（接入自有后端时改为自建地址，或留空禁用绑定/天气/备忘录/通知/动态 MCP 能力）。
+完整协议和状态处理见
 [`docs/后端API接入说明.md`](docs/后端API接入说明.md)。
