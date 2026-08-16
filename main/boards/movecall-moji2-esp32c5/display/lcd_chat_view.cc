@@ -797,7 +797,7 @@ void LcdDisplay::ClearChatMessages() {
 /**
  * @brief 创建适配 360x360 圆屏的默认 LVGL 界面。
  * @details 顶部使用收窄的图标栏和状态栏，中央保留表情及预览图区域，
- *          底部使用固定两行的大字字幕容器。所有关键控件均位于圆形可见安全区内。
+ * 底部使用固定两行的大字字幕容器。所有关键控件均位于圆形可见安全区内。
  */
 void LcdDisplay::SetupUI() {
     // Prevent duplicate calls - if already called, return early
@@ -1049,7 +1049,7 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
  * @param role 消息角色，用于日志诊断；默认圆屏布局不按角色改变字幕位置。
  * @param content UTF-8 字幕文本；nullptr 或空字符串会隐藏字幕区。
  * @details 方法完整保留云端下发的 UTF-8 文本，使用 30 px 字形源换行并缩放到目标字号。
- *          两行以内的内容静止居中；超过两行时在固定窗口内纵向滚动，不再截断回答尾部。
+ * 两行以内的内容静止居中；超过两行时在固定窗口内纵向滚动，不再截断回答尾部。
  */
 void LcdDisplay::SetChatMessage(const char* role, const char* content) {
     if (!setup_ui_called_) {
@@ -1453,7 +1453,7 @@ void LcdDisplay::SetTheme(Theme* theme) {
 /**
  * @brief 在 assets 分区解除映射前释放屏保天气字体。
  * @details 先在 LVGL 锁内将天气和日期标签切换回主题字体，再释放指向旧 mmap 区域的
- *          cbin 字体描述符，避免资源下载后继续访问失效的字形数据。
+ * cbin 字体描述符，避免资源下载后继续访问失效的字形数据。
  */
 void LcdDisplay::ReleaseAssetsForReload() {
     if (screensaver_weather_font_ == nullptr) {

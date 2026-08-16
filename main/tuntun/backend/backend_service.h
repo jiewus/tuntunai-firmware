@@ -71,7 +71,7 @@ public:
      * @brief 根据屏保可见状态启停按需天气和备忘录同步。
      * @param active true 表示屏保已经显示；false 表示屏保已经退出。
      * @details 进入屏保后优先显示内存中的最近天气；缓存过期且网络与设备凭据可用时把请求
-     *          加入常驻 Worker。退出屏保后不再创建请求，已经发出的请求允许安全收尾并缓存结果。
+     * 加入常驻 Worker。退出屏保后不再创建请求，已经发出的请求允许安全收尾并缓存结果。
      */
     void OnScreensaverChanged(bool active);
 
@@ -502,7 +502,7 @@ private:
      * @param request_new_session true 先向后端申请新绑定码；false 使用 NVS 中的现有会话。
      * @param completion 新申请由 MCP 触发时返回结果的回调；自动恢复时为空。
      * @details 显式申请绑定且本地已经存在完整设备凭据时直接返回已绑定状态，不访问网络，
-     *          也不覆盖当前凭据或生成新的绑定码。
+     * 也不覆盖当前凭据或生成新的绑定码。
      */
     void StartBindingTask(bool request_new_session, BindingCompletion completion = {});
 
@@ -660,7 +660,7 @@ private:
     /**
      * @brief 在满足屏保、网络、凭据和缓存条件时把天气同步加入常驻后端 Worker。
      * @param force_refresh true 忽略本地缓存有效期，用于网络重连或刚完成设备绑定；
-     *                      false 仅在缓存缺失或超过刷新周期时请求。
+     * false 仅在缓存缺失或超过刷新周期时请求。
      */
     void StartWeatherSync(bool force_refresh);
 

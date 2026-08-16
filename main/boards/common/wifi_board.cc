@@ -347,9 +347,9 @@ std::string WifiBoard::GetBoardJson() {
  * @brief 固定使用最高稳定性的 Wi-Fi 性能模式。
  * @param level 应用层请求的功耗等级；为保证网络稳定性，本实现有意忽略该参数。
  * @details 无论设备处于待机、聆听、说话还是升级状态，都向 Wi-Fi 管理器设置
- *          WifiPowerSaveLevel::PERFORMANCE，底层对应 WIFI_PS_NONE。这样可以避免应用进入
- *          待机后切换到 WIFI_PS_MAX_MODEM，降低 5 GHz 网络中 Beacon 丢失和 AP 主动断开的概率。
- *          本策略只影响 Wi-Fi 射频省电，不影响屏幕自动熄灭和其他外设的功耗管理。
+ * WifiPowerSaveLevel::PERFORMANCE，底层对应 WIFI_PS_NONE。这样可以避免应用进入
+ * 待机后切换到 WIFI_PS_MAX_MODEM，降低 5 GHz 网络中 Beacon 丢失和 AP 主动断开的概率。
+ * 本策略只影响 Wi-Fi 射频省电，不影响屏幕自动熄灭和其他外设的功耗管理。
  */
 void WifiBoard::SetPowerSaveLevel(PowerSaveLevel level) {
     (void)level;

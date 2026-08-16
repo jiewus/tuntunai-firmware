@@ -42,7 +42,7 @@ McpServer::~McpServer() {
 /**
  * @brief 注册音量、亮度、设备状态等可供模型调用的通用工具。
  * @details 常用工具会被移动到列表前部，以提高云端提示词缓存命中率。工具回调只捕获生命周期
- *          稳定的板级单例或显示对象，并在注册完成后把原有自定义工具接回列表尾部。
+ * 稳定的板级单例或显示对象，并在注册完成后把原有自定义工具接回列表尾部。
  */
 void McpServer::AddCommonTools() {
     // 为提高云端提示词缓存命中率，常用工具固定放在工具列表前部。
@@ -149,7 +149,7 @@ void McpServer::AddCommonTools() {
 /**
  * @brief 注册仅供用户界面直接调用的工具。
  * @details 这些工具包含系统信息、重启、固件升级、屏幕操作和资源地址设置等管理能力，
- *          会标记为 user_only，默认不出现在提供给大模型的 tools/list 结果中。
+ * 会标记为 user_only，默认不出现在提供给大模型的 tools/list 结果中。
  */
 void McpServer::AddUserOnlyTools() {
     // 系统工具用于查询设备信息和执行受控重启。
@@ -321,7 +321,7 @@ void McpServer::AddUserOnlyTools() {
  * @brief 接管动态创建的工具指针并立即转换为 shared_ptr。
  * @param tool 使用 new 创建的工具对象；传入后调用方不再持有所有权。
  * @details 注册前按名称检查重复项。重复工具不会加入列表，其 shared_ptr 会在返回时自动释放，
- *          避免原实现重复注册路径泄漏堆对象。
+ * 避免原实现重复注册路径泄漏堆对象。
  */
 void McpServer::AddTool(McpTool* tool) {
     if (tool == nullptr) {
@@ -415,7 +415,7 @@ bool McpServer::ReplaceDynamicTools(std::vector<McpDynamicToolDefinition> defini
 /**
  * @brief 发送 MCP 标准工具清单变更通知。
  * @details Application 会把通知切换到主任务，并通过当前有效协议会话发送。没有活动会话时通知可以
- *          安全丢弃；下一次 MCP initialize 和 tools/list 会直接读取已经替换后的最新清单。
+ * 安全丢弃；下一次 MCP initialize 和 tools/list 会直接读取已经替换后的最新清单。
  */
 void McpServer::NotifyToolsListChanged() {
     ESP_LOGI(TAG, "正在通知 MCP 客户端工具清单已变化");
@@ -441,7 +441,7 @@ void McpServer::AddUserOnlyTool(const std::string& name, const std::string& desc
  * @brief 从文本解析并处理一条 MCP JSON-RPC 消息。
  * @param message 完整的 UTF-8 JSON 文本。
  * @details 创建临时 cJSON 文档并转交对象重载处理；无论处理结果如何，本方法都会释放解析树。
- *          JSON 语法错误只记录日志，不向无法识别编号的请求发送错误应答。
+ * JSON 语法错误只记录日志，不向无法识别编号的请求发送错误应答。
  */
 void McpServer::ParseMessage(const std::string& message) {
     cJSON* json = cJSON_Parse(message.c_str());
@@ -458,7 +458,7 @@ void McpServer::ParseMessage(const std::string& message) {
  * @brief 校验并分发已解析的 MCP JSON-RPC 请求。
  * @param json JSON-RPC 根对象，仅在本次调用期间有效，调用者保留所有权。
  * @details 依次校验协议版本、方法、参数和数字请求编号；通知类消息无需应答。当前支持 initialize、
- *          tools/list 和 tools/call，其他方法返回 JSON-RPC error。
+ * tools/list 和 tools/call，其他方法返回 JSON-RPC error。
  */
 void McpServer::ParseMessage(const cJSON* json) {
     // 只接受 MCP 当前使用的 JSON-RPC 2.0 消息。
@@ -544,7 +544,7 @@ void McpServer::ParseMessage(const cJSON* json) {
  * @param id 请求编号。
  * @param result 已序列化结果对象。
  * @details result 必须已经是合法 JSON 值，本方法不会再次转义或加引号。组装后的完整应答通过
- *          Application 转交当前云端协议发送。
+ * Application 转交当前云端协议发送。
  */
 void McpServer::ReplyResult(int id, const std::string& result) {
     std::string payload = "{\"jsonrpc\":\"2.0\",\"id\":";
@@ -559,7 +559,7 @@ void McpServer::ReplyResult(int id, const std::string& result) {
  * @param id 请求编号。
  * @param message 可诊断错误说明。
  * @details 将错误文本放入 error.message 后通过当前云端协议发送。调用者应避免在 message 中传入
- *          未转义的引号等 JSON 特殊字符。
+ * 未转义的引号等 JSON 特殊字符。
  */
 void McpServer::ReplyError(int id, const std::string& message) {
     std::string payload = "{\"jsonrpc\":\"2.0\",\"id\":";
@@ -602,7 +602,7 @@ void McpServer::ReplyToolResult(int id, const McpToolResult& result) {
  * @param cursor 起始游标。
  * @param list_user_only_tools 是否把标记为 user_only 的工具包含在结果中。
  * @details 从 cursor 指定的工具开始序列化，单条响应限制为 8000 字节。达到限制时通过 nextCursor
- *          返回下一页起点；默认过滤 user_only 管理工具，避免向大模型暴露重启和升级等管理能力。
+ * 返回下一页起点；默认过滤 user_only 管理工具，避免向大模型暴露重启和升级等管理能力。
  */
 void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_only_tools) {
     std::lock_guard<std::mutex> lock(tools_mutex_);
@@ -675,7 +675,7 @@ void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_o
  * @param tool_name 需要调用的已注册工具名称。
  * @param tool_arguments 参数 JSON 对象，可为空指针表示未提供参数。
  * @details 先复制工具的参数定义，再按布尔、整数和字符串类型读取实参；缺少无默认值的参数时立即
- *          返回错误。实际工具回调统一调度到应用主线程，避免网络接收线程直接操作显示、Codec 或 NVS。
+ * 返回错误。实际工具回调统一调度到应用主线程，避免网络接收线程直接操作显示、Codec 或 NVS。
  */
 void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* tool_arguments) {
     /*

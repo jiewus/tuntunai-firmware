@@ -87,7 +87,7 @@ void LcdDisplay::ApplyDeviceBindingFont(const lv_font_t* font) {
 /**
  * @brief 创建金属黑风格的圆屏设备绑定码页面。
  * @details 绑定页是屏幕根对象的独立子对象，并在创建后位于屏保对象之后。显示时再次移动到
- *          最前方，可确保语音会话结束触发屏保后，绑定码仍持续可见。
+ * 最前方，可确保语音会话结束触发屏保后，绑定码仍持续可见。
  */
 void LcdDisplay::CreateDeviceBindingUI() {
     if (binding_container_ != nullptr) {

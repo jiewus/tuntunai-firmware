@@ -27,10 +27,10 @@ namespace {
  * @brief 判断云端 TTS 字幕是否为不应展示给用户的内部工具调用标记。
  * @param text 云端 `tts.sentence_start.text` 字段，可为空指针。
  * @return 去除前导空白后，文本以 `%` 开头且后面紧跟 ASCII 接口标识符时返回 true；
- *         普通自然语言或正文中间包含百分号时返回 false。
+ * 普通自然语言或正文中间包含百分号时返回 false。
  * @details 部分云端模型会把 `% getWeather...`、`%self.tool(...)` 一类内部调用过程
- *          错误地作为 TTS 字幕下发。该判断只识别位于整段文本开头的工具标记，避免把
- *          “降水概率 30%”等正常回答误判为工具调用。
+ * 错误地作为 TTS 字幕下发。该判断只识别位于整段文本开头的工具标记，避免把
+ * “降水概率 30%”等正常回答误判为工具调用。
  */
 bool IsInternalToolCallText(const char* text) {
     if (text == nullptr) {
@@ -58,8 +58,8 @@ bool IsInternalToolCallText(const char* text) {
 /**
  * @brief 根据 OTA 配置创建并配置云端通信协议。
  * @details 优先使用服务器下发的 MQTT 或 WebSocket 配置，未指定时回退到 MQTT。随后注册连接、
- *          错误、音频、JSON 控制消息和 MCP 广播回调，使协议线程只产生事件或调度主线程任务，
- *          避免直接跨线程修改显示与设备状态。
+ * 错误、音频、JSON 控制消息和 MCP 广播回调，使协议线程只产生事件或调度主线程任务，
+ * 避免直接跨线程修改显示与设备状态。
  */
 void Application::InitializeXiaozhiClient() {
     auto& board = Board::GetInstance();
@@ -265,7 +265,7 @@ void Application::ToggleChatState() {
  * @param mode 本轮监听使用的停止策略。
  * @note 方法本身不直接操作音频硬件，可从按键回调等其他任务安全调用。
  * @details 先原子保存停止策略，再设置 MAIN_EVENT_START_LISTENING 事件位；实际状态判断和通道连接由
- *          主循环完成，避免后台任务直接操作协议和音频状态。
+ * 主循环完成，避免后台任务直接操作协议和音频状态。
  */
 void Application::StartListening(ListeningMode mode) {
     requested_listening_mode_.store(mode);
@@ -276,7 +276,7 @@ void Application::StartListening(ListeningMode mode) {
 /**
  * @brief 请求设备停止录音并通知云端本轮输入结束。
  * @details 只设置 MAIN_EVENT_STOP_LISTENING 事件位，可从按键或其他任务安全调用；主循环会停止正在监听
- *          的会话，或取消尚在建立音频通道的监听请求。
+ * 的会话，或取消尚在建立音频通道的监听请求。
  */
 void Application::StopListening() {
     Board::GetInstance().WakeUpScreen(true);
@@ -286,8 +286,8 @@ void Application::StopListening() {
 /**
  * @brief 结束当前云端语音会话，为设备本地音频播放释放麦克风和扬声器。
  * @details 关闭动作通过主任务队列延迟执行，使 MCP 工具结果先发送给云端；执行时停止上行语音处理、
- *          清除可能已经到达的云端 TTS，再关闭音频通道并直接回到空闲状态。本次状态切换不进入屏保，
- *          避免通知页面显示前出现表盘闪烁。
+ * 清除可能已经到达的云端 TTS，再关闭音频通道并直接回到空闲状态。本次状态切换不进入屏保，
+ * 避免通知页面显示前出现表盘闪烁。
  */
 void Application::EndCurrentConversationForLocalPlayback() {
     Schedule([this]() {
@@ -305,7 +305,7 @@ void Application::EndCurrentConversationForLocalPlayback() {
 /**
  * @brief 结束当前云端会话并立即进入屏保页面。
  * @details 该方法用于绑定码过期等后台终态。它会在应用主循环中停止语音处理、清空解码器、关闭音频
- *          通道并切换到空闲状态，即使当前已经是空闲状态也会直接显示屏保，避免继续等待普通超时。
+ * 通道并切换到空闲状态，即使当前已经是空闲状态也会直接显示屏保，避免继续等待普通超时。
  */
 void Application::EndCurrentConversationAndEnterScreensaver() {
     Schedule([this]() {
@@ -326,7 +326,7 @@ void Application::EndCurrentConversationAndEnterScreensaver() {
 /**
  * @brief 请求在当前云端回复播报完整结束后关闭会话并进入屏保。
  * @details MCP 工具在向云端返回最终结果前设置一次性标记；TTS stop 到达后等待剩余播放数据消费完，
- *          再关闭音频通道。由播报状态转为空闲的既有状态监听器负责立即显示屏保。
+ * 再关闭音频通道。由播报状态转为空闲的既有状态监听器负责立即显示屏保。
  */
 void Application::RequestConversationEndAfterSpeaking() {
     end_conversation_after_speaking_.store(true);
@@ -335,7 +335,7 @@ void Application::RequestConversationEndAfterSpeaking() {
 /**
  * @brief 根据当前设备状态切换对话的开始、打断或结束动作。
  * @details 激活状态下退出等待，空闲时建立音频通道，播报时发送打断命令，监听时关闭会话。
- *          连接动作通过 Schedule() 延迟执行，让“连接中”界面先得到刷新。
+ * 连接动作通过 Schedule() 延迟执行，让“连接中”界面先得到刷新。
  */
 void Application::HandleToggleChatEvent() {
     auto state = GetDeviceState();
@@ -380,7 +380,7 @@ void Application::HandleToggleChatEvent() {
  * @brief 在状态界面刷新后继续打开音频通道并进入指定监听模式。
  * @param mode 音频通道打开成功后使用的监听停止策略。
  * @details 调度执行前会再次确认设备仍处于连接状态，防止用户操作改变状态后继续建立过期连接。
- *          连接前切换高性能模式以降低握手延迟；打开失败时保留协议层错误处理结果。
+ * 连接前切换高性能模式以降低握手延迟；打开失败时保留协议层错误处理结果。
  */
 void Application::ContinueOpenAudioChannel(ListeningMode mode) {
     // 调度等待期间状态可能已改变，过期任务必须直接退出。
@@ -409,7 +409,7 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
 /**
  * @brief 处理用户主动开始监听事件。
  * @details 激活状态下该事件用于退出激活等待；配网状态下用于启动音频自检；空闲状态下打开云端
- *          音频通道并进入请求的停止模式；正在播报时先打断 TTS，再切换为请求的监听模式。
+ * 音频通道并进入请求的停止模式；正在播报时先打断 TTS，再切换为请求的监听模式。
  */
 void Application::HandleStartListeningEvent() {
     auto state = GetDeviceState();
@@ -449,7 +449,7 @@ void Application::HandleStartListeningEvent() {
 /**
  * @brief 处理用户主动停止监听事件。
  * @details 音频自检状态下停止测试并返回配网状态；连接状态下取消尚未完成的音频通道建立；正常监听
- *          状态下通知云端停止接收音频，然后回到空闲状态。其他状态收到该事件时不执行操作。
+ * 状态下通知云端停止接收音频，然后回到空闲状态。其他状态收到该事件时不执行操作。
  */
 void Application::HandleStopListeningEvent() {
     auto state = GetDeviceState();
@@ -472,8 +472,8 @@ void Application::HandleStopListeningEvent() {
 /**
  * @brief 处理本地唤醒词检测事件。
  * @details 空闲时建立音频通道并开始自动停止监听；播报或监听期间再次唤醒会打断当前会话、清空
- *          待发送残留音频并重新开始监听；激活期间唤醒则退出激活等待。通道握手通过调度任务执行，
- *          以便主循环先刷新“连接中”状态。
+ * 待发送残留音频并重新开始监听；激活期间唤醒则退出激活等待。通道握手通过调度任务执行，
+ * 以便主循环先刷新“连接中”状态。
  */
 void Application::HandleWakeWordDetectedEvent() {
     // 唤醒词命中后先恢复背光，再进行可能耗时的云端音频通道握手。
@@ -533,7 +533,7 @@ void Application::HandleWakeWordDetectedEvent() {
  * @brief 在连接状态下完成唤醒词触发的音频通道建立。
  * @param wake_word 本次命中的唤醒词文本，仅用于日志和会话追踪。
  * @details 方法会过滤过期调度任务、切换高性能模式并打开音频通道。连接失败时重新启用唤醒词
- *          检测，连接成功时设置延迟播放提示音标志，再进入默认自动停止监听模式。
+ * 检测，连接成功时设置延迟播放提示音标志，再进入默认自动停止监听模式。
  */
 void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     // 调度等待期间状态可能已改变，过期唤醒任务不得继续建立连接。
@@ -566,7 +566,7 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 /**
  * @brief 根据最新设备状态同步界面、音频处理器、唤醒词和电源策略。
  * @details 状态机只负责校验转移，本方法负责各状态的实际副作用。所有显示更新、音频启停和提示音
- *          均集中在主循环上下文执行，从而避免网络回调与音频任务并发操作 UI 或 Codec。
+ * 均集中在主循环上下文执行，从而避免网络回调与音频任务并发操作 UI 或 Codec。
  */
 void Application::HandleStateChangedEvent() {
     DeviceState new_state = state_machine_.GetState();
@@ -622,8 +622,11 @@ void Application::HandleStateChangedEvent() {
             }
 
 #ifdef CONFIG_WAKE_WORD_DETECTION_IN_LISTENING
-            // 根据 Kconfig 配置决定监听期间是否继续运行唤醒词检测。
+            // 根据 Kconfig 配置决定监听期间是否继续运行唤醒词检测（AFE 唤醒词）。
             audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
+#elif defined(CONFIG_WAKE_WORD_BARGE_IN)
+            // 监听期间保持本地唤醒词检测，允许再次说“你好小智”打断并重开对话。
+            audio_service_.EnableWakeWordDetection(true);
 #else
             // 默认在监听期间关闭唤醒词检测，减少算力占用和误触发。
             audio_service_.EnableWakeWordDetection(false);
@@ -634,7 +637,12 @@ void Application::HandleStateChangedEvent() {
 
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);
+#ifdef CONFIG_WAKE_WORD_BARGE_IN
+                // 播放回复期间保持本地唤醒词检测，允许用唤醒词随时打断（barge-in）。
+                audio_service_.EnableWakeWordDetection(true);
+#else
                 audio_service_.EnableWakeWordDetection(false);
+#endif
             }
             audio_service_.ResetDecoder();
             break;
@@ -706,8 +714,8 @@ ListeningMode Application::GetDefaultListeningMode() const {
 /**
  * @brief 完成监听开始的真实动作。
  * @details 发送 start-listening、启用麦克风语音处理并在解码器重置后播放提示音。既可从状态变化
- *          处理器直接调用，也可经 MAIN_EVENT_PLAYBACK_DRAINED 延迟调用（此时下行播放已排空，不会
- *          截断上一轮 TTS 尾音）。离开监听状态后不再执行，避免在错误时刻启用上传。
+ * 处理器直接调用，也可经 MAIN_EVENT_PLAYBACK_DRAINED 延迟调用（此时下行播放已排空，不会
+ * 截断上一轮 TTS 尾音）。离开监听状态后不再执行，避免在错误时刻启用上传。
  */
 void Application::StartListeningAudio() {
     if (GetDeviceState() != kDeviceStateListening) {

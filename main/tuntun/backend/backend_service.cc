@@ -52,7 +52,7 @@ BackendService &BackendService::GetInstance()
  * @brief 把排队的后端操作逐个取出并执行。
  * @param context 指向 BackendService 单例。
  * @details Worker 常驻运行并通过任务通知休眠。对话任务优先于通知播放准备任务，普通同步只在
- *          设备和音频都空闲时执行；单个任务异常只记录日志，不会阻断后续任务。
+ * 设备和音频都空闲时执行；单个任务异常只记录日志，不会阻断后续任务。
  */
 void BackendService::BackendWorkerTaskEntry(void *context)
 {

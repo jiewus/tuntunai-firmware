@@ -49,7 +49,7 @@ namespace tuntun::backend_internal
     /**
      * @brief 串行调度囤囤AI后端的 TLS 连接，并让通知音频优先于普通业务请求。
      * @details 资源受限芯片在证书校验阶段需要较大的连续内存，因此仍然只允许一个 HTTP/TLS
-     *          连接活动；通知音频等待网络时会优先获得连接，普通请求继续排队而不并发握手。
+     * 连接活动；通知音频等待网络时会优先获得连接，普通请求继续排队而不并发握手。
      */
     class BackendHttpGate {
     public:
@@ -169,7 +169,7 @@ namespace tuntun::backend_internal
     /**
      * @brief 天气缓存新鲜周期和后台检查周期。
      * @details 固件每 10 分钟只检查一次缓存年龄，成功天气在 30 分钟内不会重复请求；真正的
-     *          HTTPS 请求统一由 BackendService 常驻 Worker 串行处理。
+     * HTTPS 请求统一由 BackendService 常驻 Worker 串行处理。
      */
     constexpr int64_t kWeatherRefreshIntervalUs = 30LL * 60LL * 1000LL * 1000LL;
     constexpr int64_t kWeatherCheckIntervalUs = 10LL * 60LL * 1000LL * 1000LL;
@@ -177,7 +177,7 @@ namespace tuntun::backend_internal
     /**
      * @brief 屏保备忘录缓存周期和后台检查周期。
      * @details 屏保持续显示时每 30 分钟兜底刷新一次；后端增删改会通过 MQTT 提示设备立即刷新，
-     *          请求统一排入常驻 BackendService Worker。
+     * 请求统一排入常驻 BackendService Worker。
      */
     constexpr int64_t kMemoRefreshIntervalUs = 30LL * 60LL * 1000LL * 1000LL;
     constexpr int64_t kMemoCheckIntervalUs = 30LL * 60LL * 1000LL * 1000LL;
@@ -187,7 +187,7 @@ namespace tuntun::backend_internal
     /**
      * @brief 动态 MCP 清单和工具执行的调度配置。
      * @details 清单同步与工具执行都涉及 HTTPS 和 cJSON，统一由常驻 BackendService Worker
-     *          串行运行，避免反复申请 8KB 任务栈。
+     * 串行运行，避免反复申请 8KB 任务栈。
      */
 
     /**
@@ -298,7 +298,7 @@ namespace tuntun::backend_internal
     /**
      * @brief 天气响应和语音位置输入的固件边界，防止异常文本和温度进入任务或圆屏布局。
      * @details 圆屏位置名称限制为 96 字节；语音输入按后端 100 个 Unicode 字符的上限预留
-     *          最多 300 个 UTF-8 字节。
+     * 最多 300 个 UTF-8 字节。
      */
     constexpr size_t kWeatherLocationMaxBytes = 96;
     constexpr size_t kWeatherLocationInputMaxBytes = 300;
@@ -309,7 +309,7 @@ namespace tuntun::backend_internal
     /**
      * @brief 单次后端 JSON 响应允许占用的最大字节数和分段读取缓冲区大小。
      * @details 绑定接口响应均远小于 4KB。设置硬上限可以避免异常网关或错误页面返回大正文时
-     *          持续占用设备堆内存；超过上限的响应会被当作传输失败处理。
+     * 持续占用设备堆内存；超过上限的响应会被当作传输失败处理。
      */
     constexpr size_t kMaxApiResponseBytes = 4096;
     constexpr size_t kMcpManifestResponseMaxBytes = 12288;
@@ -1118,7 +1118,7 @@ namespace tuntun::backend_internal
      * @param result 成功时接收 HH:mm、MM-dd 或 yyyy-MM-dd。
      * @return 时间结构和字段范围有效时返回 true。
      * @details 今天只显示时间；其他日期只显示日期，其中今年省略年份、非今年保留年份。
-     *          系统时间尚未校准时无法判断“今天”和“今年”，此时保守显示完整日期。
+     * 系统时间尚未校准时无法判断“今天”和“今年”，此时保守显示完整日期。
      */
     inline bool FormatMemoReminderLine(
         const std::string &remind_at,
@@ -1253,7 +1253,7 @@ namespace tuntun::backend_internal
      * @param message 返回给大模型的中文结果文本。
      * @param is_error true 表示对应的设备绑定或天气城市操作失败。
      * @details 先转移并清空回调可防止回调自身抛出异常时，任务异常边界再次回复同一条
-     *          JSON-RPC 请求。
+     * JSON-RPC 请求。
      */
     inline void FinishToolRequest(
         std::function<void(const std::string &message, bool is_error)> &completion,

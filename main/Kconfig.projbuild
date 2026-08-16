@@ -46,6 +46,12 @@ config SEND_WAKE_WORD_DATA
     # 命中唤醒词后，把检测窗口内的麦克风音频编码上传，并发送唤醒词 detect 事件。
     default n
 
+config WAKE_WORD_BARGE_IN
+    bool "Wake word barge-in during conversation"
+    # 对话进行中（正在播放回复/正在监听）保持唤醒词检测，允许用“你好小智”随时打断并开始新对话。
+    # 副作用：speaking 时麦克风会持续采集到扬声器回声，wakenet 需在背景音频下仍能识别。
+    default y
+
 config USE_AUDIO_DEBUGGER
     bool "Enable audio debugger"
     # 开启后会把麦克风 PCM 通过 UDP 发往下方配置的开发机地址。

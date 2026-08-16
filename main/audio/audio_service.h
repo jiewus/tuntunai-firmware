@@ -177,13 +177,13 @@ public:
     /**
      * @brief 请求在下行播放队列排空时触发 on_playback_drained 回调。
      * @details 非阻塞：若当前已经排空则立即触发并返回；否则记录等待标记，待后续解码/播放任务
-     *          发现排空时回调一次。用于以事件驱动方式替代主任务阻塞等待，避免阻塞状态机主循环。
+     * 发现排空时回调一次。用于以事件驱动方式替代主任务阻塞等待，避免阻塞状态机主循环。
      */
     void RequestPlaybackDrainedNotification();
     /**
      * @brief 把唤醒词检测窗口内缓存的 16 kHz 单声道 PCM 编码为 Opus 并送入发送队列。
      * @details 仅在启用 CONFIG_SEND_WAKE_WORD_DATA 时由主任务在音频通道建立后调用；编码结果
-     *          走正常的发送队列，由 on_send_queue_available 驱动主任务上传。
+     * 走正常的发送队列，由 on_send_queue_available 驱动主任务上传。
      */
     void EncodeWakeWord();
     bool IsWakeWordRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_WAKE_WORD_RUNNING; }
@@ -378,7 +378,7 @@ private:
      * @brief 检查下行播放是否已排空，若是则回调 on_playback_drained。
      * @param lock_held 调用方是否已持有 audio_queue_mutex_。
      * @details 仅当等待排空的标记置位且播放链路已排空时触发一次回调；回调在释放锁后执行，避免
-     *          在后台任务持锁期间调用可能耗时的应用级回调。
+     * 在后台任务持锁期间调用可能耗时的应用级回调。
      */
     void MaybeNotifyPlaybackDrained(bool lock_held);
 };

@@ -143,10 +143,10 @@ void LvglDisplay::ShowNotification(const char* notification, int duration_ms) {
 /**
  * @brief 刷新界面顶部的时间、网络、电量和可选静音信息。
  * @param update_all true 时立即读取网络等全部状态；false 时网络状态按十秒周期读取，
- *                   用于减少不必要的硬件查询和界面刷新。
+ * 用于减少不必要的硬件查询和界面刷新。
  * @details 时间使用独立标签并始终按当前系统时间更新。时间刷新不会调用 WakeUpScreen()，
- *          因而不会破坏待机计时；网络、电量等状态变化可以恢复背光或刷新内容，但表盘
- *          已经显示时不会切换回普通对话界面。
+ * 因而不会破坏待机计时；网络、电量等状态变化可以恢复背光或刷新内容，但表盘
+ * 已经显示时不会切换回普通对话界面。
  */
 void LvglDisplay::UpdateStatusBar(bool update_all) {
     auto& app = Application::GetInstance();

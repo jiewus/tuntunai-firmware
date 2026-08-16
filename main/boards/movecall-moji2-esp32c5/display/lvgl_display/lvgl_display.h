@@ -32,9 +32,9 @@ public:
     /**
      * @brief 刷新顶部状态栏中的时间、网络和电量信息。
      * @param update_all true 表示立即读取全部状态，通常用于界面初始化或连接状态变化；
-     *                   false 表示按周期策略刷新，网络图标每十次调用检查一次。
+     * false 表示按周期策略刷新，网络图标每十次调用检查一次。
      * @details 时间标签每次调用都会比较并按需更新，但时间变化本身不会唤醒已熄灭的屏幕；
-     *          网络、电量或静音图标发生变化时仍沿用原有的屏幕唤醒行为。
+     * 网络、电量或静音图标发生变化时仍沿用原有的屏幕唤醒行为。
      */
     virtual void UpdateStatusBar(bool update_all = false);
     virtual void SetPowerSaveMode(bool on);
@@ -54,7 +54,7 @@ protected:
     /**
      * @brief 顶部状态栏中间的独立时间标签。
      * @details 该标签只由 UpdateStatusBar() 刷新，不与设备运行状态或临时通知共用，
-     *          因此“待机”“聆听中”等状态变化不会覆盖当前时间。
+     * 因此“待机”“聆听中”等状态变化不会覆盖当前时间。
      */
     lv_obj_t *time_label_ = nullptr;
     lv_obj_t *status_label_ = nullptr;

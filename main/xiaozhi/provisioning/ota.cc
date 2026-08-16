@@ -33,7 +33,7 @@
 /**
  * @brief 读取当前固件版本并初始化查询状态。
  * @details 在支持用户 eFuse 数据区的芯片上读取 32 字节设备序列号。序列号存在时，后续
- *          版本检查和激活请求会使用新版激活协议并携带 Serial-Number 请求头。
+ * 版本检查和激活请求会使用新版激活协议并携带 Serial-Number 请求头。
  */
 Ota::Ota() {
 #ifdef ESP_EFUSE_BLOCK_USR_DATA
@@ -75,7 +75,7 @@ std::string Ota::GetCheckVersionUrl() {
  * @brief 创建带设备请求头和 TLS 配置的 HTTP 客户端。
  * @return 已设置激活版本、设备标识、语言和内容类型请求头的 HTTP 客户端。
  * @details HTTP 实现由当前板级网络对象创建，因此可自动适配 Wi-Fi 等网络承载。序列号存在时
- *          额外发送 Serial-Number，并把 Activation-Version 切换为 2。
+ * 额外发送 Serial-Number，并把 Activation-Version 切换为 2。
  */
 std::unique_ptr<Http> Ota::SetupHttp() {
     auto& board = Board::GetInstance();
@@ -100,7 +100,7 @@ std::unique_ptr<Http> Ota::SetupHttp() {
  * @brief 请求版本服务并解析固件、激活、协议配置和服务器时间。
  * @return 请求和 JSON 解析成功时返回 ESP_OK；URL、网络、HTTP 状态或响应格式异常时返回对应错误码。
  * @details 使用设备系统信息作为 POST 请求体。成功响应中的 MQTT/WebSocket 参数会写入 NVS，
- *          激活字段保存到对象供后续轮询，服务器时间用于校准系统时钟，固件字段用于判断是否升级。
+ * 激活字段保存到对象供后续轮询，服务器时间用于校准系统时钟，固件字段用于判断是否升级。
  * @see 
  */
 esp_err_t Ota::CheckVersion() {
@@ -274,7 +274,7 @@ esp_err_t Ota::CheckVersion() {
 /**
  * @brief 将当前运行镜像标记为有效，取消 bootloader 回滚。
  * @details 工厂分区无需确认；仅当当前 OTA 分区处于 ESP_OTA_IMG_PENDING_VERIFY 状态时调用
- *          ESP-IDF 接口确认镜像，其他状态保持不变。
+ * ESP-IDF 接口确认镜像，其他状态保持不变。
  */
 void Ota::MarkCurrentVersionValid() {
     auto partition = esp_ota_get_running_partition();
@@ -302,8 +302,8 @@ void Ota::MarkCurrentVersionValid() {
  * @param callback 下载进度和速度回调。
  * @return 写入并设置新启动分区成功时返回 true。
  * @details 固件按 4 KiB 页流式下载到内部 RAM，读取到完整应用头后启动顺序写入。每秒回调一次
- *          下载百分比和速度；结束后由 ESP-IDF 校验镜像，并仅在校验成功时切换下次启动分区。
- *          任一读取、写入或校验步骤失败都会释放缓冲区并中止 OTA 句柄。
+ * 下载百分比和速度；结束后由 ESP-IDF 校验镜像，并仅在校验成功时切换下次启动分区。
+ * 任一读取、写入或校验步骤失败都会释放缓冲区并中止 OTA 句柄。
  */
 bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progress, size_t speed)> callback) {
     ESP_LOGI(TAG, "正在从指定地址升级固件，地址=%s", firmware_url.c_str());
@@ -462,7 +462,7 @@ std::vector<int> Ota::ParseVersion(const std::string& version) {
  * @param newVersion 服务端提供的候选版本。
  * @return newVersion 更新时返回 true。
  * @details 从左到右比较各数字段，首次出现不同值时即可确定新旧关系；公共前缀相同时，
- *          字段更多的候选版本被视为更新版本。
+ * 字段更多的候选版本被视为更新版本。
  */
 bool Ota::IsNewVersionAvailable(const std::string& currentVersion, const std::string& newVersion) {
     std::vector<int> current = ParseVersion(currentVersion);
@@ -483,7 +483,7 @@ bool Ota::IsNewVersionAvailable(const std::string& currentVersion, const std::st
  * @brief 构造包含序列号、challenge 和 HMAC 签名的激活请求 JSON。
  * @return 有序列号时返回包含算法、序列号、challenge 和 HMAC 的 JSON；否则返回空对象文本 "{}"。
  * @details 在芯片支持 HMAC 外设时，使用受保护的 HMAC_KEY0 对服务端 challenge 计算 SHA-256
- *          签名，密钥不会离开硬件。结果转换为小写十六进制后加入激活请求。
+ * 签名，密钥不会离开硬件。结果转换为小写十六进制后加入激活请求。
  */
 std::string Ota::GetActivationPayload() {
     if (!has_serial_number_) {
@@ -526,7 +526,7 @@ std::string Ota::GetActivationPayload() {
  * @brief 使用服务端 challenge 完成设备激活。
  * @return 激活完成返回 ESP_OK；服务端返回 202 表示仍在处理中并返回 ESP_ERR_TIMEOUT；其他失败返回 ESP_FAIL。
  * @details 在版本服务 URL 后追加 activate 路径，提交 GetActivationPayload() 生成的 JSON。
- *          该方法只执行一次轮询请求，重试间隔和次数由 Application::CheckNewVersion() 控制。
+ * 该方法只执行一次轮询请求，重试间隔和次数由 Application::CheckNewVersion() 控制。
  */
 esp_err_t Ota::Activate() {
     if (!has_activation_challenge_) {

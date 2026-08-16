@@ -62,7 +62,7 @@ const lv_image_dsc_t kScreensaverDialImage = {
 /**
  * @brief 360x360 圆屏中不会被圆形边缘裁切的固定布局参数。
  * @details 顶部图标栏下移到圆弦宽度足够的位置；字幕区域收窄并上移，
- *          确保容器的四角仍位于可见圆内。
+ * 确保容器的四角仍位于可见圆内。
  */
 
 // 顶部状态栏容器的总宽度。当前状态栏水平居中，因此：屏幕宽度：360px；状态栏宽度：170px；左右剩余：(360-170)/2=95px
@@ -142,15 +142,15 @@ constexpr int kRoundPopupWidth = 220;
 /**
  * @brief 表盘最外层金属圆盘的直径，单位为物理像素。
  * @details 当前圆屏逻辑尺寸为 360x360，设置为 348 后，圆盘四周各保留约 6px 边距。
- *          增大该值会让金属外圈更靠近屏幕边缘，过大会被圆形面板裁切；减小则会扩大
- *          表盘与屏幕边缘之间的黑色留白。
+ * 增大该值会让金属外圈更靠近屏幕边缘，过大会被圆形面板裁切；减小则会扩大
+ * 表盘与屏幕边缘之间的黑色留白。
  */
 constexpr int kScreensaverDialSize = 348;
 
 /**
  * @brief 负责绘制 60 个分钟和秒钟刻度的 LVGL Scale 控件直径，单位为物理像素。
  * @details 该尺寸小于外层金属圆盘直径，使刻度完整落在金属边框内部。增大后刻度更靠近
- *          外圈，减小后刻度更靠近中心；修改时需要同时检查圆屏边缘是否发生裁切。
+ * 外圈，减小后刻度更靠近中心；修改时需要同时检查圆屏边缘是否发生裁切。
  */
 constexpr int kScreensaverScaleSize = 330;
 
@@ -171,7 +171,7 @@ struct SecondMarkerLayout {
  * @brief 获取 60 个秒刻度预计算布局。
  * @return 按秒数索引的固定布局数组。
  * @details 坐标、尺寸和角度只在首次调用时计算一次，后续每秒刷新不再执行三角函数、
- *          半径换算和中心对齐计算。
+ * 半径换算和中心对齐计算。
  */
 inline const std::array<SecondMarkerLayout, 60>& GetSecondMarkerLayouts() {
     static const std::array<SecondMarkerLayout, 60> layouts = [] {
@@ -210,52 +210,52 @@ constexpr int kResponsiveLvglTaskPriority = 2;
 /**
  * @brief QSPI 屏幕单个 DMA 绘制缓冲包含的行数。
  * @details 24 行约占 17.3KB 内部 DMA SRAM，可在保留 TLS 内存余量的同时减少 40MHz QSPI
- *          下的 flush 次数；仍然使用单缓冲，避免双缓冲在当前硬件上的稳定性问题。
+ * 下的 flush 次数；仍然使用单缓冲，避免双缓冲在当前硬件上的稳定性问题。
  */
 constexpr uint32_t kSpiLcdDrawBufferLines = 24;
 
 /**
  * @brief 时分秒组合容器的 LVGL 缩放比例。
  * @details LVGL 使用 256 表示原始尺寸的 100%，608/256 等于 237.5%。当前时间使用约 30px
- *          的内置字体，最终视觉高度约为 71.25px。增大该值会同时放大时分、秒数、描边和
- *          两者总宽度，过大可能超出圆屏左右安全区域。
+ * 的内置字体，最终视觉高度约为 71.25px。增大该值会同时放大时分、秒数、描边和
+ * 两者总宽度，过大可能超出圆屏左右安全区域。
  */
 constexpr int kScreensaverTimeScale = 608;
 
 /**
  * @brief 时分与秒数之间的最终可见间距，单位为物理像素。
  * @details 时间组合容器会按照 kScreensaverTimeScale 整体放大，因此创建 Flex 布局时会将
- *          该值反算为缩放前的逻辑间距，避免直接设置 10 导致实际间距被同步放大到 22.5px。
+ * 该值反算为缩放前的逻辑间距，避免直接设置 10 导致实际间距被同步放大到 22.5px。
  */
 constexpr int kScreensaverTimeColumnGap = 10;
 
 /**
  * @brief 表盘普通辅助文字的目标视觉字号，单位为像素。
  * @details 当前主要用于时间下方的备忘录正文。完整主题字体通常为 30px，代码会根据字体
- *          实际行高自动换算 LVGL 缩放比例，使最终视觉字号接近 28px。大字号能够提升圆屏
- *          阅读距离，同时仍为三行短备忘录保留足够垂直空间。
+ * 实际行高自动换算 LVGL 缩放比例，使最终视觉字号接近 28px。大字号能够提升圆屏
+ * 阅读距离，同时仍为三行短备忘录保留足够垂直空间。
  */
 constexpr int kScreensaverSmallTextPixelSize = 28;
 
 /**
  * @brief 时间下方三行备忘录区域的最大可见宽度，单位为物理像素。
  * @details 该宽度同时作为文本自动换行的最终视觉宽度。实际绘制时再由三条宽度逐渐收窄
- *          的水平裁切带限制每行两侧，使整体轮廓顺应圆屏下半部分的弧形。
+ * 的水平裁切带限制每行两侧，使整体轮廓顺应圆屏下半部分的弧形。
  */
 constexpr int kScreensaverMemoWidth = 228;
 
 /**
  * @brief 备忘录固定显示的行数。
  * @details 结构化备忘录固定使用一行时间和两行正文，第三行末尾按需显示省略号；加载状态等
- *          兼容文本仍可使用原有纵向滚动，不启用左右滚动。
+ * 兼容文本仍可使用原有纵向滚动，不启用左右滚动。
  */
 constexpr int kScreensaverMemoVisibleLines = 3;
 
 /**
  * @brief 三行备忘录从上到下各自允许显示的物理宽度。
  * @details 备忘录位于圆心下方，越靠近屏幕底部，可用圆弦宽度越小，因此依次使用
- *          228px、208px 和 180px。三条裁切带只限制文字可见区域，不绘制背景，也不会
- *          覆盖其外侧的表盘刻度。
+ * 228px、208px 和 180px。三条裁切带只限制文字可见区域，不绘制背景，也不会
+ * 覆盖其外侧的表盘刻度。
  */
 constexpr int kScreensaverMemoRowWidths[kScreensaverMemoVisibleLines] = {
     228,
@@ -271,7 +271,7 @@ constexpr int kScreensaverMemoLineSpacing = 5;
 /**
  * @brief 三行备忘录裁切视口的最终可见高度，单位为物理像素。
  * @details 三行 28px 正文和两个 5px 行间距需要 94px，额外增加 2px 用于吸收字体缩放
- *          的向上取整误差，确保恰好三行时不会因为 1px 溢出而错误启动滚动。
+ * 的向上取整误差，确保恰好三行时不会因为 1px 溢出而错误启动滚动。
  */
 constexpr int kScreensaverMemoViewportHeight =
     kScreensaverSmallTextPixelSize * kScreensaverMemoVisibleLines
@@ -280,7 +280,7 @@ constexpr int kScreensaverMemoViewportHeight =
 /**
  * @brief 每条水平裁切带的高度，单位为物理像素。
  * @details 96px 总视口被等分为三个连续区域，每个区域高 32px。裁切带之间没有空隙，
- *          因此同一文本经过三个区域时仍保持连续，不会出现横向接缝或丢失扫描行。
+ * 因此同一文本经过三个区域时仍保持连续，不会出现横向接缝或丢失扫描行。
  */
 constexpr int kScreensaverMemoRowHeight =
     kScreensaverMemoViewportHeight / kScreensaverMemoVisibleLines;
@@ -317,7 +317,7 @@ constexpr int kScreensaverLocationWidth = 220;
 /**
  * @brief 天气三列相邻内容之间的最终可见间距，单位为像素。
  * @details 该值描述的是缩放后的屏幕视觉间距。代码会根据天气字体的缩放比例反算 Flex
- *          容器所需的逻辑间距，因此当前温度、天气描述和温度范围之间约保持 15px 距离。
+ * 容器所需的逻辑间距，因此当前温度、天气描述和温度范围之间约保持 15px 距离。
  */
 constexpr int kScreensaverWeatherColumnGap = 15;
 
@@ -330,22 +330,22 @@ constexpr int kScreensaverDateColumnGap = 10;
 /**
  * @brief 备忘录区域相对屏幕中心的 Y 轴偏移，单位为物理像素。
  * @details LV_ALIGN_CENTER 以屏幕中心 Y=180 为基准，当前值 87 表示三行视口中心位于
- *          Y=267，顶部约为 Y=219，恰好避开大时间；底部约为 Y=315，该位置的圆屏有效
- *          弦宽约 238px，228px 视口可在左右各保留约 5px。减小该值会靠近时间，增大则更接近电量图标。
+ * Y=267，顶部约为 Y=219，恰好避开大时间；底部约为 Y=315，该位置的圆屏有效
+ * 弦宽约 238px，228px 视口可在左右各保留约 5px。减小该值会靠近时间，增大则更接近电量图标。
  */
 constexpr int kScreensaverBottomSectionOffsetY = 87;
 
 /**
  * @brief 12 点 Wi-Fi 图标和 6 点电量图标距离圆屏上下边缘的偏移，单位为物理像素。
  * @details 0/60 和 30 对应的 Scale 主刻度会被透明区段隐藏。设置为 0px 后，Wi-Fi 标签
- *          顶边与屏幕顶边对齐，电量标签底边与屏幕底边对齐，让两个图标贴近圆屏边缘。
+ * 顶边与屏幕顶边对齐，电量标签底边与屏幕底边对齐，让两个图标贴近圆屏边缘。
  */
 constexpr int kScreensaverDialStatusInset = 0;
 
 /**
  * @brief 自定义 MCP 清单根容器、固定标题和单项轮播区域尺寸。
  * @details 根容器位于刻度内；30px 标题固定在顶部，当前 MCP 在下方 190px 高圆角区域中
- *          垂直居中显示。
+ * 垂直居中显示。
  */
 constexpr int kCustomMcpListViewportWidth = 286;
 constexpr int kCustomMcpListViewportHeight = 286;
@@ -369,7 +369,7 @@ constexpr int kCustomMcpListSwitchPeriodMs = 5000;
 /**
  * @brief 屏保全屏根容器的背景颜色，格式为 0xRRGGBB。
  * @details 0x050607 是接近纯黑的冷色金属黑，用于覆盖普通页面并作为整个表盘最底层背景。
- *          保留少量 RGB 亮度可以避免纯黑背景与内层金属区域完全失去层次。
+ * 保留少量 RGB 亮度可以避免纯黑背景与内层金属区域完全失去层次。
  */
 constexpr uint32_t kScreensaverBackgroundColor = 0x050607;
 
@@ -382,7 +382,7 @@ constexpr uint32_t kScreensaverOuterMetalColor = 0x15191D;
 /**
  * @brief 表盘内层圆盘的填充颜色，格式为 0xRRGGBB。
  * @details 0x0A0D10 比外层金属色更暗，用于承载时间、天气和日期内容，同时保持白色文字
- *          和橙色强调元素具有足够对比度。
+ * 和橙色强调元素具有足够对比度。
  */
 constexpr uint32_t kScreensaverInnerMetalColor = 0x0A0D10;
 
@@ -395,7 +395,7 @@ constexpr uint32_t kScreensaverMetalBorderColor = 0x454B52;
 /**
  * @brief 表盘次要信息文字的颜色，格式为 0xRRGGBB。
  * @details 0xAEB4BA 是低于纯白亮度的浅灰色，当前用于天气描述等辅助信息，使其不会与
- *          主时间、当前温度等主要数据争夺视觉焦点。
+ * 主时间、当前温度等主要数据争夺视觉焦点。
  */
 constexpr uint32_t kScreensaverSecondaryTextColor = 0xAEB4BA;
 
@@ -408,7 +408,7 @@ constexpr uint32_t kScreensaverTickColor = 0x8B9299;
 /**
  * @brief 表盘重点状态的统一强调颜色，格式为 0xRRGGBB。
  * @details 0xF28A3A 是暖橙色，当前用于秒数、当前秒刻度、断网状态、充电状态和低电量。
- *          集中使用同一强调色可以形成统一视觉语言，同时避免表盘出现过多高饱和颜色。
+ * 集中使用同一强调色可以形成统一视觉语言，同时避免表盘出现过多高饱和颜色。
  */
 constexpr uint32_t kScreensaverAccentColor = 0xF28A3A;
 
@@ -438,7 +438,7 @@ constexpr int kBindingMessageBottomOffset = 50;
 /**
  * @brief 1900-2100 年农历大小月和闰月编码表。
  * @details 每项低 4 位表示闰月月份；0x10000 表示闰月为 30 天；0x8000 至 0x10
- *          依次表示正月至腊月是否为 30 天。未置位的月份为 29 天。
+ * 依次表示正月至腊月是否为 30 天。未置位的月份为 29 天。
  */
 constexpr uint32_t kLunarYearInfo[] = {
     0x04bd8, 0x04ae0, 0x0a570, 0x054d5, 0x0d260, 0x0d950, 0x16554, 0x056a0, 0x09ad0, 0x055d2,

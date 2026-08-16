@@ -231,7 +231,7 @@ private:
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     /**
      * @brief 监听模式为自动停止且下行播放未排空时置位；等待 MAIN_EVENT_PLAYBACK_DRAINED 后再真正
-     *          启动语音处理，避免阻塞主循环等待旧播放队列排空。
+     * 启动语音处理，避免阻塞主循环等待旧播放队列排空。
      */
     bool pending_listening_start_ = false;
     /**
@@ -241,13 +241,13 @@ private:
     /**
      * @brief 标记最近一次状态转移是否代表一轮对话已经结束。
      * @details 状态机监听器可能运行在协议回调任务中，因此使用原子变量把“监听或播报转为空闲”
-     *          事件安全地交给主循环消费；主循环消费后立即清零，避免后续无关空闲状态误进屏保。
+     * 事件安全地交给主循环消费；主循环消费后立即清零，避免后续无关空闲状态误进屏保。
      */
     std::atomic<bool> enter_screensaver_after_conversation_{false};
     /**
      * @brief 标记当前 MCP 回复播报结束后需要主动关闭云端音频会话。
      * @details 标记在处理下一条 TTS stop 时一次性消费；用户主动打断播报时立即清除，避免旧回复
-     *          的停止事件关闭新会话。
+     * 的停止事件关闭新会话。
      */
     std::atomic<bool> end_conversation_after_speaking_{false};
     int clock_ticks_ = 0;
@@ -268,7 +268,7 @@ private:
     /**
      * @brief 完成监听开始的真实动作：发送 start-listening、启用麦克风语音处理并播放提示音。
      * @details 仅在仍处于监听状态时执行，既可从状态变化处理器直接调用，也可经 MAIN_EVENT_PLAYBACK_DRAINED
-     *          延迟调用。
+     * 延迟调用。
      */
     void StartListeningAudio();
 

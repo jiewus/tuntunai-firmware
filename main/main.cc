@@ -18,8 +18,8 @@
 /**
  * @brief ESP-IDF 应用程序入口。
  * @details 先初始化用于保存 Wi-Fi 和设备配置的 NVS 分区；当检测到分区空间不足或
- *          数据版本不兼容时，会擦除并重新初始化 NVS。随后初始化 Application 单例，
- *          并进入不会主动返回的应用主事件循环。
+ * 数据版本不兼容时，会擦除并重新初始化 NVS。随后初始化 Application 单例，
+ * 并进入不会主动返回的应用主事件循环。
  */
 extern "C" void app_main(void)
 {

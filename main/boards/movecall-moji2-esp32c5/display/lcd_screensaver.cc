@@ -36,8 +36,8 @@ using namespace display::internal;
  * @brief 将主题字体应用到备忘录正文，并将备忘录日期设置为 Heavy24 原生字体。
  * @param font 需要使用的 LVGL 字体对象；为空时不执行任何修改。
  * @details 默认资源分区提供 30px 完整中文字库，正文根据字体实际行高计算缩放比例，
- *          将视觉高度保持在约 28px；日期标签优先使用普惠体 Heavy 24px，直接按原生字形
- *          绘制，不使用变换缩放。
+ * 将视觉高度保持在约 28px；日期标签优先使用普惠体 Heavy 24px，直接按原生字形
+ * 绘制，不使用变换缩放。
  */
 void LcdDisplay::ApplyScreensaverTextFont(const lv_font_t* font) {
     if (font == nullptr || font->line_height <= 0) {
@@ -146,7 +146,7 @@ void LcdDisplay::SetStandardScreensaverContentVisible(bool visible) {
  * @brief 将完整主题字体应用到天气位置名称标签。
  * @param font 需要使用的 LVGL 字体对象；为空时不执行任何修改。
  * @details 位置名称优先使用资源分区中的普惠体 Heavy 24px，资源不可用时使用传入主题字体；
- *          固定 220px 可见宽度和单行裁切模式，不使用 LVGL 变换缩放。
+ * 固定 220px 可见宽度和单行裁切模式，不使用 LVGL 变换缩放。
  */
 void LcdDisplay::ApplyScreensaverLocationFont(const lv_font_t* font) {
     if (font == nullptr || font->line_height <= 0 || screensaver_weather_location_label_ == nullptr) {
@@ -165,7 +165,7 @@ void LcdDisplay::ApplyScreensaverLocationFont(const lv_font_t* font) {
 /**
  * @brief 从资源分区加载屏保天气和日期专用的普惠体 Heavy 24px 字体。
  * @details 字体数据通过 assets 分区映射，不复制 700KB 字形数据到应用固件或运行内存；
- *          只为 LVGL 字体描述符和字形索引分配少量运行时内存。
+ * 只为 LVGL 字体描述符和字形索引分配少量运行时内存。
  */
 void LcdDisplay::LoadScreensaverWeatherFont() {
     if (screensaver_weather_font_ != nullptr) {
@@ -194,7 +194,7 @@ void LcdDisplay::LoadScreensaverWeatherFont() {
  * @brief 将完整主题字体应用到天气三列，并统一计算视觉字号和列间距。
  * @param font 需要使用的 LVGL 字体对象；为空时不执行任何修改。
  * @details 天气三列优先使用资源分区中的普惠体 Heavy 24px；本方法只设置字体和列间距，
- *          不改变字形大小。
+ * 不改变字形大小。
  */
 void LcdDisplay::ApplyScreensaverWeatherFont(const lv_font_t* font) {
     if (font == nullptr || font->line_height <= 0 || screensaver_weather_group_ == nullptr) {
@@ -226,7 +226,7 @@ void LcdDisplay::ApplyScreensaverWeatherFont(const lv_font_t* font) {
  * @brief 将完整主题字体应用到农历、公历和星期三列。
  * @param font 需要使用的 LVGL 字体对象；为空时不执行任何修改。
  * @details 日期标签优先使用资源分区中的普惠体 Heavy 24px，三个标签使用自动内容宽度和裁切
- *          模式，不会自动换行。
+ * 模式，不会自动换行。
  */
 void LcdDisplay::ApplyScreensaverDateFont(const lv_font_t* font) {
     if (font == nullptr || font->line_height <= 0 || screensaver_date_group_ == nullptr) {
@@ -284,9 +284,9 @@ void LcdDisplay::ApplyScreensaverStatusIconFont(const lv_font_t* font) {
 /**
  * @brief 创建参考运动手表风格的金属黑圆形屏保表盘。
  * @details 表盘使用两个深色圆形对象表现枪灰金属层次，使用 LVGL Scale 绘制 60 个刻度，
- *          不申请全屏 Canvas。农历由设备本地换算，天气由 BackendService 按屏保生命周期
- *          同步；待办区域在备忘录接口接入前显示占位内容。
- *          本方法只负责创建控件，调用者必须已经持有 LVGL 锁。
+ * 不申请全屏 Canvas。农历由设备本地换算，天气由 BackendService 按屏保生命周期
+ * 同步；待办区域在备忘录接口接入前显示占位内容。
+ * 本方法只负责创建控件，调用者必须已经持有 LVGL 锁。
  */
 void LcdDisplay::CreateScreensaverUI() {
     if (screensaver_container_ != nullptr) {
@@ -635,7 +635,7 @@ void LcdDisplay::CreateScreensaverUI() {
 /**
  * @brief 刷新屏保表盘中的时间、农历、公历、星期、当前秒刻度、网络和电量。
  * @details 系统时间尚未由网络校准时显示占位文本。农历由本地年份表换算，天气和待办内容
- *          由 BackendService 独立更新。本方法仅在标签内容变化时重绘，降低每秒刷新负担。
+ * 由 BackendService 独立更新。本方法仅在标签内容变化时重绘，降低每秒刷新负担。
  */
 void LcdDisplay::UpdateScreensaverContent() {
     if (!screensaver_active_ || screensaver_container_ == nullptr
@@ -945,7 +945,7 @@ void LcdDisplay::SetScreensaverWeather(
  * @param weather 中文天气描述或占位文本。
  * @param temperature_range 最低和最高温度文本，例如“18/26”或“--/--”。
  * @details 方法内部获取 LVGL 锁并复制全部文本，适用于后端尚未接入、请求加载中或
- *          返回值无效等无法构造整数温度的界面状态。
+ * 返回值无效等无法构造整数温度的界面状态。
  */
 void LcdDisplay::SetScreensaverWeatherText(
     const std::string& location,
@@ -986,7 +986,7 @@ void LcdDisplay::SetScreensaverMemos(const std::vector<std::string>& memos) {
 /**
  * @brief 刷新当前备忘录文本并重新计算三行视口布局。
  * @details 结构化屏保文本使用“时间换行正文”格式，正文最多显示两行，日期时间显示在正文
- *          下方并以第三行作为独立显示行。没有时间首行的加载状态和兼容文本继续使用原有高度判断。
+ * 下方并以第三行作为独立显示行。没有时间首行的加载状态和兼容文本继续使用原有高度判断。
  */
 void LcdDisplay::UpdateScreensaverMemo() {
     if (screensaver_memo_labels_[0] == nullptr) {
@@ -1054,8 +1054,8 @@ void LcdDisplay::UpdateScreensaverMemo() {
 /**
  * @brief 根据当前备忘录文本类型配置固定三行或兼容滚动布局。
  * @details 包含显式换行的结构化备忘录正文最多占用两行，日期时间紧接正文显示在下一行；
- *          内容不足两行时，正文和日期整体垂直居中。没有显式时间行的状态文本仍按实际高度居中，
- *          兼容的超长文本继续使用原有纵向滚动逻辑。
+ * 内容不足两行时，正文和日期整体垂直居中。没有显式时间行的状态文本仍按实际高度居中，
+ * 兼容的超长文本继续使用原有纵向滚动逻辑。
  */
 void LcdDisplay::UpdateScreensaverMemoScroll() {
     lv_obj_t* measurement_label = screensaver_memo_labels_[0];
@@ -1177,8 +1177,8 @@ void LcdDisplay::UpdateScreensaverMemoScroll() {
  * @param target 指向当前 LcdDisplay 实例。
  * @param value 相对各标签初始位置的 Y 轴物理像素位移。
  * @details 单个 LVGL 动画只计算一次时间和像素位置，本方法再把结果写入三个标签。这样
- *          三条裁切带交界处看到的是同一份文本的同一条扫描行，滚动连续性与单标签聊天
- *          字幕一致，同时仍保留圆屏需要的分段弧形裁切。
+ * 三条裁切带交界处看到的是同一份文本的同一条扫描行，滚动连续性与单标签聊天
+ * 字幕一致，同时仍保留圆屏需要的分段弧形裁切。
  */
 void LcdDisplay::ScreensaverMemoScrollAnimationCallback(void* target, int32_t value) {
     auto* display = static_cast<LcdDisplay*>(target);

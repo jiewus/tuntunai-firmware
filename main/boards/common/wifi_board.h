@@ -71,7 +71,7 @@ public:
     /**
      * @brief 将 Wi-Fi 固定为关闭 Modem Sleep 的高性能模式。
      * @param level 应用层期望的功耗等级；当前稳定性优先策略会忽略该值，始终使用
-     *              WifiPowerSaveLevel::PERFORMANCE，对应底层 WIFI_PS_NONE。
+     * WifiPowerSaveLevel::PERFORMANCE，对应底层 WIFI_PS_NONE。
      */
     virtual void SetPowerSaveLevel(PowerSaveLevel level) override;
     virtual AudioCodec* GetAudioCodec() override { return nullptr; }

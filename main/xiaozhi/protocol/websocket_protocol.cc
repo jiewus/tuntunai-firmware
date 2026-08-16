@@ -55,7 +55,7 @@ bool WebsocketProtocol::Start() {
  * @param packet 待发送的 Opus 音频包；调用后所有权转移给本方法。
  * @return WebSocket 已连接且二进制帧发送成功时返回 true，否则返回 false。
  * @details 协议 v2 包含版本、时间戳和 32 位负载长度，v3 使用更紧凑的 16 位长度头；
- *          其他版本直接发送 Opus 负载，以兼容旧服务端。
+ * 其他版本直接发送 Opus 负载，以兼容旧服务端。
  */
 bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
     if (websocket_ == nullptr || !websocket_->IsConnected()) {
@@ -131,7 +131,7 @@ void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
  * @brief 发送客户端 hello 并等待服务器 hello 完成音频参数协商。
  * @return 连接、客户端 hello 发送和服务端 hello 协商全部成功时返回 true，否则返回 false。
  * @details 从 NVS 读取 URL、令牌和二进制协议版本，设置设备身份请求头并注册数据回调。二进制帧
- *          按协议版本解析为 Opus 包，文本帧按 JSON 消息分发。连接后最多等待十秒获取服务端音频参数。
+ * 按协议版本解析为 Opus 包，文本帧按 JSON 消息分发。连接后最多等待十秒获取服务端音频参数。
  */
 bool WebsocketProtocol::OpenAudioChannel() {
     Settings settings("websocket", false);
@@ -301,7 +301,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
  * @brief 生成包含设备能力和协议版本的客户端 hello JSON。
  * @return 无多余空白的 hello JSON 字符串。
  * @details 消息声明 WebSocket 传输、MCP 能力以及 16 kHz 单声道 Opus 参数；启用服务端 AEC 时
- *          同时声明 aec 特性，使服务端选择匹配的音频处理链路。
+ * 同时声明 aec 特性，使服务端选择匹配的音频处理链路。
  */
 std::string WebsocketProtocol::GetHelloMessage() {
     return BuildXiaozhiHelloMessage(version_, "websocket");
@@ -311,7 +311,7 @@ std::string WebsocketProtocol::GetHelloMessage() {
  * @brief 解析服务器 hello 中的会话编号、采样率和帧长。
  * @param root 服务端 hello JSON 根对象，仅在本次调用期间有效。
  * @details 先确认 transport 为 websocket，再保存会话编号和服务端 Opus 参数。解析完成后设置事件位，
- *          唤醒正在等待握手结果的 OpenAudioChannel()。
+ * 唤醒正在等待握手结果的 OpenAudioChannel()。
  */
 void WebsocketProtocol::ParseServerHello(const cJSON* root) {
     XiaozhiServerHello hello;

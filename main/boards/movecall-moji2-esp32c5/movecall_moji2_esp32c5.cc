@@ -240,7 +240,7 @@ private:
     /**
      * @brief 表盘屏保开关在 display 命名空间中的 NVS 键名。
      * @details ESP-IDF 要求 NVS 键名最多包含 15 个字符，因此持久化配置必须使用此短键名，
-     *          不能直接使用较长的业务字段名 screensaver_enabled。
+     * 不能直接使用较长的业务字段名 screensaver_enabled。
      */
     static constexpr const char* kScreensaverEnabledKey = "scr_saver_en";
 
@@ -260,9 +260,9 @@ private:
      * @brief 统一切换表盘屏保的可见状态并同步后端天气任务生命周期。
      * @param active true 立即显示表盘；false 退出表盘并恢复普通对话界面。
      * @details 方法使用原子状态过滤重复进入或退出，确保 30 秒定时器、对话结束事件和用户唤醒
-     *          同时到达时只切换一次界面，也只向 BackendService 发送一次对应状态通知。
-     *          进入通知允许 BackendService 使用设备 Token 按需刷新天气；退出通知会禁止创建
-     *          新天气请求。备忘录在对应接口接入前继续显示本地占位文本。
+     * 同时到达时只切换一次界面，也只向 BackendService 发送一次对应状态通知。
+     * 进入通知允许 BackendService 使用设备 Token 按需刷新天气；退出通知会禁止创建
+     * 新天气请求。备忘录在对应接口接入前继续显示本地占位文本。
      */
     void SetScreensaverActive(bool active) {
         if (active) {
@@ -287,7 +287,7 @@ private:
     /**
      * @brief 创建电池 ADC 监视器并联动屏幕活动计时。
      * @details 本板使用 ADC1 通道 3 和 5.1M/5.1M 分压。充电状态发生变化时会恢复背光并
-     *          重置自动熄屏计时；如果表盘屏保正在显示，则只刷新屏保中的电量状态，不退出屏保。
+     * 重置自动熄屏计时；如果表盘屏保正在显示，则只刷新屏保中的电量状态，不退出屏保。
      */
     void InitializeBatteryMonitor() {
         adc_battery_monitor_ = new AdcBatteryMonitor(ADC_UNIT_1, ADC_CHANNEL_3, 5100000, 5100000, GPIO_NUM_NC);
@@ -300,8 +300,8 @@ private:
     /**
      * @brief 初始化互相独立的表盘屏保与自动熄屏策略。
      * @details 屏保默认开启并在 30 秒无互动后显示；自动熄屏默认关闭，开启后按照
-     *          auto_off_timeout 指定的总空闲秒数关闭背光。两个定时器均不降低 CPU 频率、
-     *          不进入 Light Sleep，也不会停止麦克风和唤醒词检测。
+     * auto_off_timeout 指定的总空闲秒数关闭背光。两个定时器均不降低 CPU 频率、
+     * 不进入 Light Sleep，也不会停止麦克风和唤醒词检测。
      */
     void InitializePowerSaveTimer() {
         Settings settings("display", false);
@@ -532,11 +532,11 @@ public:
     /**
      * @brief 根据活动来源恢复背光，并决定是否允许退出表盘屏保。
      * @param user_initiated true 表示唤醒词或按键等用户主动唤醒，允许退出屏保并重新计算
-     *                       30 秒无互动时间；false 表示后台状态变化，屏保显示期间保持表盘。
+     * 30 秒无互动时间；false 表示后台状态变化，屏保显示期间保持表盘。
      * @details 屏保尚未显示时，普通活动仍会重置进入屏保的计时。屏保已经显示后，只有
-     *          user_initiated 为 true 才调用表盘定时器的 WakeUp()，避免网络、电量、通知、
-     *          对话状态变化或 MCP 调用把界面切回普通对话页。自动熄屏定时器始终可以恢复
-     *          背光，但恢复后仍显示原来的屏保界面。
+     * user_initiated 为 true 才调用表盘定时器的 WakeUp()，避免网络、电量、通知、
+     * 对话状态变化或 MCP 调用把界面切回普通对话页。自动熄屏定时器始终可以恢复
+     * 背光，但恢复后仍显示原来的屏保界面。
      */
     virtual void WakeUpScreen(bool user_initiated = false) override {
         if (user_initiated && display_ != nullptr) {
@@ -560,7 +560,7 @@ public:
     /**
      * @brief 在屏保配置允许时立即显示金属黑表盘。
      * @details 本方法跳过常规 30 秒空闲等待，但不修改用户保存的屏保开关，也不改变自动熄屏
-     *          的独立计时；主要由应用层在监听或播报状态结束并回到空闲状态后调用。
+     * 的独立计时；主要由应用层在监听或播报状态结束并回到空闲状态后调用。
      */
     virtual void EnterScreensaver() override {
         SetScreensaverActive(true);
@@ -569,7 +569,7 @@ public:
     /**
      * @brief 更新并持久化自动熄屏等待时间。
      * @param seconds 从最后一次互动开始计算的等待秒数；0 关闭自动熄屏，
-     *                有效非零范围为 5 至 3600 秒。
+     * 有效非零范围为 5 至 3600 秒。
      * @return 参数合法且配置成功时返回 true，否则返回 false。
      */
     virtual bool SetScreenAutoOffTimeout(int seconds) override {

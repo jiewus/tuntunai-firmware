@@ -68,7 +68,7 @@ bool Application::SetDeviceState(DeviceState state) {
  * 网络连接会异步启动，本方法完成并不表示云端已经连接。应在 app_main 中
  * 调用一次，随后调用 Run() 进入主事件循环。
  * @details 初始化顺序为显示、Codec 与音频任务、音频回调、状态机监听器、时钟定时器、MCP 工具和
- *          网络回调。最后异步启动网络，因此所有网络结果都通过事件组交给 Run() 处理。
+ * 网络回调。最后异步启动网络，因此所有网络结果都通过事件组交给 Run() 处理。
  */
 void Application::Initialize() {
     auto& board = Board::GetInstance();
@@ -200,7 +200,7 @@ void Application::Initialize() {
  * 本方法阻塞等待事件组，依次处理网络、状态变化、按键和音频事件，正常情况
  * 下不会返回。所有业务状态切换均在这个调用上下文中完成。
  * @details 每次唤醒会清除已取得的事件位，并按固定顺序处理错误、网络、状态、用户输入和音频数据。
- *          调度队列中的闭包也在此处串行执行，从而把跨线程回调转换为单线程业务状态变更。
+ * 调度队列中的闭包也在此处串行执行，从而把跨线程回调转换为单线程业务状态变更。
  */
 void Application::Run() {
     // 提高主任务优先级，保证状态事件和音频发送得到及时处理。
@@ -357,7 +357,7 @@ void Application::HandleNetworkDisconnectedEvent() {
 /**
  * @brief 完成开机激活流程并切换到可唤醒的屏保待机状态。
  * @details 本方法运行在应用主循环中。它先进入空闲状态、保存服务端时间状态、释放 OTA 临时
- *          对象并恢复低功耗等级，再排队播放启动成功提示音，最后在用户启用屏保时立即显示表盘。
+ * 对象并恢复低功耗等级，再排队播放启动成功提示音，最后在用户启用屏保时立即显示表盘。
  */
 void Application::HandleActivationDoneEvent() {
     ESP_LOGI(TAG, "设备激活完成");
@@ -392,7 +392,7 @@ void Application::HandleActivationDoneEvent() {
 /**
  * @brief 后台执行设备激活，完成后设置 MAIN_EVENT_ACTIVATION_DONE。
  * @details 该任务按顺序检查资源包、检查固件和激活状态、创建云端协议对象。所有耗时网络操作
- *          均在后台任务中执行，完成后只通过事件位通知主循环更新设备状态。
+ * 均在后台任务中执行，完成后只通过事件位通知主循环更新设备状态。
  */
 void Application::ActivationTask() {
     // OTA 对象同时负责版本检查、设备激活和云端协议配置获取。
@@ -414,7 +414,7 @@ void Application::ActivationTask() {
 /**
  * @brief 检查并应用待更新的界面资源包。
  * @details 本方法每次启动只执行一次。若 NVS 中存在下载地址，则临时切换到升级状态和高性能模式，
- *          下载资源分区并显示进度；下载失败时恢复激活状态，成功或无需下载时统一应用现有资源。
+ * 下载资源分区并显示进度；下载失败时恢复激活状态，成功或无需下载时统一应用现有资源。
  */
 void Application::CheckAssetsVersion() {
     // 防止网络重连或激活流程重复触发同一次资源检查。
@@ -477,7 +477,7 @@ void Application::CheckAssetsVersion() {
 /**
  * @brief 检查固件版本、云端连接配置和设备激活状态。
  * @details 版本请求失败时最多重试十次并采用指数退避。返回新固件时直接进入 OTA 升级；
- *          没有新版本时确认当前分区有效，并根据服务器返回的激活码或挑战数据循环执行激活。
+ * 没有新版本时确认当前分区有效，并根据服务器返回的激活码或挑战数据循环执行激活。
  */
 void Application::CheckNewVersion() {
     const int MAX_RETRY = 10;

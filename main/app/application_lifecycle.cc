@@ -23,7 +23,7 @@
 /**
  * @brief 等待必要数据落盘后重启 ESP32。
  * @details 先关闭音频通道、释放协议对象并停止音频后台任务，再等待一秒让网络和存储操作收尾，
- *          最后调用 esp_restart() 执行芯片复位。
+ * 最后调用 esp_restart() 执行芯片复位。
  */
 void Application::Reboot() {
     ESP_LOGI(TAG, "设备即将重启");
@@ -44,7 +44,7 @@ void Application::Reboot() {
  * @param version 用于界面显示的目标版本号，可为空。
  * @return 升级流程启动并完成成功时返回 true。
  * @details 关闭云端音频、播放升级提示、切换高性能模式并停止音频任务，再调用 Ota::Upgrade()。
- *          失败时恢复音频与低功耗；成功时显示结果并立即重启到新分区。
+ * 失败时恢复音频与低功耗；成功时显示结果并立即重启到新分区。
  */
 bool Application::UpgradeFirmware(const std::string& url, const std::string& version) {
     auto& board = Board::GetInstance();
@@ -172,7 +172,7 @@ void Application::RegisterMcpBroadcastCallback(std::function<void(const std::str
  * @brief 通过当前云端协议发送 MCP JSON 消息。
  * @param payload 完整 JSON 文本。
  * @details 无论调用线程来自网络还是工具任务，都先调度到应用主线程，再分别发送到云端协议和已注册
- *          的本地广播回调，保证协议对象生命周期访问串行化。
+ * 的本地广播回调，保证协议对象生命周期访问串行化。
  */
 void Application::SendMcpMessage(const std::string& payload) {
     // 始终切换到应用主线程，避免与断网释放协议对象的流程并发。
@@ -201,7 +201,7 @@ void Application::PlaySound(const std::string_view& sound) {
  * 会关闭音频通道并销毁联网后创建的对象。可从任意任务调用，但真正的资源
  * 生命周期变更会与主任务同步，防止断网回调与协议收包同时访问悬空对象。
  * @details 实际释放动作始终通过 Schedule() 在主线程执行；先关闭活动音频通道，再销毁协议对象，
- *          使断线回调和收包回调不会与资源释放并发。
+ * 使断线回调和收包回调不会与资源释放并发。
  */
 void Application::ResetProtocol() {
     BackendService::GetInstance().OnMcpDisconnected();

@@ -52,7 +52,7 @@ AudioService::AudioService() {
 /**
  * @brief 停止任务并释放 Opus、重采样器和同步资源。
  * @details 释放事件组、Opus 编解码器以及输入输出重采样器。正常销毁前应先调用 Stop()，
- *          确保后台任务不再访问这些句柄。
+ * 确保后台任务不再访问这些句柄。
  */
 AudioService::~AudioService() {
     if (event_group_ != nullptr) {
@@ -76,7 +76,7 @@ AudioService::~AudioService() {
  * @brief 绑定板级 Codec 并创建唤醒词、处理器和编解码器。
  * @param codec 非空且生命周期覆盖本服务。
  * @details 启动 Codec 后按输出参数创建 Opus 解码器，按 16 kHz 上行参数创建编码器；输入采样率
- *          非 16 kHz 时建立重采样器。随后选择音频处理器并创建音频电源检查定时器。
+ * 非 16 kHz 时建立重采样器。随后选择音频处理器并创建音频电源检查定时器。
  */
 void AudioService::Initialize(AudioCodec* codec) {
     codec_ = codec;
@@ -150,7 +150,7 @@ void AudioService::Initialize(AudioCodec* codec) {
 /**
  * @brief 创建输入、输出、Opus 三个后台任务并开始处理。
  * @details 清除停止标志和运行事件位，启动电源检查定时器，并按是否启用 AFE 选择任务栈大小。
- *          输入任务优先级最高，输出任务次之，编解码任务使用较低优先级和较大栈空间。
+ * 输入任务优先级最高，输出任务次之，编解码任务使用较低优先级和较大栈空间。
  */
 void AudioService::Start() {
     service_stopped_ = false;
@@ -199,7 +199,7 @@ void AudioService::Start() {
 /**
  * @brief 请求后台任务停止并唤醒所有正在等待的队列。
  * @details 停止电源定时器，设置 service_stopped_，同时置位所有输入事件并清空队列，
- *          使等待事件组或条件变量的三个后台任务都能退出循环。
+ * 使等待事件组或条件变量的三个后台任务都能退出循环。
  */
 void AudioService::Stop() {
     esp_timer_stop(audio_power_timer_);
@@ -230,7 +230,7 @@ void AudioService::Stop() {
  * @param samples 目标单声道样本数。
  * @return 成功取得指定数量的 PCM 数据时返回 true，Codec 读取失败时返回 false。
  * @details 必要时重新启用输入电源。Codec 原始采样率不匹配时先按输入通道数读取足量数据，再在
- *          互斥锁保护下重采样；读取成功会刷新最近输入时间并按配置送入音频调试器。
+ * 互斥锁保护下重采样；读取成功会刷新最近输入时间并按配置送入音频调试器。
  */
 bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples) {
     if (!codec_->input_enabled()) {
@@ -282,8 +282,8 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
 /**
  * @brief 循环读取麦克风，将数据分发给唤醒词、处理器或测试队列。
  * @details 任务阻塞等待音频测试、唤醒词检测或语音处理事件。测试模式按 Opus 帧长采集，
- *          正常模式按 10 ms 采集并同时投递给已启用的唤醒词和语音处理模块。
- *          读取超时只会短暂让出 CPU，不会结束常驻输入任务。
+ * 正常模式按 10 ms 采集并同时投递给已启用的唤醒词和语音处理模块。
+ * 读取超时只会短暂让出 CPU，不会结束常驻输入任务。
  */
 void AudioService::AudioInputTask() {
     std::vector<int16_t> input_data;
@@ -377,7 +377,7 @@ void AudioService::AudioInputTask() {
 /**
  * @brief 循环从播放队列取 PCM 并写入 Codec。
  * @details 任务通过条件变量等待解码后的 PCM；取出任务后先释放队列锁，再启用 Codec 输出并播放，
- *          避免慢速 I/O 阻塞编解码队列。每次播放会刷新音频活跃时间，供自动断电逻辑判断。
+ * 避免慢速 I/O 阻塞编解码队列。每次播放会刷新音频活跃时间，供自动断电逻辑判断。
  */
 void AudioService::AudioOutputTask() {
     while (true) {
@@ -436,8 +436,8 @@ void AudioService::AudioOutputTask() {
 /**
  * @brief 在同一任务中串行执行 Opus 编码和解码，降低并发内存峰值。
  * @details 条件变量仅在输入队列有数据且目标队列仍有容量时唤醒任务。解码路径把云端 Opus
- *          数据转换为播放 PCM，并在采样率不一致时重采样；编码路径把 16 kHz PCM 转为
- *          待上传的 Opus 包。队列容量限制用于建立背压，防止网络或播放变慢时内存持续增长。
+ * 数据转换为播放 PCM，并在采样率不一致时重采样；编码路径把 16 kHz PCM 转为
+ * 待上传的 Opus 包。队列容量限制用于建立背压，防止网络或播放变慢时内存持续增长。
  */
 void AudioService::OpusCodecTask() {
     while (true) {
@@ -597,7 +597,7 @@ void AudioService::OpusCodecTask() {
  * @param sample_rate 服务端 Opus 音频采样率，单位为 Hz。
  * @param frame_duration 单个 Opus 帧的持续时间，单位为毫秒。
  * @details 参数未变化时直接返回；变化时在解码器互斥锁保护下重建 Opus 解码器，并在服务端
- *          采样率与 Codec 输出采样率不同时重建输出重采样器。
+ * 采样率与 Codec 输出采样率不同时重建输出重采样器。
  */
 void AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {
     if (decoder_sample_rate_ == sample_rate && decoder_duration_ms_ == frame_duration) {
@@ -808,7 +808,7 @@ const std::string& AudioService::GetLastWakeWord() const {
  * @brief 启停本地 WakeNet 检测。
  * @param enable true 开启，false 停止并清缓冲。
  * @details 首次启用时延迟初始化模型；切换到唤醒词模式前重置输入重采样器，清除另一种音频块长度
- *          留下的缓存，避免切换 Feed 尺寸后发生缓冲区溢出。
+ * 留下的缓存，避免切换 Feed 尺寸后发生缓冲区溢出。
  */
 void AudioService::EnableWakeWordDetection(bool enable) {
     if (!wake_word_) {
@@ -843,7 +843,7 @@ void AudioService::EnableWakeWordDetection(bool enable) {
  * @brief 启停上传前的语音处理/VAD 流水线。
  * @param enable true 启动语音处理和上行编码，false 停止处理并清除运行事件位。
  * @details 首次启用时初始化处理器；启动前清空播放和解码数据，设置麦克风预热标志并重置输入
- *          重采样缓存，保证唤醒词模式与语音处理模式切换时不会混入旧样本。
+ * 重采样缓存，保证唤醒词模式与语音处理模式切换时不会混入旧样本。
  */
 void AudioService::EnableVoiceProcessing(bool enable) {
     ESP_LOGD(TAG, "%s语音处理", enable ? "正在启用" : "正在停用");
@@ -902,7 +902,7 @@ void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) {
  * @brief 解封装并播放内嵌 OGG/Opus 提示音。
  * @param ogg 完整 OGG 文件数据视图，调用期间必须保持有效。
  * @details 必要时先启用 Codec 输出，再由 OggDemuxer 拆出每个 Opus 包，并以阻塞方式加入解码队列，
- *          保证短提示音不会因队列临时满载而丢帧。
+ * 保证短提示音不会因队列临时满载而丢帧。
  */
 void AudioService::PlaySound(const std::string_view& ogg) {
     if (!codec_->output_enabled()) {
@@ -946,7 +946,7 @@ bool AudioService::IsIdle() {
 /**
  * @brief 阻塞等待所有待播放 PCM 消耗完，用于重启或切换音频状态。
  * @details 条件变量会在解码队列为空、没有正在解码的 Opus 包、播放队列为空且最后一帧已经写入
- *          Codec，或服务已停止时唤醒调用者。
+ * Codec，或服务已停止时唤醒调用者。
  */
 void AudioService::WaitForPlaybackQueueEmpty() {
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
@@ -973,18 +973,32 @@ bool AudioService::IsPlaybackIdle() {
 
 /**
  * @brief 请求在下行播放排空时触发 on_playback_drained 回调。
- * @details 已在主任务执行（主任务串行处理状态变化），因此不会与 Run() 并发。若当前已经排空则
- *          直接触发；否则置位等待标记，由解码/播放任务在发现排空后回调一次。回调是轻量的事件位
+ * @details 已在主任务执行（主任务串行处理状态变化），因此不会与 Run() 并发。先置位等待标记，若
+ *          当前已经排空则立即触发；否则由解码/播放任务在发现排空后回调一次。回调是轻量的事件位
  *          置位，可在持锁调用。
  */
 void AudioService::RequestPlaybackDrainedNotification() {
-    MaybeNotifyPlaybackDrained(false);
+    bool should_notify = false;
+    {
+        std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+        waiting_playback_drained_ = true;
+        if (audio_decode_queue_.empty()
+            && !audio_decode_active_
+            && audio_playback_queue_.empty()
+            && !audio_output_active_) {
+            waiting_playback_drained_ = false;
+            should_notify = true;
+        }
+    }
+    if (should_notify && callbacks_.on_playback_drained) {
+        callbacks_.on_playback_drained();
+    }
 }
 
 /**
  * @brief 把唤醒词检测窗口内缓存的 16 kHz 单声道 PCM 编码为 Opus 并送入发送队列。
  * @details 逐帧切分为编码器固定帧长，调用方必须保证缓存内样本数为帧长整数倍或按帧长丢弃尾部。
- *          成功入队后由 on_send_queue_available 驱动主任务上传。
+ * 成功入队后由 on_send_queue_available 驱动主任务上传。
  */
 void AudioService::EncodeWakeWord() {
     if (wake_word_cache_ == nullptr || opus_encoder_ == nullptr) {
@@ -1017,49 +1031,27 @@ void AudioService::EncodeWakeWord() {
 /**
  * @brief 检查下行播放是否已排空，若是则回调 on_playback_drained 一次。
  * @param lock_held 调用方是否已持有 audio_queue_mutex_。
- * @details 仅当等待标记置位且播放链路已排空时触发。回调执行属于轻量事件置位，可在持锁情形直接
- *          执行；若将来回调变重，可在本方法外延后执行。
+ * @details 由解码/播放任务在持锁状态下调用；仅当等待标记置位且播放链路已排空时触发一次。回调
+ *          执行属于轻量事件置位，可在持锁情形直接执行；若将来回调变重，可在本方法外延后执行。
  */
 void AudioService::MaybeNotifyPlaybackDrained(bool lock_held) {
-    auto notify = [this]() {
+    (void)lock_held;  // 调用方必须已持有 audio_queue_mutex_。
+    if (waiting_playback_drained_
+        && audio_decode_queue_.empty()
+        && !audio_decode_active_
+        && audio_playback_queue_.empty()
+        && !audio_output_active_) {
+        waiting_playback_drained_ = false;
         if (callbacks_.on_playback_drained) {
             callbacks_.on_playback_drained();
         }
-    };
-
-    if (lock_held) {
-        if (waiting_playback_drained_
-            && audio_decode_queue_.empty()
-            && !audio_decode_active_
-            && audio_playback_queue_.empty()
-            && !audio_output_active_) {
-            waiting_playback_drained_ = false;
-            notify();
-        }
-        return;
-    }
-
-    bool should_notify = false;
-    {
-        std::lock_guard<std::mutex> lock(audio_queue_mutex_);
-        if (waiting_playback_drained_
-            && audio_decode_queue_.empty()
-            && !audio_decode_active_
-            && audio_playback_queue_.empty()
-            && !audio_output_active_) {
-            waiting_playback_drained_ = false;
-            should_notify = true;
-        }
-    }
-    if (should_notify) {
-        notify();
     }
 }
 
 /**
  * @brief 重置 Opus 解码状态并清空所有下行播放数据。
  * @details 在队列锁和解码器锁保护下调用解码器 reset，随后清空解码、播放和测试队列，
- *          用于打断 TTS 或开始新会话时防止旧音频继续播放。
+ * 用于打断 TTS 或开始新会话时防止旧音频继续播放。
  */
 void AudioService::ResetDecoder() {
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
@@ -1097,7 +1089,7 @@ void AudioService::ResetDecoder() {
 /**
  * @brief 根据最近输入输出时间自动关闭或唤醒 Codec 电源。
  * @details 输入或输出超过空闲超时后关闭对应 Codec 方向。全双工输入仍活跃时保留发送时钟，
- *          避免部分板卡接收链路停顿；输入输出均关闭后停止电源检查定时器。
+ * 避免部分板卡接收链路停顿；输入输出均关闭后停止电源检查定时器。
  */
 void AudioService::CheckAndUpdateAudioPowerState() {
     auto now = std::chrono::steady_clock::now();
@@ -1121,7 +1113,7 @@ void AudioService::CheckAndUpdateAudioPowerState() {
  * @brief 设置资源分区加载出的 ESP-SR 模型列表；列表所有权仍归资源管理器。
  * @param models_list ESP-SR 模型列表指针，可为空；AudioService 不负责释放。
  * @details 在支持 AFE 的芯片上按模型前缀选择自定义命令词或 WakeNet 实现；其他目标继续使用
- *          构造阶段创建的轻量唤醒词实现。
+ * 构造阶段创建的轻量唤醒词实现。
  */
 void AudioService::SetModelsList(srmodel_list_t* models_list) {
     models_list_ = models_list;

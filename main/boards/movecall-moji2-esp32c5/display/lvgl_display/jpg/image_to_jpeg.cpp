@@ -25,7 +25,7 @@
  * @param size 需要分配的字节数。
  * @return 成功时返回可写内存地址，失败时返回 nullptr。
  * @details 优先使用普通堆，普通堆不足时再尝试具有 8 位访问能力的 PSRAM。
- *          返回的内存必须由调用者使用 free() 释放。
+ * 返回的内存必须由调用者使用 free() 释放。
  */
 static void* malloc_psram(size_t size) {
     void* p = malloc(size);
@@ -66,7 +66,7 @@ static __always_inline uint8_t expand_6_to_8(uint8_t v) {
  * @param out_size 输出参数，非空时写入转换后缓冲区的字节数。
  * @return 成功时返回由 jpeg_calloc_align() 分配的对齐缓冲区，失败时返回 nullptr。
  * @details 灰度和 YUYV 数据直接复制，UYVY、YUV422P 和 RGB 数据会重排或转换为
- *          编码器支持的格式。返回缓冲区必须由调用者使用 jpeg_free_align() 释放。
+ * 编码器支持的格式。返回缓冲区必须由调用者使用 jpeg_free_align() 释放。
  */
 static uint8_t* convert_input_to_encoder_buf(const uint8_t* src, uint16_t width, uint16_t height, v4l2_pix_fmt_t format,
                                              jpeg_pixel_format_t* out_fmt, int* out_size) {
@@ -260,7 +260,7 @@ static bool hw_jpeg_ensure_inited(void) {
  * @param out_size 输出参数，非空时写入转换后缓冲区的字节数。
  * @return 成功时返回使用 malloc_psram() 分配的缓冲区，不支持该格式或分配失败时返回 nullptr。
  * @details YUYV 数据需要交换每个 16 位单元的字节序，以满足硬件编码器的大端排列要求。
- *          返回缓冲区的所有权交给调用者，调用者必须使用 free() 释放。
+ * 返回缓冲区的所有权交给调用者，调用者必须使用 free() 释放。
  */
 static uint8_t* convert_input_to_hw_encoder_buf(const uint8_t* src, uint16_t width, uint16_t height, v4l2_pix_fmt_t format,
                                                 jpeg_enc_input_format_t* out_fmt, int* out_size) {
@@ -339,7 +339,7 @@ static uint8_t* convert_input_to_hw_encoder_buf(const uint8_t* src, uint16_t wid
  * @param cb_arg 原样传递给 cb 的调用者上下文指针。
  * @return 硬件编码成功时返回 true；格式不支持、初始化失败或编码失败时返回 false。
  * @details 当 jpg_out 和 jpg_out_len 接收结果时，输出缓冲区所有权交给调用者；当 cb 非空时，
- *          本函数先发送数据块，再发送结束标记，调用者不会取得内部缓冲区所有权。
+ * 本函数先发送数据块，再发送结束标记，调用者不会取得内部缓冲区所有权。
  */
 static bool encode_with_hw_jpeg(const uint8_t* src, size_t src_len, uint16_t width, uint16_t height,
                                 v4l2_pix_fmt_t format, uint8_t quality, uint8_t** jpg_out, size_t* jpg_out_len,
@@ -517,7 +517,7 @@ static bool encode_with_esp_new_jpeg(const uint8_t* src, size_t src_len, uint16_
  * @param out_len 输出参数，用于接收 JPEG 数据字节数。
  * @return 转换成功时返回 true，内存分配、格式转换或编码失败时返回 false。
  * @details 若输入本身是 JPEG 且配置允许，会直接复制数据；否则优先尝试硬件编码器，
- *          硬件路径不可用时自动回退到软件编码器。成功后输出缓冲区所有权归调用者。
+ * 硬件路径不可用时自动回退到软件编码器。成功后输出缓冲区所有权归调用者。
  */
 bool image_to_jpeg(uint8_t* src, size_t src_len, uint16_t width, uint16_t height, v4l2_pix_fmt_t format,
                    uint8_t quality, uint8_t** out, size_t* out_len) {
@@ -555,7 +555,7 @@ bool image_to_jpeg(uint8_t* src, size_t src_len, uint16_t width, uint16_t height
  * @param arg 原样传递给 cb 的调用者上下文指针。
  * @return 编码并完成回调输出时返回 true，格式转换或编码失败时返回 false。
  * @details 回调的 type 为 0 时 data 和 len 表示有效 JPEG 数据；type 为 1 时表示输出结束。
- *          函数内部管理编码缓冲区，回调不得在返回后继续持有 data 指针。
+ * 函数内部管理编码缓冲区，回调不得在返回后继续持有 data 指针。
  */
 bool image_to_jpeg_cb(uint8_t* src, size_t src_len, uint16_t width, uint16_t height, v4l2_pix_fmt_t format,
                       uint8_t quality, jpg_out_cb cb, void* arg) {

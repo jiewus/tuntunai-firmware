@@ -120,13 +120,13 @@ protected:
     /**
      * @brief 分别位于三条裁切带中的备忘录文本镜像。
      * @details 三个标签始终保存相同文本并执行相同纵向位移，各裁切带只显示属于自己的
-     *          水平区域，组合后形成一段连续且顺应圆屏弧形的三行文本。
+     * 水平区域，组合后形成一段连续且顺应圆屏弧形的三行文本。
      */
     lv_obj_t* screensaver_memo_labels_[3] = {};
     /**
      * @brief 覆盖在备忘录首行上的日期时间粗体镜像。
      * @details 三个标签与正文镜像使用相同位置和裁切带，只绘制方括号包围的日期时间首行，
-     *          从而在不加粗正文的前提下模拟点阵粗体。
+     * 从而在不加粗正文的前提下模拟点阵粗体。
      */
     lv_obj_t* screensaver_memo_date_labels_[3] = {};
     /**
@@ -221,7 +221,7 @@ protected:
     /**
      * @brief 根据当前字幕的完整高度启动或停止纵向滚动动画。
      * @details 两行以内的字幕在容器中静止居中；超过两行时从顶部开始向上滚动，
-     *          到达最后一行后停留并返回开头循环。调用者必须已经持有 LVGL 锁。
+     * 到达最后一行后停留并返回开头循环。调用者必须已经持有 LVGL 锁。
      */
     void UpdateSubtitleScroll();
     /**
@@ -232,7 +232,7 @@ protected:
     /**
      * @brief 创建圆屏设备绑定码覆盖页面。
      * @details 页面在 SetupUI() 中只创建一次，默认隐藏。后续仅更新标签与隐藏标志，
-     *          避免绑定轮询期间重复创建 LVGL 对象和增加堆内存碎片。
+     * 避免绑定轮询期间重复创建 LVGL 对象和增加堆内存碎片。
      */
     void CreateDeviceBindingUI();
     /**
@@ -267,38 +267,38 @@ protected:
      * @brief 将当前主题的中文字体按绑定页面的信息层级应用到各标签。
      * @param font LVGL 字体对象；为空时保持现有字体不变。
      * @details 标题、六位码和说明文字分别换算为固定视觉字号，避免资源字体切换后页面
-     *          突然放大或缩小。调用者必须已经持有 LVGL 锁。
+     * 突然放大或缩小。调用者必须已经持有 LVGL 锁。
      */
     void ApplyDeviceBindingFont(const lv_font_t* font);
     /**
      * @brief 将当前主题的完整中文字库应用到表盘的小号文本标签。
      * @param font LVGL 字体对象；为空时保持现有字体不变。
      * @details 资源字体通常为 30px，本方法会统一缩放到约 28px，既保证中文字符完整，
-     *          又不改变圆形表盘已经确定的视觉布局。调用者必须已经持有 LVGL 锁。
+     * 又不改变圆形表盘已经确定的视觉布局。调用者必须已经持有 LVGL 锁。
      */
     void ApplyScreensaverTextFont(const lv_font_t* font);
     /**
      * @brief 将主题字体应用到天气位置名称，并保持单行水平居中。
      * @param font LVGL 字体对象；为空时保持现有字体不变。
      * @details 位置名称优先使用资源分区中的普惠体 Heavy 24px，资源不可用时回退到主题字体。
-     *          字体不使用 LVGL 变换缩放。
-     *          调用者必须已经持有 LVGL 锁。
+     * 字体不使用 LVGL 变换缩放。
+     * 调用者必须已经持有 LVGL 锁。
      */
     void ApplyScreensaverLocationFont(const lv_font_t* font);
     /**
      * @brief 将屏保天气三列设置为普惠体 Heavy 24px，并保持固定列间距。
      * @param font LVGL 字体对象；为空时保持现有字体不变。
      * @details 天气三列优先使用资源分区中的普惠体 Heavy 24px，直接按原生字形绘制；
-     *          三个子标签不单独缩放，避免列间距受文字长度影响。
-     *          调用者必须已经持有 LVGL 锁。
+     * 三个子标签不单独缩放，避免列间距受文字长度影响。
+     * 调用者必须已经持有 LVGL 锁。
      */
     void ApplyScreensaverWeatherFont(const lv_font_t* font);
     /**
      * @brief 将屏保日期三列设置为普惠体 Heavy 24px，并保持固定列间距。
      * @param font LVGL 字体对象；为空时保持现有字体不变。
      * @details 农历、公历和星期优先使用资源分区中的普惠体 Heavy 24px，直接按原生字形绘制，
-     *          并由日期组作为整体水平居中。
-     *          调用者必须已经持有 LVGL 锁。
+     * 并由日期组作为整体水平居中。
+     * 调用者必须已经持有 LVGL 锁。
      */
     void ApplyScreensaverDateFont(const lv_font_t* font);
     /**
@@ -320,21 +320,21 @@ protected:
     /**
      * @brief 使用当前系统时间、网络状态和电池状态刷新表盘内容。
      * @details 调用者必须已经持有 LVGL 锁；农历由公历日期在本地换算，天气和待办区域
-     *          在数据接口接入前显示占位内容。
+     * 在数据接口接入前显示占位内容。
      */
     void UpdateScreensaverContent();
     /**
      * @brief 根据当前下标刷新备忘录标签并计算下一条轮播等待时间。
      * @details 带时间首行的结构化备忘录固定显示三行并截断；兼容文本超过三行时继续纵向滚动。
-     *          调用者必须持有 LVGL 锁。
+     * 调用者必须持有 LVGL 锁。
      */
     void UpdateScreensaverMemo();
     /**
      * @brief 根据备忘录类型选择固定三行省略或兼容纵向滚动。
      * @details 带时间首行时最多显示“时间加两行正文”，不足三行会整体垂直居中；其他文本三行
-     *          以内同样垂直居中，超过三行后三个镜像标签以普通字幕节奏同步滚动。两种模式均
-     *          保留圆屏弧形安全边界。
-     *          调用者必须持有 LVGL 锁。
+     * 以内同样垂直居中，超过三行后三个镜像标签以普通字幕节奏同步滚动。两种模式均
+     * 保留圆屏弧形安全边界。
+     * 调用者必须持有 LVGL 锁。
      */
     void UpdateScreensaverMemoScroll();
     /**
@@ -342,7 +342,7 @@ protected:
      * @param target 指向拥有三个备忘录镜像标签的 LcdDisplay 实例。
      * @param value 当前动画帧对应的 Y 轴物理像素位移。
      * @details 三个标签不再分别创建动画，避免独立动画在时间和整数像素取整上的微小差异
-     *          造成裁切带交界处抖动。该回调由 LVGL 动画任务调用，调用期间已处于 LVGL 上下文。
+     * 造成裁切带交界处抖动。该回调由 LVGL 动画任务调用，调用期间已处于 LVGL 上下文。
      */
     static void ScreensaverMemoScrollAnimationCallback(void* target, int32_t value);
     /**
@@ -391,7 +391,7 @@ public:
      * @param role 消息角色，默认圆屏布局中用于日志诊断。
      * @param content 完整 UTF-8 字幕内容；nullptr 或空字符串会隐藏字幕容器。
      * @details 两行以内的文本保持静止；超过两行的文本自动纵向滚动，确保完整答案
-     *          可以依次显示，同时保持字幕容器尺寸固定，不遮挡中央表情。
+     * 可以依次显示，同时保持字幕容器尺寸固定，不遮挡中央表情。
      */
     virtual void SetChatMessage(const char* role, const char* content) override;
     virtual void ClearChatMessages() override;

@@ -101,8 +101,8 @@ public:
     /**
      * @brief 根据活动来源恢复背光并更新屏幕空闲计时。
      * @param user_initiated true 表示唤醒词、按键等用户主动操作，允许退出屏保；
-     *                       false 表示网络、电量、通知或状态变化等后台活动，屏保显示期间
-     *                       只能更新内容或恢复背光，不得切换到对话界面。
+     * false 表示网络、电量、通知或状态变化等后台活动，屏保显示期间
+     * 只能更新内容或恢复背光，不得切换到对话界面。
      * @details 无屏幕或未实现屏幕空闲策略的板型使用默认空实现。
      */
     virtual void WakeUpScreen(bool user_initiated = false) { (void)user_initiated; }
@@ -115,7 +115,7 @@ public:
     /**
      * @brief 获取当前自动熄屏等待时间。
      * @return 最近一次保存的等待秒数；是否启用由 IsScreenAutoOffEnabled() 返回，
-     *         -1 表示板型不支持。
+     * -1 表示板型不支持。
      */
     virtual int GetScreenAutoOffTimeout() const { return -1; }
     /**
@@ -135,7 +135,7 @@ public:
     /**
      * @brief 请求立即进入当前板型提供的屏保界面。
      * @details 该入口用于一轮语音对话结束后跳过常规空闲等待时间。板型应继续遵守用户保存的
-     *          屏保开关；屏保关闭、屏幕已经熄灭或板型不支持屏保时不得改变显示状态。
+     * 屏保开关；屏保关闭、屏幕已经熄灭或板型不支持屏保时不得改变显示状态。
      */
     virtual void EnterScreensaver() {}
     /**

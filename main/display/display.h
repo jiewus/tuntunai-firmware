@@ -128,7 +128,7 @@ public:
      * @param weather 天气描述文本，例如“晴”或占位文本“--”。
      * @param temperature_range 最低和最高温度文本，例如“18/26”或“--/--”。
      * @details 该接口用于无法提供有效数值的加载、停用和开发中状态。默认实现为空操作，
-     *          具体 LCD 显示类负责复制文本并安全更新 LVGL 控件。
+     * 具体 LCD 显示类负责复制文本并安全更新 LVGL 控件。
      */
     virtual void SetScreensaverWeatherText(const std::string& location,
                                            const std::string& temperature,
@@ -143,7 +143,7 @@ public:
      * @brief 替换屏保循环展示的备忘录数组。
      * @param memos 已按后端优先级排序的屏保文本数组，最多使用前 5 条。
      * @details 每条结构化文本使用“时间换行正文”格式。默认实现为空操作，具体 LCD 实现负责
-     *          复制文本、限制三行并重置轮播位置。
+     * 复制文本、限制三行并重置轮播位置。
      */
     virtual void SetScreensaverMemos(const std::vector<std::string>& memos) {
         (void)memos;
@@ -153,7 +153,7 @@ public:
      * @param title 固定显示在页面顶部的清单标题。
      * @param items 按顺序轮播的 MCP 名称和说明数组。
      * @details 专用表盘只保留背景、金属外圈和刻度，隐藏天气、日期、时间、备忘录以及
-     *          网络和电量图标。默认实现为空操作，具体 LCD 实现负责单项轮播。
+     * 网络和电量图标。默认实现为空操作，具体 LCD 实现负责单项轮播。
      */
     virtual void ShowCustomMcpList(
         const std::string& title,
@@ -172,7 +172,7 @@ public:
      * @param binding_code 允许用户输入到网页端的短绑定码；为空时页面只显示流程状态。
      * @param message 绑定码下方的操作说明、成功提示或失败原因。
      * @details 默认实现为空操作。具体 LCD 实现应复制传入文本，并确保绑定页面位于普通对话
-     *          和屏保页面之上。绑定会话 Token 与设备访问 Token 严禁通过该接口显示。
+     * 和屏保页面之上。绑定会话 Token 与设备访问 Token 严禁通过该接口显示。
      */
     virtual void ShowDeviceBinding(const std::string& binding_code,
                                    const std::string& message) {

@@ -21,7 +21,7 @@
 /**
  * @brief 初始化 AES 上下文、事件组和重连定时器。
  * @details 构造阶段不建立网络连接。重连定时器触发后仅在设备空闲且对象仍存活时，
- *          将重新连接操作调度到应用主线程，避免析构后的延迟回调访问无效对象。
+ * 将重新连接操作调度到应用主线程，避免析构后的延迟回调访问无效对象。
  */
 MqttProtocol::MqttProtocol() {
     event_group_handle_ = xEventGroupCreate();
@@ -49,7 +49,7 @@ MqttProtocol::MqttProtocol() {
 /**
  * @brief 停止定时器和网络对象，并使所有延迟回调失效。
  * @details 先清除共享存活标志，再停止定时器和销毁 MQTT、UDP 对象，确保已经进入应用调度队列的
- *          重连闭包不会继续访问 this。最后释放用于等待服务器 hello 的事件组。
+ * 重连闭包不会继续访问 this。最后释放用于等待服务器 hello 的事件组。
  */
 MqttProtocol::~MqttProtocol() {
     ESP_LOGI(TAG, "正在释放小智 MQTT 协议资源");
@@ -84,7 +84,7 @@ bool MqttProtocol::Start() {
  * @param report_error 失败时是否上报到应用层。
  * @return 成功建立 MQTT 连接时返回 true，配置缺失或连接失败时返回 false。
  * @details 从 NVS 读取服务器、认证和主题参数，注册连接、断线及消息回调，然后建立 TLS MQTT
- *          连接。断线回调启动一次性重连定时器；下行消息按 hello、goodbye 或普通 JSON 分发。
+ * 连接。断线回调启动一次性重连定时器；下行消息按 hello、goodbye 或普通 JSON 分发。
  */
 bool MqttProtocol::StartMqttClient(bool report_error) {
     if (mqtt_ != nullptr) {
@@ -204,7 +204,7 @@ bool MqttProtocol::SendText(const std::string& text) {
  * @param packet 待发送的 Opus 音频包；调用后所有权转移给本方法。
  * @return UDP 成功写入至少一个字节时返回 true，通道不可用或加密失败时返回 false。
  * @details 使用服务端下发的 nonce 模板写入负载长度、时间戳和递增序号，再以 AES-CTR 加密
- *          Opus 负载。通道互斥锁保证关闭 UDP 与发送音频不会并发访问网络对象。
+ * Opus 负载。通道互斥锁保证关闭 UDP 与发送音频不会并发访问网络对象。
  */
 bool MqttProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
     std::lock_guard<std::mutex> lock(channel_mutex_);
@@ -264,7 +264,7 @@ bool MqttProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
  * @brief 关闭 UDP 会话并按需发布 goodbye。
  * @param send_goodbye 为 true 时表示客户端主动关闭，需要通过 MQTT 通知服务端；服务端主动关闭时应传 false。
  * @details 先在通道锁保护下销毁 UDP，阻止后续音频发送；再按需发布 goodbye，最后通知应用层
- *          恢复低功耗和空闲状态。无论是否发送成功，都会触发通道关闭回调。
+ * 恢复低功耗和空闲状态。无论是否发送成功，都会触发通道关闭回调。
  */
 void MqttProtocol::CloseAudioChannel(bool send_goodbye) {
     {
@@ -292,7 +292,7 @@ void MqttProtocol::CloseAudioChannel(bool send_goodbye) {
  * @brief 通过 MQTT 请求服务器创建 UDP 音频会话并等待 hello。
  * @return MQTT、hello 握手和 UDP 初始化全部成功时返回 true，否则返回 false。
  * @details 若 MQTT 已断开会先尝试重连，然后发布客户端 hello 并最多等待十秒。服务器 hello
- *          提供 UDP 地址、AES 密钥和音频参数；随后创建 UDP 回调，校验序号、解密音频并上交应用层。
+ * 提供 UDP 地址、AES 密钥和音频参数；随后创建 UDP 回调，校验序号、解密音频并上交应用层。
  */
 bool MqttProtocol::OpenAudioChannel() {
     if (mqtt_ == nullptr || !mqtt_->IsConnected()) {
@@ -415,7 +415,7 @@ bool MqttProtocol::OpenAudioChannel() {
  * @brief 生成 MQTT 协议使用的客户端 hello JSON。
  * @return 无多余空白的客户端 hello JSON。
  * @details 消息申请 UDP 音频传输，并声明 MCP 能力、16 kHz 单声道 Opus 编码和帧时长；
- *          启用服务端 AEC 时额外声明 aec 特性。
+ * 启用服务端 AEC 时额外声明 aec 特性。
  */
 std::string MqttProtocol::GetHelloMessage() {
     return BuildXiaozhiHelloMessage(3, "udp");
@@ -425,7 +425,7 @@ std::string MqttProtocol::GetHelloMessage() {
  * @brief 解析服务端 UDP 地址、端口、AES nonce 和会话参数。
  * @param root 服务端 hello JSON 根对象，仅在本次调用期间有效。
  * @details 校验传输类型后保存会话编号、Opus 参数和 UDP 配置，将十六进制密钥及 nonce 转换为
- *          原始字节并初始化 AES-CTR 上下文。全部参数就绪后设置事件位，唤醒 OpenAudioChannel()。
+ * 原始字节并初始化 AES-CTR 上下文。全部参数就绪后设置事件位，唤醒 OpenAudioChannel()。
  */
 void MqttProtocol::ParseServerHello(const cJSON* root) {
     XiaozhiServerHello hello;
