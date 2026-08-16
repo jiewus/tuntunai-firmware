@@ -122,6 +122,18 @@ void Protocol::SendStopListening() {
 }
 
 /**
+ * @brief 向云端上报本地检测到的唤醒词。
+ * @param wake_word 最近一次识别出的唤醒词文本。
+ * @details 与官方小智协议一致，发送 type="listen", state="detect" 的控制消息，text 字段携带
+ *          唤醒词文本，供云端识别/统计唤醒词命中。
+ */
+void Protocol::SendWakeWordDetected(const std::string& wake_word) {
+    std::string message = "{\"session_id\":\"" + session_id_ +
+        "\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"" + wake_word + "\"}";
+    SendText(message);
+}
+
+/**
  * @brief 发送 MCP JSON-RPC 消息。
  * @param message 完整 JSON 文本。
  * @details 本实现完成实际资源操作和状态同步；失败路径会保留可恢复状态并输出诊断日志。

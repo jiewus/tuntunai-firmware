@@ -158,6 +158,13 @@ public:
      */
     virtual void SendStopListening();
     /**
+     * @brief 向云端上报本地检测到的唤醒词。
+     * @param wake_word 最近一次识别出的唤醒词文本。
+     * @details 启用唤醒词音频上报时应在连接建立后调用，使云端能把随后上传的唤醒词音频
+     *          与本次 detect 事件关联。
+     */
+    virtual void SendWakeWordDetected(const std::string& wake_word);
+    /**
      * @brief 请求云端中断当前 TTS。
      * @param reason 中断原因。
      */

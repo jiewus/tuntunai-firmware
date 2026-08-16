@@ -139,6 +139,12 @@ void AudioService::Initialize(AudioCodec* codec) {
         .skip_unhandled_events = true,
     };
     esp_timer_create(&audio_power_timer_args, &audio_power_timer_);
+
+#if CONFIG_SEND_WAKE_WORD_DATA
+    // 启用唤醒词音频上报时预分配缓存，容量按 2 秒 16kHz 单声道样本数计算。
+    wake_word_cache_ = std::make_unique<WakeWordAudioCache>();
+    wake_word_cache_->Initialize(16000ULL * WAKE_WORD_AUDIO_CACHE_MS / 1000);
+#endif
 }
 
 /**
@@ -336,6 +342,23 @@ void AudioService::AudioInputTask() {
             if (ReadAudioData(input_data, 16000, samples)) {
                 if (bits & AS_EVENT_WAKE_WORD_RUNNING) {
                     wake_word_->Feed(input_data);
+#if CONFIG_SEND_WAKE_WORD_DATA
+                    // 把与 WakeNet 相同的 16kHz 单声道 PCM 存入缓存，供命中后上报唤醒词音频。
+                    if (wake_word_cache_ != nullptr) {
+                        if (codec_->input_channels() == 2) {
+                            // 双通道输入只保留左声道，与 EspWakeWord::Feed 的下混保持一致。
+                            if (wake_word_mono_buffer_.size() < input_data.size() / 2) {
+                                wake_word_mono_buffer_.resize(input_data.size() / 2);
+                            }
+                            for (size_t i = 0, j = 0; i < wake_word_mono_buffer_.size(); ++i, j += 2) {
+                                wake_word_mono_buffer_[i] = input_data[j];
+                            }
+                            wake_word_cache_->Store(wake_word_mono_buffer_.data(), wake_word_mono_buffer_.size());
+                        } else {
+                            wake_word_cache_->Store(input_data.data(), input_data.size());
+                        }
+                    }
+#endif
                 }
                 if (bits & AS_EVENT_AUDIO_PROCESSOR_RUNNING) {
                     audio_processor_->Feed(std::move(input_data));
@@ -403,6 +426,8 @@ void AudioService::AudioOutputTask() {
         task->pcm.clear();
         reusable_audio_tasks_.push_back(std::move(task));
         audio_queue_cv_.notify_all();
+        // 下行播放排空时通知等待中的主任务（持锁，回调为轻量事件置位）。
+        MaybeNotifyPlaybackDrained(true);
     }
 
     ESP_LOGW(TAG, "音频输出任务已停止");
@@ -507,6 +532,8 @@ void AudioService::OpusCodecTask() {
             }
             audio_queue_cv_.notify_all();
             debug_statistics_.decode_count++;
+            // 最后一次解码完成且无待解码/播放内容时通知等待中的主任务。
+            MaybeNotifyPlaybackDrained(true);
         }
         // 把麦克风处理后的 PCM 编码为 Opus，并推入协议发送队列。
         if (!audio_encode_queue_.empty() && audio_send_queue_.size() < MAX_SEND_PACKETS_IN_QUEUE) {
@@ -930,6 +957,103 @@ void AudioService::WaitForPlaybackQueueEmpty() {
                 && audio_playback_queue_.empty()
                 && !audio_output_active_);
     });
+}
+
+/**
+ * @brief 查询下行播放链路当前是否已排空。
+ * @return 解码与播放队列都为空且没有正在解码/输出时返回 true。
+ */
+bool AudioService::IsPlaybackIdle() {
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    return audio_decode_queue_.empty()
+        && !audio_decode_active_
+        && audio_playback_queue_.empty()
+        && !audio_output_active_;
+}
+
+/**
+ * @brief 请求在下行播放排空时触发 on_playback_drained 回调。
+ * @details 已在主任务执行（主任务串行处理状态变化），因此不会与 Run() 并发。若当前已经排空则
+ *          直接触发；否则置位等待标记，由解码/播放任务在发现排空后回调一次。回调是轻量的事件位
+ *          置位，可在持锁调用。
+ */
+void AudioService::RequestPlaybackDrainedNotification() {
+    MaybeNotifyPlaybackDrained(false);
+}
+
+/**
+ * @brief 把唤醒词检测窗口内缓存的 16 kHz 单声道 PCM 编码为 Opus 并送入发送队列。
+ * @details 逐帧切分为编码器固定帧长，调用方必须保证缓存内样本数为帧长整数倍或按帧长丢弃尾部。
+ *          成功入队后由 on_send_queue_available 驱动主任务上传。
+ */
+void AudioService::EncodeWakeWord() {
+    if (wake_word_cache_ == nullptr || opus_encoder_ == nullptr) {
+        return;
+    }
+    const size_t total = wake_word_cache_->Size();
+    if (total == 0) {
+        return;
+    }
+    const size_t frame_size = static_cast<size_t>(encoder_frame_size_);
+    const size_t frames = total / frame_size;
+    if (frames == 0) {
+        return;
+    }
+
+    std::vector<int16_t> pcm(frame_size);
+    for (size_t i = 0; i < frames; ++i) {
+        size_t got = wake_word_cache_->Read(i * frame_size, pcm.data(), pcm.size());
+        if (got != frame_size) {
+            break;
+        }
+        PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue,
+                              std::vector<int16_t>(pcm.begin(), pcm.end()));
+    }
+
+    // 本帧唤醒词缓存已消费，清空避免重复上报或占用 PSRAM。
+    wake_word_cache_->Clear();
+}
+
+/**
+ * @brief 检查下行播放是否已排空，若是则回调 on_playback_drained 一次。
+ * @param lock_held 调用方是否已持有 audio_queue_mutex_。
+ * @details 仅当等待标记置位且播放链路已排空时触发。回调执行属于轻量事件置位，可在持锁情形直接
+ *          执行；若将来回调变重，可在本方法外延后执行。
+ */
+void AudioService::MaybeNotifyPlaybackDrained(bool lock_held) {
+    auto notify = [this]() {
+        if (callbacks_.on_playback_drained) {
+            callbacks_.on_playback_drained();
+        }
+    };
+
+    if (lock_held) {
+        if (waiting_playback_drained_
+            && audio_decode_queue_.empty()
+            && !audio_decode_active_
+            && audio_playback_queue_.empty()
+            && !audio_output_active_) {
+            waiting_playback_drained_ = false;
+            notify();
+        }
+        return;
+    }
+
+    bool should_notify = false;
+    {
+        std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+        if (waiting_playback_drained_
+            && audio_decode_queue_.empty()
+            && !audio_decode_active_
+            && audio_playback_queue_.empty()
+            && !audio_output_active_) {
+            waiting_playback_drained_ = false;
+            should_notify = true;
+        }
+    }
+    if (should_notify) {
+        notify();
+    }
 }
 
 /**

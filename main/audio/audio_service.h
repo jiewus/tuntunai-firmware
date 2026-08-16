@@ -23,6 +23,7 @@
 #include "audio_processor.h"
 #include "processors/audio_debugger.h"
 #include "wake_word.h"
+#include "wake_word_audio_cache.h"
 #include "xiaozhi/protocol/protocol.h"
 #include "ogg_demuxer.h"
 
@@ -46,6 +47,9 @@
 
 #define AUDIO_POWER_TIMEOUT_MS 15000
 #define AUDIO_POWER_CHECK_INTERVAL_MS 1000
+
+/** @brief 唤醒词音频缓存的窗口时长 ms；约 2 秒，足够覆盖唤醒词及其前导语音。 */
+#define WAKE_WORD_AUDIO_CACHE_MS 2000
 
 #define AS_EVENT_AUDIO_TESTING_RUNNING      (1 << 0)
 #define AS_EVENT_WAKE_WORD_RUNNING          (1 << 1)
@@ -86,6 +90,11 @@ struct AudioServiceCallbacks {
     std::function<void(const std::string&)> on_wake_word_detected;
     std::function<void(bool)> on_vad_change;
     std::function<void(void)> on_audio_testing_queue_full;
+    /**
+     * 下行播放队列被清空、且应用通过 RequestPlaybackDrained 请求过通知时触发，用于在不阻塞
+     * 主任务的前提下告知应用可以安全开始下一次监听。
+     */
+    std::function<void(void)> on_playback_drained;
 };
 
 
@@ -160,6 +169,23 @@ public:
      * @brief 阻塞等待所有待播放 PCM 消耗完，用于重启或切换音频状态。
      */
     void WaitForPlaybackQueueEmpty();
+    /**
+     * @brief 查询下行播放链路当前是否已排空。
+     * @return 解码与播放队列都为空且没有正在解码/输出时返回 true。
+     */
+    bool IsPlaybackIdle();
+    /**
+     * @brief 请求在下行播放队列排空时触发 on_playback_drained 回调。
+     * @details 非阻塞：若当前已经排空则立即触发并返回；否则记录等待标记，待后续解码/播放任务
+     *          发现排空时回调一次。用于以事件驱动方式替代主任务阻塞等待，避免阻塞状态机主循环。
+     */
+    void RequestPlaybackDrainedNotification();
+    /**
+     * @brief 把唤醒词检测窗口内缓存的 16 kHz 单声道 PCM 编码为 Opus 并送入发送队列。
+     * @details 仅在启用 CONFIG_SEND_WAKE_WORD_DATA 时由主任务在音频通道建立后调用；编码结果
+     *          走正常的发送队列，由 on_send_queue_available 驱动主任务上传。
+     */
+    void EncodeWakeWord();
     bool IsWakeWordRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_WAKE_WORD_RUNNING; }
     bool IsAudioProcessorRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_AUDIO_PROCESSOR_RUNNING; }
 
@@ -249,6 +275,10 @@ private:
     std::unique_ptr<AudioProcessor> audio_processor_;
     std::unique_ptr<WakeWord> wake_word_;
     std::unique_ptr<AudioDebugger> audio_debugger_;
+    /** @brief 唤醒词检测期间保存最近一段麦克风 PCM，用于命中后上报唤醒词音频。 */
+    std::unique_ptr<WakeWordAudioCache> wake_word_cache_;
+    /** @brief 双声道输入下用于把唤醒词 PCM 下混为单声道的常驻缓冲，避免每 10ms 重复分配。 */
+    std::vector<int16_t> wake_word_mono_buffer_;
     void* opus_encoder_ = nullptr;
     void* opus_decoder_ = nullptr;
     std::mutex decoder_mutex_;
@@ -311,6 +341,8 @@ private:
     bool wake_word_initialized_ = false;
     bool audio_processor_initialized_ = false;
     bool voice_detected_ = false;
+    /** @brief 主任务请求在下行播放排空后收到通知，尚未触发。需在 audio_queue_mutex_ 保护下读写。 */
+    bool waiting_playback_drained_ = false;
     std::atomic<bool> service_stopped_{true};
     std::atomic<bool> audio_input_need_warmup_{false};
 
@@ -342,6 +374,13 @@ private:
      * @brief 根据最近输入输出时间自动关闭或唤醒 Codec 电源。
      */
     void CheckAndUpdateAudioPowerState();
+    /**
+     * @brief 检查下行播放是否已排空，若是则回调 on_playback_drained。
+     * @param lock_held 调用方是否已持有 audio_queue_mutex_。
+     * @details 仅当等待排空的标记置位且播放链路已排空时触发一次回调；回调在释放锁后执行，避免
+     *          在后台任务持锁期间调用可能耗时的应用级回调。
+     */
+    void MaybeNotifyPlaybackDrained(bool lock_held);
 };
 
 #endif

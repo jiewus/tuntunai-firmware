@@ -96,6 +96,9 @@ void Application::Initialize() {
     callbacks.on_vad_change = [this](bool speaking) {
         xEventGroupSetBits(event_group_, MAIN_EVENT_VAD_CHANGE);
     };
+    callbacks.on_playback_drained = [this]() {
+        xEventGroupSetBits(event_group_, MAIN_EVENT_PLAYBACK_DRAINED);
+    };
     audio_service_.SetCallbacks(callbacks);
 
     // 状态机回调只记录轻量状态并设置事件位，所有界面和音频副作用由主循环集中执行。
@@ -216,7 +219,8 @@ void Application::Run() {
         MAIN_EVENT_START_LISTENING |
         MAIN_EVENT_STOP_LISTENING |
         MAIN_EVENT_ACTIVATION_DONE |
-        MAIN_EVENT_STATE_CHANGED;
+        MAIN_EVENT_STATE_CHANGED |
+        MAIN_EVENT_PLAYBACK_DRAINED;
 
     while (true) {
         auto bits = xEventGroupWaitBits(event_group_, ALL_EVENTS, pdTRUE, pdFALSE, portMAX_DELAY);
@@ -240,6 +244,15 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_STATE_CHANGED) {
             HandleStateChangedEvent();
+        }
+
+        if (bits & MAIN_EVENT_PLAYBACK_DRAINED) {
+            // 自动停止模式下延迟的开始监听：下行播放已排空，此时可安全启动语音处理。
+            if (pending_listening_start_ && GetDeviceState() == kDeviceStateListening &&
+                audio_service_.IsPlaybackIdle()) {
+                pending_listening_start_ = false;
+                StartListeningAudio();
+            }
         }
 
         if (bits & MAIN_EVENT_TOGGLE_CHAT) {

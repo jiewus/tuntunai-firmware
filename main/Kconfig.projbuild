@@ -41,6 +41,11 @@ choice WAKE_WORD_TYPE
         bool "ESP-SR wake word"
 endchoice
 
+config SEND_WAKE_WORD_DATA
+    bool "Send wake word audio data"
+    # 命中唤醒词后，把检测窗口内的麦克风音频编码上传，并发送唤醒词 detect 事件。
+    default n
+
 config USE_AUDIO_DEBUGGER
     bool "Enable audio debugger"
     # 开启后会把麦克风 PCM 通过 UDP 发往下方配置的开发机地址。

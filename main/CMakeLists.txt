@@ -7,6 +7,7 @@ set(SOURCES
     "audio/demuxer/ogg_demuxer.cc"
     "audio/processors/audio_debugger.cc"
     "audio/processors/no_audio_processor.cc"
+    "audio/wake_word_audio_cache.cc"
     "audio/wake_words/esp_wake_word.cc"
     "display/display.cc"
     "xiaozhi/protocol/protocol.cc"

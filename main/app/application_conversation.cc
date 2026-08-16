@@ -510,6 +510,10 @@ void Application::HandleWakeWordDetectedEvent() {
 
         if (state == kDeviceStateListening) {
             xiaozhi_client_->SendStartListening(GetDefaultListeningMode());
+#if CONFIG_SEND_WAKE_WORD_DATA
+            audio_service_.EncodeWakeWord();
+            xiaozhi_client_->SendWakeWordDetected(wake_word);
+#endif
             audio_service_.ResetDecoder();
             audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
             // 唤醒词模块命中后会自行暂停，需要显式恢复以支持监听期间再次唤醒。
@@ -549,6 +553,11 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     }
 
     ESP_LOGI(TAG, "检测到唤醒词：%s", wake_word.c_str());
+#if CONFIG_SEND_WAKE_WORD_DATA
+    // 编码并上报检测窗口内的唤醒词音频，随后发送唤醒词 detect 事件，供云端对齐唤醒词语义。
+    audio_service_.EncodeWakeWord();
+    xiaozhi_client_->SendWakeWordDetected(wake_word);
+#endif
     // 提示音必须延迟到监听状态完成 ResetDecoder() 后播放，否则会被清空。
     play_popup_on_listening_ = true;
     SetListeningMode(GetDefaultListeningMode());
@@ -563,6 +572,8 @@ void Application::HandleStateChangedEvent() {
     DeviceState new_state = state_machine_.GetState();
     const bool enter_screensaver = enter_screensaver_after_conversation_.exchange(false);
     clock_ticks_ = 0;
+    // 任何状态变化都会使之前延迟开始监听的标记失效；下面的 Listening 分支需要时再重新挂起。
+    pending_listening_start_ = false;
 
     auto& board = Board::GetInstance();
     // 状态变化会刷新背光计时；如果表盘已经显示，该后台事件不会退出屏保。
@@ -598,14 +609,16 @@ void Application::HandleStateChangedEvent() {
                  * 正常从 TTS 播放结束进入自动监听时，需要等待剩余音频播放完，避免截断尾音。
                  * play_popup_on_listening_ 为 true 表示用户主动唤醒或打断上一轮对话，此时响应速度
                  * 优先，不能等待旧播放队列，否则主任务以及后续字幕更新都会被旧音频阻塞。
+                 * 自动停止模式在未排空时不阻塞状态机主循环，而是挂起 pending_listening_start_，
+                 * 待 MAIN_EVENT_PLAYBACK_DRAINED 事件到来后再真正启动语音处理。
                  */
-                if (listening_mode_ == kListeningModeAutoStop && !play_popup_on_listening_) {
-                    audio_service_.WaitForPlaybackQueueEmpty();
+                if (listening_mode_ == kListeningModeAutoStop && !play_popup_on_listening_ &&
+                    !audio_service_.IsPlaybackIdle()) {
+                    pending_listening_start_ = true;
+                    audio_service_.RequestPlaybackDrainedNotification();
+                } else {
+                    StartListeningAudio();
                 }
-
-                // 通知云端开始接收本轮麦克风音频。
-                xiaozhi_client_->SendStartListening(listening_mode_);
-                audio_service_.EnableVoiceProcessing(true);
             }
 
 #ifdef CONFIG_WAKE_WORD_DETECTION_IN_LISTENING
@@ -615,12 +628,6 @@ void Application::HandleStateChangedEvent() {
             // 默认在监听期间关闭唤醒词检测，减少算力占用和误触发。
             audio_service_.EnableWakeWordDetection(false);
 #endif
-
-            // EnableVoiceProcessing() 重置解码器后再播放提示音，避免提示音被清空。
-            if (play_popup_on_listening_) {
-                play_popup_on_listening_ = false;
-                audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
-            }
             break;
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
@@ -694,4 +701,28 @@ void Application::SetListeningMode(ListeningMode mode) {
  */
 ListeningMode Application::GetDefaultListeningMode() const {
     return kListeningModeAutoStop;
+}
+
+/**
+ * @brief 完成监听开始的真实动作。
+ * @details 发送 start-listening、启用麦克风语音处理并在解码器重置后播放提示音。既可从状态变化
+ *          处理器直接调用，也可经 MAIN_EVENT_PLAYBACK_DRAINED 延迟调用（此时下行播放已排空，不会
+ *          截断上一轮 TTS 尾音）。离开监听状态后不再执行，避免在错误时刻启用上传。
+ */
+void Application::StartListeningAudio() {
+    if (GetDeviceState() != kDeviceStateListening) {
+        return;
+    }
+
+    // 通知云端开始接收本轮麦克风音频。
+    if (xiaozhi_client_) {
+        xiaozhi_client_->SendStartListening(listening_mode_);
+    }
+    audio_service_.EnableVoiceProcessing(true);
+
+    // EnableVoiceProcessing() 重置解码器后再播放提示音，避免提示音被清空。
+    if (play_popup_on_listening_) {
+        play_popup_on_listening_ = false;
+        audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+    }
 }

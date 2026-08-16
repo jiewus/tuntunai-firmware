@@ -74,6 +74,8 @@ public:
     void SendStartListening(ListeningMode mode);
     /** @brief 通知小智云端本轮用户语音已经结束。 */
     void SendStopListening();
+    /** @brief 向小智云端上报本地检测到的唤醒词。 */
+    void SendWakeWordDetected(const std::string& wake_word);
     /** @brief 请求小智云端中断当前 TTS 播报。 */
     void SendAbortSpeaking(AbortReason reason);
     /** @brief 通过小智会话发送 MCP JSON-RPC 负载。 */

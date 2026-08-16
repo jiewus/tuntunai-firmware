@@ -42,6 +42,7 @@
 #define MAIN_EVENT_START_LISTENING      (1 << 10)
 #define MAIN_EVENT_STOP_LISTENING       (1 << 11)
 #define MAIN_EVENT_STATE_CHANGED        (1 << 12)
+#define MAIN_EVENT_PLAYBACK_DRAINED     (1 << 13)
 
 
 /**
@@ -229,6 +230,11 @@ private:
     bool assets_version_checked_ = false;
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     /**
+     * @brief 监听模式为自动停止且下行播放未排空时置位；等待 MAIN_EVENT_PLAYBACK_DRAINED 后再真正
+     *          启动语音处理，避免阻塞主循环等待旧播放队列排空。
+     */
+    bool pending_listening_start_ = false;
+    /**
      * @brief 跨任务提交给下一次开始监听事件的停止策略。
      */
     std::atomic<ListeningMode> requested_listening_mode_{kListeningModeManualStop};
@@ -259,6 +265,12 @@ private:
     void HandleWakeWordDetectedEvent();
     void ContinueOpenAudioChannel(ListeningMode mode);
     void ContinueWakeWordInvoke(const std::string& wake_word);
+    /**
+     * @brief 完成监听开始的真实动作：发送 start-listening、启用麦克风语音处理并播放提示音。
+     * @details 仅在仍处于监听状态时执行，既可从状态变化处理器直接调用，也可经 MAIN_EVENT_PLAYBACK_DRAINED
+     *          延迟调用。
+     */
+    void StartListeningAudio();
 
     /**
      * @brief 后台执行设备激活，完成后设置 MAIN_EVENT_ACTIVATION_DONE。

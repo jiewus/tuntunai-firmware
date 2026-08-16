@@ -109,6 +109,12 @@ void XiaozhiClient::SendStopListening() {
     }
 }
 
+void XiaozhiClient::SendWakeWordDetected(const std::string& wake_word) {
+    if (protocol_ != nullptr) {
+        protocol_->SendWakeWordDetected(wake_word);
+    }
+}
+
 void XiaozhiClient::SendAbortSpeaking(AbortReason reason) {
     if (protocol_ != nullptr) {
         protocol_->SendAbortSpeaking(reason);
