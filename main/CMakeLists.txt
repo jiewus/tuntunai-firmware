@@ -26,7 +26,6 @@ set(SOURCES
     "tuntun/backend/backend_weather.cc"
     "tuntun/backend/backend_binding.cc"
     "tuntun/backend/backend_notification.cc"
-    "tuntun/backend/backend_news.cc"
     "system/system_info.cc"
     "system/settings.cc"
     "app/application.cc"

@@ -182,7 +182,7 @@ void BackendService::RunNotificationSync()
                            notification.display_text) &&
                        cJSON_IsNumber(source_type) &&
                        source_type->valueint >= kNotificationSourceScheduledMcp &&
-                       source_type->valueint <= kNotificationSourceDailyNewsBriefing &&
+                       source_type->valueint <= kNotificationSourceCustomReminder &&
                        cJSON_IsNumber(notification_mode) &&
                        (notification_mode->valueint == kNotificationModeDirect ||
                         notification_mode->valueint == kNotificationModeConfirm) &&
@@ -223,10 +223,6 @@ void BackendService::RunNotificationSync()
         else if (source_type->valueint == kNotificationSourceMemo)
         {
             notification.source_title = "备忘录提醒";
-        }
-        else if (source_type->valueint == kNotificationSourceDailyNewsBriefing)
-        {
-            notification.source_title = "每日简报";
         }
         else
         {

@@ -145,8 +145,6 @@ namespace tuntun::backend_internal
 
     /** @brief 使用设备访问 Token 管理自定义提醒的固定接口路径。 */
     constexpr const char *kCustomRemindersPath = "/api/device/custom-reminders";
-    /** @brief 使用设备访问 Token 获取当前用户今日新闻简报。 */
-    constexpr const char *kNewsBriefingPath = "/api/device/news/briefing/today";
 
     /**
      * @brief 使用设备访问 Token 同步和执行动态 MCP 工具的固定接口路径。
@@ -274,7 +272,6 @@ namespace tuntun::backend_internal
     constexpr int kNotificationSourceWeather = 2;
     constexpr int kNotificationSourceMemo = 3;
     constexpr int kNotificationSourceCustomReminder = 4;
-    constexpr int kNotificationSourceDailyNewsBriefing = 5;
     constexpr int kNotificationAckReceived = 1;
     constexpr int kNotificationAckDeferred = 2;
     constexpr int kNotificationAckPlaying = 3;
