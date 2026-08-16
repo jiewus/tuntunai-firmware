@@ -41,6 +41,7 @@ idf_component_register(
         main
         esp_driver_i2c
         esp_driver_spi
+        esp_driver_ledc
         esp_psram
         espressif__esp_lcd_st77916
         espressif__esp_codec_dev

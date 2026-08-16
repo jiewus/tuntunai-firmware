@@ -67,7 +67,7 @@ idf_component_register(
         espressif__esp_audio_codec
         espressif__esp_audio_effects
         espressif__esp-sr
-        json
+        cjson
         nvs_flash
         esp_driver_gpio
         esp_driver_i2s

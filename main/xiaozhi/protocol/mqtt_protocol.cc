@@ -221,11 +221,39 @@ bool MqttProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
     encrypted.resize(aes_nonce_.size() + packet->payload.size());
     memcpy(encrypted.data(), nonce.data(), nonce.size());
 
-    size_t nc_off = 0;
-    uint8_t stream_block[16] = {0};
-    if (mbedtls_aes_crypt_ctr(&aes_ctx_, packet->payload.size(), &nc_off, (uint8_t*)nonce.c_str(), stream_block,
-        (uint8_t*)packet->payload.data(), (uint8_t*)&encrypted[nonce.size()]) != 0) {
-        ESP_LOGE(TAG, "加密上行音频数据失败");
+    if (aes_key_id_ == 0) {
+        ESP_LOGE(TAG, "AES 密钥尚未初始化，无法加密上行音频");
+        return false;
+    }
+    // 用本包独立的 nonce 作为 IV，对 Opus 负载做一次 AES-CTR 加密（PSA Crypto）。
+    psa_cipher_operation_t operation = psa_cipher_operation_init();
+    psa_status_t cipher_status = PSA_SUCCESS;
+    cipher_status = psa_cipher_encrypt_setup(
+        &operation, aes_key_id_, PSA_ALG_CTR);
+    if (cipher_status == PSA_SUCCESS) {
+        cipher_status = psa_cipher_set_iv(
+            &operation, reinterpret_cast<const unsigned char*>(nonce.data()), aes_nonce_.size());
+    }
+    size_t encrypted_len = 0;
+    if (cipher_status == PSA_SUCCESS) {
+        cipher_status = psa_cipher_update(
+            &operation,
+            reinterpret_cast<const unsigned char*>(packet->payload.data()),
+            packet->payload.size(),
+            reinterpret_cast<unsigned char*>(&encrypted[nonce.size()]),
+            packet->payload.size(),
+            &encrypted_len);
+    }
+    if (cipher_status == PSA_SUCCESS) {
+        cipher_status = psa_cipher_finish(
+            &operation,
+            reinterpret_cast<unsigned char*>(&encrypted[nonce.size()]) + encrypted_len,
+            packet->payload.size() - encrypted_len,
+            &encrypted_len);
+    }
+    psa_cipher_abort(&operation);
+    if (cipher_status != PSA_SUCCESS) {
+        ESP_LOGE(TAG, "加密上行音频数据失败，错误码=%ld", static_cast<long>(cipher_status));
         return false;
     }
 
@@ -328,8 +356,6 @@ bool MqttProtocol::OpenAudioChannel() {
         }
 
         size_t decrypted_size = data.size() - aes_nonce_.size();
-        size_t nc_off = 0;
-        uint8_t stream_block[16] = {0};
         auto nonce = (uint8_t*)data.data();
         auto encrypted = (uint8_t*)data.data() + aes_nonce_.size();
         auto packet = std::make_unique<AudioStreamPacket>();
@@ -337,9 +363,29 @@ bool MqttProtocol::OpenAudioChannel() {
         packet->frame_duration = server_frame_duration_;
         packet->timestamp = timestamp;
         packet->payload.resize(decrypted_size);
-        int ret = mbedtls_aes_crypt_ctr(&aes_ctx_, decrypted_size, &nc_off, nonce, stream_block, encrypted, (uint8_t*)packet->payload.data());
-        if (ret != 0) {
-            ESP_LOGE(TAG, "解密下行音频数据失败，错误码=%d", ret);
+        psa_cipher_operation_t operation = psa_cipher_operation_init();
+        psa_status_t cipher_status = psa_cipher_decrypt_setup(
+            &operation, aes_key_id_, PSA_ALG_CTR);
+        if (cipher_status == PSA_SUCCESS) {
+            cipher_status = psa_cipher_set_iv(&operation, nonce, aes_nonce_.size());
+        }
+        size_t decrypted_len = 0;
+        if (cipher_status == PSA_SUCCESS) {
+            cipher_status = psa_cipher_update(
+                &operation, encrypted, decrypted_size,
+                reinterpret_cast<unsigned char*>(packet->payload.data()), decrypted_size,
+                &decrypted_len);
+        }
+        if (cipher_status == PSA_SUCCESS) {
+            cipher_status = psa_cipher_finish(
+                &operation,
+                reinterpret_cast<unsigned char*>(packet->payload.data()) + decrypted_len,
+                decrypted_size - decrypted_len,
+                &decrypted_len);
+        }
+        psa_cipher_abort(&operation);
+        if (cipher_status != PSA_SUCCESS) {
+            ESP_LOGE(TAG, "解密下行音频数据失败，错误码=%ld", static_cast<long>(cipher_status));
             return;
         }
         if (on_incoming_audio_ != nullptr) {
@@ -424,13 +470,20 @@ void MqttProtocol::ParseServerHello(const cJSON* root) {
     }
 
     aes_nonce_ = decoded_nonce;
-    mbedtls_aes_init(&aes_ctx_);
-    const int aes_result = mbedtls_aes_setkey_enc(
-        &aes_ctx_,
+    // ESP-IDF 6.0 起用 PSA Crypto 导入 AES-128 密钥，替代已迁移走的 mbedtls_aes_setkey_enc。
+    psa_key_attributes_t key_attributes = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_usage_flags(&key_attributes, PSA_KEY_USAGE_ENCRYPT | PSA_KEY_USAGE_DECRYPT);
+    psa_set_key_algorithm(&key_attributes, PSA_ALG_CTR);
+    psa_set_key_type(&key_attributes, PSA_KEY_TYPE_AES);
+    psa_set_key_bits(&key_attributes, 128);
+    const psa_status_t psa_status = psa_import_key(
+        &key_attributes,
         reinterpret_cast<const unsigned char*>(decoded_key.data()),
-        128);
-    if (aes_result != 0) {
-        ESP_LOGE(TAG, "初始化 AES 密钥失败，错误码=%d", aes_result);
+        decoded_key.size(),
+        &aes_key_id_);
+    if (psa_status != PSA_SUCCESS) {
+        ESP_LOGE(TAG, "初始化 AES 密钥失败，错误码=%ld", static_cast<long>(psa_status));
+        aes_key_id_ = 0;
         return;
     }
     local_sequence_ = 0;

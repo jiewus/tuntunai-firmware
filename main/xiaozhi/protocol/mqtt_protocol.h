@@ -6,7 +6,9 @@
 #include <mqtt.h>
 #include <udp.h>
 #include <cJSON.h>
-#include <mbedtls/aes.h>
+// ESP-IDF 6.0 起 mbedTLS 迁移到 tf-psa-crypto，legacy mbedtls_aes_crypt_ctr/AES 公共头
+// 已被移除。此处改用 PSA Crypto 的 psa_cipher_* 实现 AES-CTR 音频加密（API 等价）。
+#include <psa/crypto.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
 #include <esp_timer.h>
@@ -77,7 +79,8 @@ private:
     std::mutex channel_mutex_;
     std::unique_ptr<Mqtt> mqtt_;
     std::unique_ptr<Udp> udp_;
-    mbedtls_aes_context aes_ctx_;
+    /** @brief 导入的 AES-128 密钥的 PSA 句柄；未导入时为 0。 */
+    psa_key_id_t aes_key_id_ = 0;
     std::string aes_nonce_;
     std::string udp_server_;
     int udp_port_;
