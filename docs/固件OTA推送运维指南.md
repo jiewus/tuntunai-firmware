@@ -14,7 +14,9 @@
 
 设备**每次开机**（或重启后进入主流程）调用一次 `CheckNewVersion()`：
 - 位置：`main/app/application.cc::CheckNewVersion()`
-- 向 `CONFIG_OTA_URL`（默认 `https://your-ota.example.com/xiaozhi/ota/`，也可通过 NVS 键 `wifi/ota_url` 覆盖）发 **POST**，请求体是设备系统信息 JSON（`Board::GetSystemInfoJson()`）。
+- 向 `CONFIG_OTA_URL` 配置的版本检查接口（开源默认指向公开 OTA 服务，例如
+  `https://your-ota.example.com/xiaozhi/ota/`，也可通过 NVS 键 `wifi/ota_url` 覆盖）发 **POST**，
+  请求体是设备系统信息 JSON（`Board::GetSystemInfoJson()`）。
 - 失败最多重试 10 次、指数退避（初始 10s）。成功后若发现新版本则立即进入升级；无新版本则确认当前分区有效并进入正常流程。
 
 ### 1.2 服务器返回协议
@@ -110,7 +112,7 @@ python scripts/release.py movecall-moji2-esp32c5
 
 ### 方式 A：直接改 OTA 服务返回（最简单，设备开机自升）
 
-如果你的 `your-ota.example.com/xiaozhi/ota/` 或你自建的 OTA 服务，是按设备上报的版本动态返回 `firmware` 的，那么**只需在服务端数据库/配置里把目标设备组的新版本 URL 配好**，无需改设备。设备下次开机检查到 `firmware.version` 高于当前即自动下载升级。
+如果你的 OTA 服务（默认 `CONFIG_OTA_URL`；自建或第三方均可）是按设备上报的版本动态返回 `firmware` 的，那么**只需在服务端数据库/配置里把目标设备组的新版本 URL 配好**，无需改设备。设备下次开机检查到 `firmware.version` 高于当前即自动下载升级。
 
 关键字段就是你希望这批设备统一升到的版本号与 `firmware.url`。
 

@@ -51,6 +51,12 @@ python scripts/build.py movecall-moji2-esp32c5 flash-monitor -p /dev/cu.usbmodem
 
 硬件和固件设计说明位于 `docs/hardware` 与 `docs/firmware`。
 
+## 许可与致谢
+
+本固件基于 [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) v2.2.6 裁剪，
+代码采用 MIT 许可（见 [LICENSE](LICENSE)）。上游、字体/表情素材与第三方组件的
+许可明细见 [CREDITS.md](CREDITS.md)。
+
 ## 囤囤AI平台接入
 
 固件内置 MCP 工具 `self.tuntun.bind_device`。用户唤醒小智并明确提出“绑定囤囤AI平台”

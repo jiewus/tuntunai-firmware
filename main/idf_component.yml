@@ -9,5 +9,6 @@ dependencies:
   78/xiaozhi-fonts: ~1.6.0
   espressif/esp-sr: ~2.4.7
   idf:
-    # 主线已迁移到 ESP-IDF 6.0；依赖版本与官方对齐，支持 ESP-IDF 6.x 与 5.5.x。
-    version: ">=5.5.2"
+    # 本仓库只在 ESP-IDF 6.0.2 适配并真机验证；5.5.x 因组件与 LCD 结构体差异无法编译，
+    # 6.1+ 未验证。用 ~6.0.2 让组件管理器在错误环境下快速报错，而不是等到编译期。
+    version: "~6.0.2"

@@ -9,4 +9,5 @@ dependencies:
   esp_lvgl_port: ~2.7.2
   espressif/esp_new_jpeg: ^0.6.1
   espressif/esp_image_effects: ^1.0.1
-  idf: ">=5.5.2"
+  # 只支持 ESP-IDF 6.0.2（与主组件保持一致）；5.5.x 无法编译，6.1+ 未验证。
+  idf: "~6.0.2"

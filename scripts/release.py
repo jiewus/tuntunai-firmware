@@ -31,10 +31,9 @@ def find_idf_py() -> str:
             return str(candidate)
 
     sdk_candidates = [
-        Path.home() / ".espressif" / "v5.5.4" / "esp-idf",
+        Path.home() / ".espressif" / "frameworks" / "esp-idf-v6.0.2",
+        Path.home() / ".espressif" / "v6.0.2" / "esp-idf",
         Path.home() / "esp" / "esp-idf",
-        Path.home() / ".espressif" / "frameworks" / "esp-idf-v5.5.2",
-        Path.home() / ".espressif" / "frameworks" / "esp-idf-v5.5.3",
     ]
     installed = [path for path in sdk_candidates if (path / "tools" / "idf.py").exists()]
     if installed:
@@ -44,7 +43,8 @@ def find_idf_py() -> str:
         )
 
     raise RuntimeError(
-        "ESP-IDF SDK is not installed. Install ESP-IDF 5.5.4 before building firmware."
+        "ESP-IDF SDK is not installed. Install ESP-IDF 6.0.2 before building firmware "
+        "(IDF 5.5.x 与本项目组件和结构体不兼容，无法编译)。"
     )
 
 
