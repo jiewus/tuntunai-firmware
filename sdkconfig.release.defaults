@@ -16,6 +16,12 @@ CONFIG_SECURE_FLASH_ENC_ENABLED=y
 CONFIG_SECURE_FLASH_ENCRYPTION_AES128=y
 CONFIG_SECURE_FLASH_ENCRYPTION_MODE_RELEASE=y
 
+# IDF 6.0.2 在启用 Flash 加密时会默认打开 NVS 加密并选择 HMAC 方案
+# （NVS_SEC_HMAC_EFUSE_KEY_ID 默认 -1，编译报 out of range）。Release 模式 Flash
+# 已全盘加密，NVS 数据静态安全由 Flash Encryption 保证，因此关闭 NVS 加密层，
+# 避免占用 eFuse HMAC key block（该块需产线预烧 key，影响量产流程）。
+CONFIG_NVS_ENCRYPTION=n
+
 # 防止安装安全版本更低的历史固件。出现必须禁止回退的漏洞时递增安全版本。
 CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK=y
 CONFIG_BOOTLOADER_APP_SECURE_VERSION=1
