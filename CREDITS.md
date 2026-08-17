@@ -1,13 +1,14 @@
 # CREDITS · 致谢与第三方许可说明
 
-本固件基于 `xiaozhi-esp32` v2.2.6 裁剪并二次开发。除特别说明外，源码遵循根目录
-[LICENSE](LICENSE)（MIT）。以下列出直接上游、内嵌素材与随组件分发的第三方资源的
-许可信息，供开源分发与合规审计使用。
+本固件基于 **阿慕希（MoveCall）Moji2.0 硬件**及其板级固件代码，结合 `xiaozhi-esp32`
+v2.2.6 裁剪并二次开发。除特别说明外，源码遵循根目录 [LICENSE](LICENSE)（MIT）。
+以下列出直接上游、内嵌素材与随组件分发的第三方资源的许可信息，供开源分发与合规审计使用。
 
 ## 直接上游代码
 
 | 项目 | 版本 | 许可 | 说明 |
 | --- | --- | --- | --- |
+| [MoveCall（阿慕希）· moji2-esp32c5 板级固件](https://github.com/MoveCall/xiaozhi-esp32/tree/main/main/boards/movecall-moji2-esp32c5) | — | MIT | Moji2.0 硬件适配的板级驱动与 UI 参考实现，本项目板型代码的演进来源 |
 | [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) | v2.2.6 | MIT | 语音助手框架，本仓库在此基础上裁剪、扩展；根 LICENSE 保留其版权声明 |
 | [xiaozhi-fonts](https://github.com/78/xiaozhi-fonts) | 1.6.0 | MIT | 字体 / 表情资源转换组件，本项目 cbin 字体、图标与表情集合均由其提供 |
 | [esp-wifi-connect](https://github.com/78/esp-wifi-connect) | 3.1.5 | MIT | SoftAP + 网页配网组件，本仓库内嵌于 `components/esp-wifi-connect` |

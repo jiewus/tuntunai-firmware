@@ -1,7 +1,15 @@
 # TuntunLife 多板型语音助手固件
 
-本项目基于 `xiaozhi-esp32` v2.2.6 裁剪。当前已验证
-`movecall-moji2-esp32c5`，构建系统支持通过独立板型目录扩展其他 ESP32 芯片和硬件。
+基于 **阿慕希（MoveCall）Moji2.0 智能语音终端硬件**及其板级固件代码，结合
+[xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 官方代码演进而来，并在此基础上
+开发了囤囤AI平台接入等特有功能。当前已验证 `movecall-moji2-esp32c5` 板型，构建系统
+支持通过独立板型目录扩展其他 ESP32 芯片和硬件。
+
+## 项目起源与致谢
+
+- **硬件设计**：[Moji2.0 · 嘉立创开源硬件平台](https://oshwhub.com/movecall/moji2)
+- **板级固件参考**：[MoveCall（阿慕希）· xiaozhi-esp32 · movecall-moji2-esp32c5 板型](https://github.com/MoveCall/xiaozhi-esp32/tree/main/main/boards/movecall-moji2-esp32c5)
+- **基础框架**：[xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) v2.2.6
 
 ## 硬件
 
@@ -9,6 +17,17 @@
 - ES8311 音频 Codec
 - ST77916 360x360 QSPI LCD
 - 单麦克风、扬声器、WS2812 状态灯
+
+## 特有功能
+
+- **囤囤AI平台接入**：语音绑定设备、语音设置天气位置、备忘录全链路语音操作、
+  动态 MCP 工具下发与代理执行、主动通知（详见[囤囤AI平台接入](#囤囤ai平台接入)）
+- **圆屏交互**：金属黑时钟表盘屏保（本地公历转农历）、天气与备忘录屏保卡片、
+  自定义 MCP 清单表盘
+- **对话与音频优化**：唤醒词打断、播放排空回调、任务优先级调度
+- **多板型构建框架**：板型目录自包含契约（`main/boards/<board>/`），新增板型不改公共代码
+- **安全发布流程**：Secure Boot V2 + Release 模式 Flash Encryption + 防降级，一键打包合并镜像
+- **ESP-IDF 6.0.2 适配**：依赖与 LCD 结构体已按 IDF 6 迁移并真机验证
 
 ## 构建
 
@@ -50,12 +69,6 @@ python scripts/build.py movecall-moji2-esp32c5 flash-monitor -p /dev/cu.usbmodem
 ```
 
 硬件和固件设计说明位于 `docs/hardware` 与 `docs/firmware`。
-
-## 许可与致谢
-
-本固件基于 [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) v2.2.6 裁剪，
-代码采用 MIT 许可（见 [LICENSE](LICENSE)）。上游、字体/表情素材与第三方组件的
-许可明细见 [CREDITS.md](CREDITS.md)。
 
 ## 囤囤AI平台接入
 
@@ -102,3 +115,10 @@ MCP”等问题时，小智会读取设备当前已经加载的动态工具快�
 `menuconfig` 操作修改（接入自有后端时改为自建地址，或留空禁用绑定/天气/备忘录/通知/动态 MCP 能力）。
 完整协议和状态处理见
 [`docs/后端API接入说明.md`](docs/后端API接入说明.md)。
+
+## 许可
+
+代码采用 MIT 许可（见 [LICENSE](LICENSE)），保留上游
+[xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 的版权声明。
+上游项目、[MoveCall（阿慕希）板级固件](https://github.com/MoveCall/xiaozhi-esp32/tree/main/main/boards/movecall-moji2-esp32c5)、
+字体/表情素材与第三方组件的许可明细见 [CREDITS.md](CREDITS.md)。
