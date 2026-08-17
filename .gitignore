@@ -7,6 +7,9 @@ dist/
 out/
 compile_commands.json
 
+# === 本地生成的未使用字体（无代码引用，勿提交） ===
+main/display/fonts/
+
 # === ESP-IDF 依赖与本地状态 ===
 managed_components/
 sdkconfig
