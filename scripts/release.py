@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Build and package a secure release for any board declared under main/boards."""
+"""Build and package a release for any board declared under main/boards.
+
+默认构建安全发布（Secure Boot + Flash 加密 + 防回滚，需签名私钥；
+仅用于已确认量产流程、愿意写入不可逆 eFuse 的设备）。
+加 --no-secure 构建非安全发布：不启用任何安全特性与 eFuse 写入，任何设备可直接烧录。
+"""
 
 import argparse
 import os
@@ -16,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BOARD = "movecall-moji2-esp32c5"
 SECURE_BOOT_SIGNING_KEY = PROJECT_ROOT / "secure_boot_signing_key.pem"
 RELEASE_DEFAULTS = PROJECT_ROOT / "sdkconfig.release.defaults"
+NOSECURE_RELEASE_DEFAULTS = PROJECT_ROOT / "sdkconfig.release.nosecure.defaults"
 
 
 def find_idf_py() -> str:
@@ -75,7 +81,7 @@ def available_boards() -> list[str]:
     return boards
 
 
-def package_firmware(board: str, build_dir: Path) -> Path:
+def package_firmware(board: str, build_dir: Path, suffix: str = "") -> Path:
     """Compress the board's merged image without mixing artifacts from other targets."""
     merged = build_dir / "tuntun-binary.bin"
     if not merged.exists():
@@ -83,28 +89,36 @@ def package_firmware(board: str, build_dir: Path) -> Path:
 
     releases = PROJECT_ROOT / "releases"
     releases.mkdir(exist_ok=True)
-    output = releases / f"v{project_version()}_{board}.zip"
+    output = releases / f"v{project_version()}_{board}{suffix}.zip"
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(merged, arcname="tuntun-binary.bin")
     return output
 
 
-def build(board: str) -> Path:
-    """Build one board with release security defaults and create its merged image."""
-    board_dir, _ = load_board(board)
-    if not SECURE_BOOT_SIGNING_KEY.is_file():
-        raise RuntimeError(
-            "缺少 Secure Boot 签名私钥。请在 Git 之外执行："
-            "espsecure.py generate_signing_key --version 2 --scheme ecdsa256 "
-            "secure_boot_signing_key.pem"
-        )
+def build(board: str, secure: bool = True) -> Path:
+    """Build one board release and create its merged image.
 
-    build_dir = PROJECT_ROOT / "build" / board / "release"
+    secure=True 使用安全发布配置（Secure Boot/Flash 加密/防回滚），要求签名私钥；
+    secure=False 使用非安全发布配置，任何设备可直接烧录、不写 eFuse。
+    """
+    board_dir, _ = load_board(board)
+    if secure:
+        if not SECURE_BOOT_SIGNING_KEY.is_file():
+            raise RuntimeError(
+                "缺少 Secure Boot 签名私钥。请在 Git 之外执行："
+                "espsecure.py generate_signing_key --version 2 --scheme ecdsa256 "
+                "secure_boot_signing_key.pem"
+            )
+        release_defaults, suffix, build_subdir = RELEASE_DEFAULTS, "", "release"
+    else:
+        release_defaults, suffix, build_subdir = NOSECURE_RELEASE_DEFAULTS, "-nosecure", "release-nosecure"
+
+    build_dir = PROJECT_ROOT / "build" / board / build_subdir
     sdkconfig_defaults = ";".join(
         [
             str(PROJECT_ROOT / "sdkconfig.defaults"),
             str(board_dir / "sdkconfig.defaults"),
-            str(RELEASE_DEFAULTS),
+            str(release_defaults),
         ]
     )
     common_args = (
@@ -117,12 +131,14 @@ def build(board: str) -> Path:
     )
     run(*common_args, "build")
     run(*common_args, "merge-bin", "-o", str(build_dir / "tuntun-binary.bin"))
-    return package_firmware(board, build_dir)
+    return package_firmware(board, build_dir, suffix)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("board", nargs="?", default=DEFAULT_BOARD)
+    parser.add_argument("--no-secure", action="store_true",
+                        help="构建非安全发布固件（不启用 Secure Boot / Flash 加密，不写 eFuse）")
     parser.add_argument("--list-boards", action="store_true")
     args = parser.parse_args()
 
@@ -133,7 +149,7 @@ def main() -> None:
             return
         if args.board not in boards:
             parser.error(f"unknown board '{args.board}'; available: {', '.join(boards)}")
-        output = build(args.board)
+        output = build(args.board, secure=not args.no_secure)
     except (RuntimeError, ValueError) as error:
         parser.error(str(error))
     print(f"Firmware package: {output}")

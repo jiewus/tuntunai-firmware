@@ -1,0 +1,8 @@
+# 非安全发布固件配置：用于首个公开版本 / 快速验证，任何设备可直接烧录，
+# 不写入任何不可逆 eFuse（无 Secure Boot / Flash 加密 / 防回滚）。
+# 生产安全发布请继续使用 sdkconfig.release.defaults。
+#
+# 说明：IDF 6.0.2 在启用 Flash 加密时会默认打开 NVS 加密并选 HMAC 方案
+# （KEY_ID 默认 -1 会编译报错）。非安全构建无 Flash 加密，显式关闭 NVS 加密层，
+# 避免该问题，也避免遗留未使用配置。
+CONFIG_NVS_ENCRYPTION=n
