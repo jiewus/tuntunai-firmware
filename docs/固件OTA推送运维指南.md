@@ -58,7 +58,7 @@
 发布固件启用了 **Secure Boot V2** 和 **Flash 加密**，必须有 ECDSA-256 签名私钥，且**每个设备第一批固件都用同一把私钥签名**：
 
 ```bash
-cd ESP32-C5.Firmware
+# 在固件仓库根目录执行（monorepo 中即 ESP32-C5.Firmware/）
 espsecure.py generate_signing_key --version 2 --scheme ecdsa256 secure_boot_signing_key.pem
 ```
 
@@ -154,8 +154,8 @@ python scripts/release.py movecall-moji2-esp32c5
 **第一步：生成当前版本的 merge-bin**
 
 ```bash
+# 在固件仓库根目录执行（monorepo 中即 ESP32-C5.Firmware/）
 source ~/.espressif/v6.0.2/esp-idf/export.sh
-cd ESP32-C5.Firmware
 
 # 方式一（推荐，含安全发布配置、自动 merge 并打包）：
 python scripts/release.py movecall-moji2-esp32c5
