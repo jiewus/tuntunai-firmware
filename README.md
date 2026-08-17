@@ -70,7 +70,7 @@ python scripts/build.py movecall-moji2-esp32c5 menuconfig
 python scripts/build.py movecall-moji2-esp32c5 flash-monitor -p /dev/cu.usbmodemXXXX
 ```
 
-硬件和固件设计说明位于 `docs/hardware` 与 `docs/firmware`。
+固件设计说明位于 `docs/firmware`，完整文档目录见 [docs/README.md](docs/README.md)。
 
 ## 囤囤AI平台接入
 
@@ -115,8 +115,8 @@ MCP”等问题时，小智会读取设备当前已经加载的动态工具快�
 
 默认平台地址为 `https://api.tuntun.life`，通过 `CONFIG_TUNTUN_API_URL` 配置，可用板型构建脚本的
 `menuconfig` 操作修改（接入自有后端时改为自建地址，或留空禁用绑定/天气/备忘录/通知/动态 MCP 能力）。
-完整协议和状态处理见
-[`docs/后端API接入说明.md`](docs/后端API接入说明.md)。
+固件内置 MCP 工具的注册与调用见
+[`docs/mcp-usage_zh.md`](docs/mcp-usage_zh.md) 与 [`docs/mcp-protocol_zh.md`](docs/mcp-protocol_zh.md)。
 
 ## 许可
 
