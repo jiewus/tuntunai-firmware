@@ -5,9 +5,11 @@
 开发了囤囤AI平台接入等特有功能。当前已验证 `movecall-moji2-esp32c5` 板型，构建系统
 支持通过独立板型目录扩展其他 ESP32 芯片和硬件。
 
+![Moji2.0 产品图](docs/images/moji2-product.jpg)
+
 ## 项目起源与致谢
 
-- **硬件设计**：[Moji2.0 · 嘉立创开源硬件平台](https://oshwhub.com/movecall/moji2)
+- **硬件设计**：[Moji 2.0 小智AI桌面机器人5GWi-Fi长续航 · 嘉立创开源硬件平台](https://oshwhub.com/movecall/moji2)
 - **板级固件参考**：[MoveCall（阿慕希）· xiaozhi-esp32 · movecall-moji2-esp32c5 板型](https://github.com/MoveCall/xiaozhi-esp32/tree/main/main/boards/movecall-moji2-esp32c5)
 - **基础框架**：[xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) v2.2.6
 
