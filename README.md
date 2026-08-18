@@ -28,7 +28,6 @@
   自定义 MCP 清单表盘
 - **对话与音频优化**：唤醒词打断、播放排空回调、任务优先级调度
 - **多板型构建框架**：板型目录自包含契约（`main/boards/<board>/`），新增板型不改公共代码
-- **安全发布流程**：Secure Boot V2 + Release 模式 Flash Encryption + 防降级，一键打包合并镜像
 - **ESP-IDF 6.0.2 适配**：依赖与 LCD 结构体已按 IDF 6 迁移并真机验证
 
 ## 构建
@@ -51,17 +50,15 @@ idf.py -B build/movecall-moji2-esp32c5/debug \
 新增板型只需增加 `main/boards/<board>/`，无需修改公共 CMake、Kconfig 或构建脚本。
 板型目录契约见 [main/boards/README.md](main/boards/README.md)。
 
-发布脚本固定启用 Secure Boot V2、Release 模式 Flash Encryption 和固件防降级。首次构建前需要在
-项目根目录生成不会提交到 Git 的 ECDSA-256 签名私钥：
+发布构建使用非安全加固配置（无 Secure Boot / Flash 加密 / 防降级，不写入任何 eFuse），
+任何设备均可直接烧录、随时重刷：
 
 ```bash
-espsecure.py generate_signing_key --version 2 --scheme ecdsa256 secure_boot_signing_key.pem
+python scripts/release.py movecall-moji2-esp32c5
 ```
 
-该私钥必须离线备份，后续 OTA 固件必须继续使用同一私钥签名。发布固件首次启动会写入不可逆 eFuse，
-只能在已经验证量产流程的设备上烧录；普通板型开发构建和开发烧录不会启用这些不可逆发布配置。
-从旧版固件首次升级到安全发布固件时，必须烧录发布脚本生成的完整镜像；只执行应用 OTA 不会更新
-Bootloader 和分区表，也不会启用 Secure Boot 与 Flash Encryption。首次完整烧录会清空原有 NVS 配置。
+产物为 `releases/v<版本>_movecall-moji2-esp32c5.zip`（完整合并镜像，从地址 0x0 烧录）。
+发布构建会清空设备原有 NVS 配置，烧录后需重新配网与绑定。
 
 也可以通过板型构建脚本配置显示样式、资源和调试选项：
 

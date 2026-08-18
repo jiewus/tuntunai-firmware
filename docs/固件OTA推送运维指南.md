@@ -1,7 +1,7 @@
 # 固件 OTA 推送运维指南
 
 本文档说明如何把新固件推送给**所有已联网设备**（OTA 批量升级），包括固件如何检查更新、
-如何发布、如何托管镜像，以及安全加固与回滚注意事项。
+如何发布、如何托管镜像，以及回滚注意事项。
 
 > 适用对象：拥有设备在网、需要灰度/全量推送新固件的管理者。
 > 配套：本项目基于 `xiaozhi-esp32` v2.2.6 的 OTA 机制 + Tuntun 定制，已适配 ESP-IDF 6.0.2。
@@ -53,18 +53,7 @@
 
 ## 2. 发布一个新固件（本地操作）
 
-### 2.1 准备签名私钥（仅首次）
-
-发布固件启用了 **Secure Boot V2** 和 **Flash 加密**，必须有 ECDSA-256 签名私钥，且**每个设备第一批固件都用同一把私钥签名**：
-
-```bash
-# 在固件仓库根目录执行（monorepo 中即 ESP32-C5.Firmware/）
-espsecure.py generate_signing_key --version 2 --scheme ecdsa256 secure_boot_signing_key.pem
-```
-
-> ⚠️ 该私钥**必须离线备份、不要提交到 Git**。后续所有 OTA 固件必须继续用同一私钥签名，否则设备校验失败拒绝升级。此项目生成发布固件时在 `sdkconfig.release.defaults` 里指定 `CONFIG_SECURE_BOOT_SIGNING_KEY="secure_boot_signing_key.pem"`。
-
-### 2.2 更新版本号
+### 2.1 更新版本号
 
 固件版本号取自**工程版本 `PROJECT_VER`**，位于根 `CMakeLists.txt`：
 
@@ -74,25 +63,24 @@ set(PROJECT_VER "1.1.0")   # ← 这里写新版本号
 
 > 版本号必须是点分数字（如 `1.1.0`），设备按数字段比较。**每发布一版都要递增版本号**，否则设备认为无新版本。
 
-### 2.3 构建并打包发布镜像
+### 2.2 构建并打包发布镜像
 
 ```bash
 # 加载 ESP-IDF 6.0.2 环境
 source ~/.espressif/v6.0.2/esp-idf/export.sh
 
-# 构建带安全配置的正式版本并打包
+# 构建正式发布版（非安全加固）并打包
 python scripts/release.py movecall-moji2-esp32c5
 ```
 
 `release.py` 会：
-1. 校验 `secure_boot_signing_key.pem` 存在；
-2. 用 `sdkconfig.defaults + sdkconfig.release.defaults` 以 **release** 模式构建（Secure Boot + Flash 加密 + 签名 App + 双 OTA）；
-3. `idf.py merge-bin` 合并出完整烧录镜像 `tuntun-binary.bin`；
-4. 打包成 `releases/v<PROJECT_VER>_movecall-moji2-esp32c5.zip`。
+1. 用 `sdkconfig.defaults + 板型/sdkconfig.defaults` 以 **release** 模式构建（非安全加固，无 Secure Boot / Flash 加密 / 防回滚）；
+2. `idf.py merge-bin` 合并出完整烧录镜像 `tuntun-binary.bin`；
+3. 打包成 `releases/v<PROJECT_VER>_movecall-moji2-esp32c5.zip`。
 
 **关键区分**：
-- `tuntun-binary.bin`（merge-bin）→ 用于**全新烧录**（含 bootloader + 分区表 + app + 资源），或从非安全旧版**首次升级**。
-- 已联网设备走 **OTA 只需要应用镜像** `build/movecall-moji2-esp32c5/release/xiaozhi.bin`（已签名 App）。OTA 不会更新 bootloader / 分区表 / Secure Boot eFuse。
+- `tuntun-binary.bin`（merge-bin）→ 用于**完整烧录**（含 bootloader + 分区表 + app + 资源）。
+- 已联网设备走 **OTA 只需要应用镜像** `build/movecall-moji2-esp32c5/release/xiaozhi.bin`。OTA 不会更新 bootloader / 分区表。
 
 > 详见 `README.md` 的"发布"一节。
 
@@ -100,7 +88,7 @@ python scripts/release.py movecall-moji2-esp32c5
 
 ## 3. 托管固件镜像（放哪里）
 
-1. 把发布产物中的**已签名应用镜像**（`build/<board>/release/xiaozhi.bin`）上传到任意 **HTTPS 可达、支持 Range/大文件下载** 的静态文件服务器或对象存储（如你已有 OTA 服务的对象存储、S3、OSS、七牛等）。
+1. 把发布产物中的**应用镜像**（`build/<board>/release/xiaozhi.bin`）上传到任意 **HTTPS 可达、支持 Range/大文件下载** 的静态文件服务器或对象存储（如你已有 OTA 服务的对象存储、S3、OSS、七牛等）。
 2. 记下该文件的**完整 HTTPS URL**，这就是要在 `firmware.url` 里填的值。
    - 外部硬件接入时，也建议用一个固定/可预测的 URL 模板，便于批量生成。
 
@@ -139,7 +127,6 @@ python scripts/release.py movecall-moji2-esp32c5
 | **全量推送** | 确认灰度无异常后，OTA 服务对全部设备返回新版本。 |
 | **紧急修复/强制** | `force:1` + 新版本 URL，等设备下次开机升级。 |
 | **回滚错误版本** | 在服务端把 `firmware.version` 指回旧版本号 + 旧镜像 URL（设备会尝试降级）；或 `force:1` 指到目标旧版本。 |
-| **安全发布首次升级** | 从非安全旧版升级到安全正式版，需烧录 `tuntun-binary.bin` 完整镜像（更新 bootloader/分区/启用安全），不能只 OTA 应用镜像；且首次会写入不可逆 eFuse。 |
 
 **高峰注意**：全量推送时所有设备可能同时开机/同时拉镜像，建议用 CDN/对象存储静态 URL + OTA 服务限流或错峰，避免源站打爆。
 
@@ -157,18 +144,19 @@ python scripts/release.py movecall-moji2-esp32c5
 # 在固件仓库根目录执行（monorepo 中即 ESP32-C5.Firmware/）
 source ~/.espressif/v6.0.2/esp-idf/export.sh
 
-# 方式一（推荐，含安全发布配置、自动 merge 并打包）：
+# 方式一（推荐，release.py 自动构建、merge 并打包）：
 python scripts/release.py movecall-moji2-esp32c5
 # 产物：build/movecall-moji2-esp32c5/release/tuntun-binary.bin
 #       以及 releases/v<PROJECT_VER>_movecall-moji2-esp32c5.zip
 
-# 方式二（手动，开发/调试用，不带安全配置）：
+# 方式二（手动，开发/调试用）：
 python scripts/build.py movecall-moji2-esp32c5 build
 idf.py -B build/movecall-moji2-esp32c5/debug \
   -DBOARD_TYPE=movecall-moji2-esp32c5 merge-bin -o merged.bin
 ```
 
-> 注意区分：`release.py` 产出的是**安全发布版** merge-bin（Secure Boot + Flash 加密 + 签名）；`build.py` 产出的是**开发调试版**（无这些不可逆安全配置）。首次从非安全旧版升级到安全正式版时，请务必用 release 版完整镜像。
+> 注意：`release.py` 与 `build.py` 产出的都是**非安全加固**镜像（无 Secure Boot / Flash 加密 / 防回滚）；
+> 区别在于 `release.py` 会按发布偏移 merge 并打包成完整镜像，`build.py` 是开发调试构建。两者均可直接烧录与随时重刷。
 
 **第二步：确认串口并烧录**
 
@@ -200,8 +188,8 @@ python -m esptool --chip esp32c5 -p /dev/cu.usbmodem83101 -b 460800 \
 | --- | --- | --- |
 | 设备显示"已是最新"但没升级 | 服务端 `firmware.version` ≤ 设备当前版本 | 服务端填更高版本号，或 `force:1` |
 | 设备反复失败/拉不到镜像 | `firmware.url` 不可达、非 HTTPS、或静态服务不支持 | 用浏览器直接访问该 URL，确认能下载、证书有效 |
-| 升级后开不了机 | 镜像损坏 / 安全检查失败 | bootloader 自动回滚到旧槽；检查镜像是否用同一私钥正确签名 |
-| OTA 不更新 bootloader/分区 | OTA 只写 App 分区（设计如此） | 结构变更（bootloader/分区/安全）请用完整镜像烧录，或走一次 merge-bin 全量升级 |
+| 升级后开不了机 | 镜像损坏 / 校验失败 | bootloader 自动回滚到旧槽；确认上传的镜像完整、URL 正确后再升级 |
+| OTA 不更新 bootloader/分区 | OTA 只写 App 分区（设计如此） | 结构变更（bootloader/分区）请用完整镜像（merge-bin）烧录 |
 | 版本号 `1.1.0-beta` 无法比较 | 数字段比较遇到非数字 | 版本号只含数字和点号 |
 
 ---
@@ -215,5 +203,5 @@ python -m esptool --chip esp32c5 -p /dev/cu.usbmodem83101 -b 460800 \
 | 设备上报 JSON | `main/boards/common/board.cc::GetSystemInfoJson()` |
 | OTA 接口地址 | Kconfig `OTA_URL`（`main/Kconfig.projbuild`）；NVS 覆盖键 `wifi/ota_url` |
 | 版本号 | 根 `CMakeLists.txt` `set(PROJECT_VER ...)` |
-| 发布打包/安全 | `scripts/release.py` + `sdkconfig.release.defaults` |
+| 发布打包 | `scripts/release.py` |
 | 分区表（双 OTA） | `partitions/v2/16m.csv` |
