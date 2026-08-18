@@ -16,27 +16,23 @@ v2.2.6 裁剪并二次开发。除特别说明外，源码遵循根目录 [LICEN
 
 ## 随组件分发的字体与表情素材
 
-> 说明：本仓库基于上游 **xiaozhi-esp32** 固件体系裁剪与演进，以下字体、表情与图标素材均由该
-> 固件体系（`xiaozhi-fonts` 组件）**引入并继承使用**，并非本项目自主开发。本项目仅沿用了其
-> 字体选择、表情集合与图标字体，未对素材本身做二次创作。
-
 以下素材随 `78/xiaozhi-fonts` 组件（[github.com/78/xiaozhi-fonts](https://github.com/78/xiaozhi-fonts)）下载并嵌入固件，
-各自的来源、许可与使用位置如下：
+各自的引入来源与授权来源如下：
 
-- **阿里巴巴普惠体（Alibaba PuHuiTi）**
-  - **来源**：阿里巴巴设计（Alibaba PuHuiTi，免费商用）。
-  - **使用**：本项目选用的 `font_puhui_*` 系列 cbin 字体（板型 `config.json` 的 `builtin_text_font: "font_puhui_basic_30_4"`）
-    以及板级屏保字体 `puhui3_heavy_24_2.bin` 均由普惠体生成，用于对话界面与表盘屏保的文字渲染。
+- **阿里巴巴普惠体（Alibaba PuHuiTi）——普通版**
+  - **引入来源**：由上游 **xiaozhi-esp32** 固件体系（`xiaozhi-fonts` 组件）引入并继承使用。
+  - **授权来源**：阿里巴巴设计（Alibaba PuHuiTi，免费商用）。
+- **阿里巴巴普惠体（Alibaba PuHuiTi）——粗体（Heavy）**
+  - **引入来源**：**本项目自行引入**（屏保/日期显示专用），素材本体仍为阿里巴巴普惠体。
+  - **授权来源**：阿里巴巴设计（Alibaba PuHuiTi，免费商用）。
 - **Twemoji**
-  - **来源**：© Twitter/X, Inc. and contributors，基于 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。
-  - **使用**：板型 `config.json` 的 `emoji_collection: "twemoji_64"` 选用 64px 集合，经
-    `main/boards/movecall-moji2-esp32c5/display/lvgl_display/emoji_collection.{h,cc}` 的 `Twemoji64` 注册，
-    嵌入资源分区，用于对话界面与界面元素中的表情显示。本文件即履行 CC BY 4.0 署名义务。
+  - **引入来源**：由上游 **xiaozhi-esp32** 固件体系（`xiaozhi-fonts` 组件）引入并继承使用，并非本项目自主开发。
+  - **授权来源**：© Twitter/X, Inc. and contributors，基于 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。
+    本文件即履行 CC BY 4.0 署名义务。
 - **Font Awesome（Free）**
-  - **来源**：Font Awesome，图标基于 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)、
+  - **引入来源**：由上游 **xiaozhi-esp32** 固件体系（`xiaozhi-fonts` 组件）引入并继承使用。
+  - **授权来源**：Font Awesome，图标基于 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)、
     字体基于 [SIL OFL-1.1](https://scripts.sil.org/OFL)。
-  - **使用**：板型 `config.json` 的 `builtin_icon_font: "font_awesome_20_4"` 选用；通过 `<font_awesome.h>`
-    的 `FONT_AWESOME_*` 符号用于状态栏图标（如 `main/boards/common/wifi_board.cc` 中的 Wi-Fi 状态图标等）。
 
 ## 板上内嵌的第三方代码
 
