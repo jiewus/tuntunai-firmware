@@ -168,6 +168,15 @@ public:
     virtual void HideCustomMcpList() {
     }
     /**
+     * @brief 查询自定义 MCP 工具清单表盘当前是否处于激活显示状态。
+     * @return true 表示 MCP 清单表盘正在显示。
+     * @details 该表盘是屏保容器的一种独立形态，直接管理显示层屏保标志但不改写板级屏保状态。
+     * 默认实现返回 false，具体 LCD 实现返回内部 atomic 标志。
+     */
+    virtual bool IsCustomMcpListActive() const {
+        return false;
+    }
+    /**
      * @brief 显示设备绑定码专用页面。
      * @param binding_code 允许用户输入到网页端的短绑定码；为空时页面只显示流程状态。
      * @param message 绑定码下方的操作说明、成功提示或失败原因。

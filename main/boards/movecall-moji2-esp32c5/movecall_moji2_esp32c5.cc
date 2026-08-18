@@ -541,6 +541,17 @@ public:
     virtual void WakeUpScreen(bool user_initiated = false) override {
         if (user_initiated && display_ != nullptr) {
             display_->HideCustomMcpList();
+            /*
+             * 无条件强制隐藏显示层屏保容器，不再受板级 screensaver_active_ 门控。
+             * 自定义 MCP 清单表盘等路径直接置位显示层标志而不改变板级标志，
+             * 此时仅靠 SetScreensaverActive(false) 会因板级标志为 false 而跳过退屏保，
+             * 导致唤醒后屏幕停留在屏保但对话照常进行。SetScreensaverMode(false) 幂等，
+             * 已在隐藏状态时调用无副作用。
+             */
+            display_->SetScreensaverMode(false);
+            ESP_LOGI(TAG, "用户唤醒：强制隐藏屏保容器，board_active=%d, custom_mcp=%d",
+                     screensaver_active_.load(),
+                     display_->IsCustomMcpListActive());
         }
         if (power_save_timer_ != nullptr && (!screensaver_active_ || user_initiated)) {
             power_save_timer_->WakeUp();

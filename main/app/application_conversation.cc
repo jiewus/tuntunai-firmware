@@ -306,9 +306,21 @@ void Application::EndCurrentConversationForLocalPlayback() {
  * @brief 结束当前云端会话并立即进入屏保页面。
  * @details 该方法用于绑定码过期等后台终态。它会在应用主循环中停止语音处理、清空解码器、关闭音频
  * 通道并切换到空闲状态，即使当前已经是空闲状态也会直接显示屏保，避免继续等待普通超时。
+ * 若收尾排队期间用户已发起新会话，则放弃强制收尾，只确保不把屏保盖回对话界面。
  */
 void Application::EndCurrentConversationAndEnterScreensaver() {
     Schedule([this]() {
+        // 先读取状态：若用户已在排队期间唤醒开始新对话，则不再强制结束新会话。
+        const DeviceState current_state = GetDeviceState();
+        if (current_state != kDeviceStateIdle) {
+            enter_screensaver_after_conversation_.store(false);
+            end_conversation_after_speaking_.store(false);
+            Board::GetInstance().WakeUpScreen(true);
+            ESP_LOGI(TAG, "绑定收尾时检测到进行中的会话(state=%d)，跳过强制结束并退出屏保",
+                     static_cast<int>(current_state));
+            return;
+        }
+
         audio_service_.EnableVoiceProcessing(false);
         audio_service_.EnableWakeWordDetection(true);
         audio_service_.ResetDecoder();

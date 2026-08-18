@@ -796,6 +796,8 @@ void LcdDisplay::SetScreensaverMode(bool enabled) {
     }
 
     screensaver_active_ = enabled;
+    ESP_LOGI(TAG, "屏保模式切换：enabled=%d, custom_mcp_list=%d",
+             (int)enabled, custom_mcp_list_active_.load());
     if (enabled) {
         if (conversation_face_timer_ != nullptr) {
             lv_timer_pause(conversation_face_timer_);

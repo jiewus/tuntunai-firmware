@@ -463,6 +463,10 @@ public:
      */
     virtual void HideCustomMcpList() override;
     /**
+     * @brief 查询自定义 MCP 清单表盘当前是否处于激活显示状态。
+     */
+    virtual bool IsCustomMcpListActive() const override;
+    /**
      * @brief 线程安全地显示设备绑定码页面并更新流程说明。
      * @param binding_code 用户需要输入网页端的短绑定码；为空时隐藏绑定码框。
      * @param message 页面底部显示的操作说明或流程结果。

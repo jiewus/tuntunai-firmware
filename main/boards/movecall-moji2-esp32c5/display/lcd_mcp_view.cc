@@ -148,6 +148,13 @@ void LcdDisplay::HideCustomMcpList() {
 }
 
 /**
+ * @brief 查询自定义 MCP 清单表盘当前是否处于激活状态。
+ */
+bool LcdDisplay::IsCustomMcpListActive() const {
+    return custom_mcp_list_active_.load();
+}
+
+/**
  * @brief 更新当前 MCP 单项并在内容视口中垂直居中。
  * @details 超出单项安全高度时使用省略号截断，不启动滚动，确保语音播放期间屏幕保持低负载。
  */
