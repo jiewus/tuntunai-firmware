@@ -44,6 +44,16 @@ public:
     void Start();
 
     /**
+     * @brief 处理囤囤AI业务 API 返回的认证失败。
+     * @param status_code HTTP 状态码；仅401或403会触发处理。
+     * @param access_token 本次请求实际使用的设备 Token。
+     * @details 只有该 Token 仍是当前设备凭据时才安排清理，避免解绑前的旧请求误清除重新绑定后的新凭据。
+     */
+    void HandleApiAuthenticationFailure(
+        int status_code,
+        const std::string& access_token);
+
+    /**
      * @brief 注册由小智大模型调用的设备绑定、天气和自定义提醒工具。
      * @param server 已完成基础工具初始化的设备 MCP 服务器。
      */
@@ -791,6 +801,31 @@ private:
     void SaveDeviceCredential(const std::string& device_id, const std::string& access_token);
 
     /**
+     * @brief 判断给定 Token 是否仍是当前有效设备凭据。
+     * @param access_token 需要和运行内存当前值比较的 Token。
+     * @return 非空且仍与当前设备 Token 一致时返回 true。
+     */
+    bool IsCurrentDeviceCredential(const std::string& access_token);
+
+    /**
+     * @brief 在 Application 主任务中安排一次幂等的设备平台状态清理。
+     * @param expected_access_token 触发清理时观察到的当前设备 Token。
+     * @param reason 不包含敏感信息的清理原因，仅用于串口日志。
+     */
+    void ScheduleDeviceStateClear(
+        const std::string& expected_access_token,
+        const std::string& reason);
+
+    /**
+     * @brief 清除设备本地保存的囤囤AI凭据、业务连接、缓存和运行状态。
+     * @param expected_access_token 只有仍匹配当前设备 Token 时才执行清理。
+     * @param reason 不包含敏感信息的清理原因，仅用于串口日志。
+     */
+    void ClearDeviceState(
+        const std::string& expected_access_token,
+        const std::string& reason);
+
+    /**
      * @brief 记录 Start() 是否已经执行，避免重复加载 NVS。
      */
     bool started_ = false;
@@ -838,6 +873,8 @@ private:
      * @brief 绑定完成后设备访问业务 API 使用的 Bearer Token。
      */
     std::string device_access_token_;
+    /** @brief true 表示设备平台状态清理已经进入 Application 主任务队列。 */
+    std::atomic<bool> device_state_clear_scheduled_{false};
     /**
      * @brief true 表示绑定覆盖页面当前可见，供物理按键优先处理退出操作。
      */

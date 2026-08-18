@@ -437,6 +437,137 @@ void BackendService::LoadBindingState()
 }
 
 /**
+ * @brief 处理业务 API 返回的设备认证失败。
+ * @param status_code HTTP 状态码。
+ * @param access_token 本次请求使用的 Bearer Token。
+ */
+void BackendService::HandleApiAuthenticationFailure(
+    int status_code,
+    const std::string &access_token)
+{
+    if ((status_code != 401 && status_code != 403)
+        || !IsCurrentDeviceCredential(access_token))
+    {
+        return;
+    }
+    ScheduleDeviceStateClear(access_token, "业务 API 返回设备认证失败");
+}
+
+/**
+ * @brief 判断给定 Token 是否仍是当前设备凭据。
+ */
+bool BackendService::IsCurrentDeviceCredential(const std::string &access_token)
+{
+    std::lock_guard<std::mutex> lock(binding_mutex_);
+    return !access_token.empty() && device_access_token_ == access_token;
+}
+
+/**
+ * @brief 把设备平台状态清理安排到 Application 主任务。
+ */
+void BackendService::ScheduleDeviceStateClear(
+    const std::string &expected_access_token,
+    const std::string &reason)
+{
+    if (!IsCurrentDeviceCredential(expected_access_token)
+        || device_state_clear_scheduled_.exchange(true))
+    {
+        return;
+    }
+    Application::GetInstance().Schedule(
+        [this, expected_access_token, reason]()
+        {
+            ClearDeviceState(expected_access_token, reason);
+        });
+}
+
+/**
+ * @brief 清除设备本地全部囤囤AI绑定凭据和关联运行状态。
+ */
+void BackendService::ClearDeviceState(
+    const std::string &expected_access_token,
+    const std::string &reason)
+{
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        if (expected_access_token.empty()
+            || device_access_token_ != expected_access_token)
+        {
+            device_state_clear_scheduled_.store(false);
+            return;
+        }
+        binding_code_.clear();
+        binding_session_token_.clear();
+        device_id_.clear();
+        device_access_token_.clear();
+        binding_page_dismissed_ = false;
+    }
+
+    Settings settings(kSettingsNamespace, true);
+    settings.EraseKey(kBindingCodeKey);
+    settings.EraseKey(kBindingTokenKey);
+    settings.EraseKey(kDeviceIdKey);
+    settings.EraseKey(kDeviceTokenKey);
+
+    StopHeartbeatPublishing();
+    notification_reconnect_requested_.store(false);
+    notification_reconnect_delay_seconds_.store(kNotificationReconnectInitialSeconds);
+    if (notification_reconnect_timer_ != nullptr)
+    {
+        esp_timer_stop(notification_reconnect_timer_);
+    }
+    std::unique_ptr<Mqtt> mqtt;
+    {
+        std::lock_guard<std::mutex> lock(notification_mutex_);
+        active_notification_mqtt_.store(nullptr);
+        heartbeat_topic_.clear();
+        mqtt = std::move(notification_mqtt_);
+        pending_notification_ = PendingNotification{};
+        notification_hints_.fill(NotificationHint{});
+        notification_hint_head_ = 0;
+        notification_hint_tail_ = 0;
+        notification_hint_count_ = 0;
+    }
+    if (mqtt != nullptr)
+    {
+        mqtt->Disconnect();
+    }
+    notification_playback_interrupted_.store(true);
+
+    {
+        std::lock_guard<std::mutex> lock(weather_mutex_);
+        weather_snapshot_ = WeatherSnapshot{};
+        weather_last_success_us_ = 0;
+    }
+    weather_refresh_requested_.store(false);
+
+    if (pending_reminder_retry_timer_ != nullptr)
+    {
+        esp_timer_stop(pending_reminder_retry_timer_);
+    }
+    {
+        std::lock_guard<std::mutex> lock(pending_reminder_mutex_);
+        pending_reminder_snapshot_ = PendingReminderSnapshot{};
+        pending_reminder_last_success_us_ = 0;
+        pending_reminder_retry_index_ = 0;
+    }
+    pending_reminder_refresh_requested_.store(false);
+    pending_reminder_retry_pending_.store(false);
+    pending_reminder_retry_due_.store(false);
+
+    {
+        std::lock_guard<std::mutex> lock(dynamic_mcp_mutex_);
+        mcp_manifest_refresh_requested_ = false;
+    }
+    ClearDynamicTools();
+    HideBindingPage();
+    ShowWeatherStatusIfUnavailable("");
+    ShowPendingReminderStatusIfUnavailable(kUnboundPendingReminderPrompt);
+    device_state_clear_scheduled_.store(false);
+    ESP_LOGW(kTag, "已清除囤囤AI设备绑定和业务状态，原因=%s", reason.c_str());
+}
+
+/**
  * @brief 保存当前有效绑定码和会话 Token。
  * @param binding_code 屏幕显示数字码。
  * @param session_token 私有绑定会话 Token。

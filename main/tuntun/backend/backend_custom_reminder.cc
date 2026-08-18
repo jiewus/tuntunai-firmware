@@ -600,6 +600,10 @@ void BackendService::RunPendingReminderSync()
         + "?page_index=1&page_size=" + std::to_string(kMaximumScreensaverPendingReminderCount);
     const HttpResponse response = SendJsonRequest(
         "GET", path.c_str(), access_token, "", kCustomReminderResponseMaxBytes);
+    if (!IsCurrentDeviceCredential(access_token))
+    {
+        return;
+    }
     cJSON *root = nullptr;
     cJSON *data = nullptr;
     std::string response_message;
@@ -668,7 +672,12 @@ void BackendService::RunPendingReminderSync()
 
     snapshot.valid = true;
     {
-        std::lock_guard<std::mutex> lock(pending_reminder_mutex_);
+        std::lock_guard<std::mutex> binding_lock(binding_mutex_);
+        if (device_access_token_ != access_token)
+        {
+            return;
+        }
+        std::lock_guard<std::mutex> reminder_lock(pending_reminder_mutex_);
         pending_reminder_snapshot_ = snapshot;
         pending_reminder_last_success_us_ = esp_timer_get_time();
     }

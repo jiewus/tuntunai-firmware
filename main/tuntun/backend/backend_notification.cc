@@ -129,6 +129,10 @@ void BackendService::RunNotificationSync()
         access_token,
         "",
         kNotificationResponseMaxBytes);
+    if (!IsCurrentDeviceCredential(access_token))
+    {
+        return;
+    }
     if (!response.transport_succeeded || response.status_code != 200)
     {
         ESP_LOGW(kTag, "主动通知同步失败，HTTP状态码=%d", response.status_code);
@@ -325,6 +329,10 @@ bool BackendService::ConnectNotificationMqtt()
         access_token,
         "",
         kNotificationResponseMaxBytes);
+    if (!IsCurrentDeviceCredential(access_token))
+    {
+        return false;
+    }
     if (!response.transport_succeeded || response.status_code != 200)
     {
         ESP_LOGW(kTag, "业务EMQX配置获取失败，HTTP状态码=%d", response.status_code);
@@ -389,6 +397,23 @@ bool BackendService::ConnectNotificationMqtt()
         cJSON *revision = message_root == nullptr
             ? nullptr
             : cJSON_GetObjectItemCaseSensitive(message_root, "revision");
+        const bool device_unbound = cJSON_IsString(type)
+            && std::strcmp(type->valuestring, "device.unbound") == 0
+            && cJSON_IsNumber(revision)
+            && revision->valueint == 1;
+        if (device_unbound)
+        {
+            cJSON_Delete(message_root);
+            std::string access_token;
+            {
+                std::lock_guard<std::mutex> lock(binding_mutex_);
+                access_token = device_access_token_;
+            }
+            ESP_LOGW(kTag, "收到平台设备解绑消息，准备清除本地绑定状态");
+            ScheduleDeviceStateClear(access_token, "收到平台设备解绑消息");
+            return;
+        }
+
         const bool reminder_changed = cJSON_IsString(type)
             && std::strcmp(type->valuestring, "custom-reminder.changed") == 0
             && cJSON_IsNumber(revision)
@@ -505,12 +530,23 @@ bool BackendService::ConnectNotificationMqtt()
         return false;
     }
     std::unique_ptr<Mqtt> previous_mqtt;
+    bool credential_is_current = false;
     {
-        std::lock_guard<std::mutex> lock(notification_mutex_);
-        previous_mqtt = std::move(notification_mqtt_);
-        notification_mqtt_ = std::move(mqtt);
-        active_notification_mqtt_.store(notification_mqtt_.get());
-        heartbeat_topic_ = heartbeat_topic;
+        std::lock_guard<std::mutex> binding_lock(binding_mutex_);
+        credential_is_current = device_access_token_ == access_token;
+        if (credential_is_current)
+        {
+            std::lock_guard<std::mutex> notification_lock(notification_mutex_);
+            previous_mqtt = std::move(notification_mqtt_);
+            notification_mqtt_ = std::move(mqtt);
+            active_notification_mqtt_.store(notification_mqtt_.get());
+            heartbeat_topic_ = heartbeat_topic;
+        }
+    }
+    if (!credential_is_current)
+    {
+        mqtt->Disconnect();
+        return false;
     }
     if (previous_mqtt != nullptr)
     {
@@ -775,6 +811,7 @@ bool BackendService::StreamNotificationAudio(
     }
 
     const int status_code = http->GetStatusCode();
+    HandleApiAuthenticationFailure(status_code, access_token);
     if (status_code != 200)
     {
         ESP_LOGW(kTag, "通知音频响应无效，HTTP状态码=%d", status_code);
@@ -795,6 +832,11 @@ bool BackendService::StreamNotificationAudio(
     while (true)
     {
         if (notification_playback_interrupted_.load())
+        {
+            http->Close();
+            return false;
+        }
+        if (!IsCurrentDeviceCredential(access_token))
         {
             http->Close();
             return false;

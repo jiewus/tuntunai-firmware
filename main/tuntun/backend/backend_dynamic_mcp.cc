@@ -109,6 +109,10 @@ void BackendService::RunMcpManifestSync()
         access_token,
         "",
         kMcpManifestResponseMaxBytes);
+    if (!IsCurrentDeviceCredential(access_token))
+    {
+        return;
+    }
     if (response.status_code == 401 || response.status_code == 403)
     {
         ESP_LOGW(kTag, "MCP 清单认证失败，HTTP 状态码=%d", response.status_code);
@@ -225,8 +229,12 @@ void BackendService::RunMcpManifestSync()
 
     Application::GetInstance().Schedule(
         [this, manifest_revision, definitions = std::move(definitions),
-         summaries = std::move(summaries)]() mutable
+         summaries = std::move(summaries), access_token]() mutable
         {
+            if (!IsCurrentDeviceCredential(access_token))
+            {
+                return;
+            }
             if (!McpServer::GetInstance().ReplaceDynamicTools(std::move(definitions)))
             {
                 ESP_LOGE(kTag, "MCP 清单安装失败，修订号=%lu",

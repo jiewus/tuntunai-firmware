@@ -452,6 +452,9 @@ namespace tuntun::backend_internal
             http->Close();
             return response;
         }
+        BackendService::GetInstance().HandleApiAuthenticationFailure(
+            response.status_code,
+            bearer_token);
         const size_t declared_body_length = http->GetBodyLength();
         if (declared_body_length > maximum_response_bytes)
         {

@@ -212,6 +212,10 @@ void BackendService::RunWeatherSync()
     const HttpResponse response = SendJsonRequest(
         "GET", kWeatherPath, access_token, "", kMaxApiResponseBytes,
         kWeatherHttpTimeoutMs);
+    if (!IsCurrentDeviceCredential(access_token))
+    {
+        return;
+    }
     cJSON *root = nullptr;
     cJSON *data = nullptr;
     std::string response_message;
@@ -244,7 +248,12 @@ void BackendService::RunWeatherSync()
 
     snapshot.valid = true;
     {
-        std::lock_guard<std::mutex> lock(weather_mutex_);
+        std::lock_guard<std::mutex> binding_lock(binding_mutex_);
+        if (device_access_token_ != access_token)
+        {
+            return;
+        }
+        std::lock_guard<std::mutex> weather_lock(weather_mutex_);
         weather_snapshot_ = snapshot;
         weather_last_success_us_ = esp_timer_get_time();
     }
