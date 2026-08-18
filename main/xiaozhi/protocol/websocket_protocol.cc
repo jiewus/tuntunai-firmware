@@ -101,7 +101,8 @@ bool WebsocketProtocol::SendText(const std::string& text) {
     }
 
     if (!websocket_->Send(text)) {
-        ESP_LOGE(TAG, "发送小智 WebSocket 文本失败，内容=%s", text.c_str());
+        ESP_LOGE(TAG, "发送小智 WebSocket 文本失败，字节数=%u",
+                 static_cast<unsigned>(text.size()));
         SetError(Lang::Strings::SERVER_ERROR);
         return false;
     }
@@ -255,7 +256,8 @@ bool WebsocketProtocol::OpenAudioChannel() {
                     }
                 }
             } else {
-                ESP_LOGE(TAG, "小智 WebSocket 消息缺少类型，内容=%s", std::string(data, len).c_str());
+                ESP_LOGE(TAG, "小智 WebSocket 消息缺少类型，字节数=%u",
+                         static_cast<unsigned>(len));
             }
             cJSON_Delete(root);
         }
@@ -269,7 +271,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
         }
     });
 
-    ESP_LOGI(TAG, "正在连接小智 WebSocket 服务，地址=%s，协议版本=%d", url.c_str(), version_);
+    ESP_LOGI(TAG, "正在连接小智 WebSocket 服务，协议版本=%d", version_);
     if (!websocket_->Connect(url.c_str())) {
         ESP_LOGE(TAG, "连接小智 WebSocket 服务失败，错误码=%d", websocket_->GetLastError());
         SetError(Lang::Strings::SERVER_NOT_CONNECTED);

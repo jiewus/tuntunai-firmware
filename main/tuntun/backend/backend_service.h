@@ -19,15 +19,15 @@ class McpServer;
 
 /**
  * @file backend_service.h
- * @brief 囤囤AI业务 API 的设备绑定、天气、备忘录、自定义提醒和动态 MCP 能力入口。
+ * @brief 囤囤AI业务 API 的设备绑定、天气、自定义提醒和动态 MCP 能力入口。
  */
 
 /**
  * @brief 管理固件与囤囤AI后端之间的异步业务流程。
  *
- * 当前版本实现设备绑定码申请、状态轮询、设备 Token 领取、绑定页面联动、屏保天气与备忘录
- * 同步、备忘录与自定义提醒语音管理、内置和动态 MCP 工具执行，以及主动通知同步和语音播放。
- * 天气、备忘录、MCP、自定义提醒和通知的非实时后端请求统一由一个常驻 Worker 串行调度。
+ * 当前版本实现设备绑定码申请、状态轮询、设备 Token 领取、绑定页面联动、屏保天气与待办提醒
+ * 同步、自定义提醒语音管理、内置和动态 MCP 工具执行，以及主动通知同步和语音播放。
+ * 天气、自定义提醒、MCP 和通知的非实时后端请求统一由一个常驻 Worker 串行调度。
  */
 class BackendService {
 public:
@@ -44,7 +44,7 @@ public:
     void Start();
 
     /**
-     * @brief 注册由小智大模型调用的设备绑定、天气、备忘录和自定义提醒工具。
+     * @brief 注册由小智大模型调用的设备绑定、天气和自定义提醒工具。
      * @param server 已完成基础工具初始化的设备 MCP 服务器。
      */
     void RegisterMcpTools(McpServer& server);
@@ -68,7 +68,7 @@ public:
     void OnMcpDisconnected();
 
     /**
-     * @brief 根据屏保可见状态启停按需天气和备忘录同步。
+     * @brief 根据屏保可见状态启停按需天气和待办提醒同步。
      * @param active true 表示屏保已经显示；false 表示屏保已经退出。
      * @details 进入屏保后优先显示内存中的最近天气；缓存过期且网络与设备凭据可用时把请求
      * 加入常驻 Worker。退出屏保后不再创建请求，已经发出的请求允许安全收尾并缓存结果。
@@ -138,15 +138,6 @@ private:
         bool is_error)>;
 
     /**
-     * @brief 备忘录语音工具完成后的轻量结果回调。
-     * @param message 返回给小智模型的中文创建、查询、修改、删除或统计结果。
-     * @param is_error true 表示备忘录操作未成功完成。
-     */
-    using MemoCompletion = std::function<void(
-        const std::string& message,
-        bool is_error)>;
-
-    /**
      * @brief 自定义提醒语音工具完成后的轻量结果回调。
      * @param message 返回给小智模型的中文操作结果。
      * @param is_error true 表示自定义提醒操作未成功完成。
@@ -154,17 +145,6 @@ private:
     using CustomReminderCompletion = std::function<void(
         const std::string& message,
         bool is_error)>;
-
-    /**
-     * @brief 定义共享备忘录 Worker 当前执行的语音操作。
-     */
-    enum class MemoToolOperation : uint8_t {
-        Create,
-        Query,
-        Update,
-        Delete,
-        Statistics
-    };
 
     /** @brief 定义共享后端 Worker 当前执行的自定义提醒语音操作。 */
     enum class CustomReminderToolOperation : uint8_t {
@@ -180,9 +160,8 @@ private:
     enum class BackendJobType : uint8_t {
         McpManifest,
         DynamicTool,
-        MemoTool,
         CustomReminderTool,
-        MemoSync,
+        PendingReminderSync,
         WeatherSync,
         WeatherLocation,
         WeatherAnnouncement,
@@ -260,44 +239,6 @@ private:
         std::string announcement_time;
         /** @brief 设置完成后回复原 MCP 调用的一次性回调。 */
         WeatherLocationCompletion completion;
-    };
-
-    /**
-     * @brief 传递给备忘录语音工具 Worker 的强类型调用参数。
-     */
-    struct MemoToolTaskContext {
-        /**
-         * @brief 指向固件生命周期内唯一的后端服务实例。
-         */
-        BackendService* service = nullptr;
-        /**
-         * @brief 本次需要执行的创建、查询或统计操作。
-         */
-        MemoToolOperation operation = MemoToolOperation::Query;
-        /**
-         * @brief 创建或修改操作使用的备忘录正文。
-         */
-        std::string content;
-        /**
-         * @brief 修改或删除操作使用的后端备忘录唯一编号。
-         */
-        std::string memo_id;
-        /**
-         * @brief 创建或修改操作使用的 RFC 3339 提醒时间；空字符串表示没有提醒时间。
-         */
-        std::string remind_at;
-        /**
-         * @brief 查询或修改使用的状态值；查询时 0 表示全部，1、2 表示未完成、已完成。
-         */
-        int status = 1;
-        /**
-         * @brief 查询操作使用的时间范围；0 至 4 分别表示不限、今天、明天、本周、未到期。
-         */
-        int time_range = 0;
-        /**
-         * @brief HTTP 操作结束后回复原始 MCP tools/call 的一次性回调。
-         */
-        MemoCompletion completion;
     };
 
     /** @brief 传递给自定义提醒语音工具 Worker 的强类型调用参数。 */
@@ -378,15 +319,15 @@ private:
     };
 
     /**
-     * @brief 保存最近一次成功同步且已经完成边界校验的屏保备忘录。
+     * @brief 保存最近一次成功同步且已经完成边界校验的屏保待办提醒。
      */
-    struct MemoSnapshot {
+    struct PendingReminderSnapshot {
         /**
          * @brief true 表示 contents 是后端最近一次成功返回的权威列表，包括空列表。
          */
         bool valid = false;
         /**
-         * @brief 已按提醒时间排序的屏保文本，首行为时间，后续为正文，最多保存前 5 条。
+         * @brief 已按提醒时间筛选的屏保文本，首行为时间，后续为正文，最多保存前 5 条。
          */
         std::vector<std::string> contents;
     };
@@ -419,7 +360,7 @@ private:
         std::string delivery_id;
         /** @brief 设备页面显示文本。 */
         std::string display_text;
-        /** @brief MCP 名称、天气播报、备忘录提醒或自定义提醒。 */
+        /** @brief MCP 名称、天气播报或自定义提醒。 */
         std::string source_title;
         /** @brief 1直接播报，2询问后播报。 */
         int notification_mode = 1;
@@ -480,12 +421,10 @@ private:
     void ExecuteMcpManifestJob();
     /** @brief 执行动态 MCP 工具任务并释放任务上下文。 */
     void ExecuteDynamicToolJob(DynamicToolTaskContext* context);
-    /** @brief 执行备忘录语音任务并释放任务上下文。 */
-    void ExecuteMemoToolJob(MemoToolTaskContext* context);
     /** @brief 执行自定义提醒语音任务并释放任务上下文。 */
     void ExecuteCustomReminderToolJob(CustomReminderToolTaskContext* context);
-    /** @brief 执行备忘录屏保同步任务。 */
-    void ExecuteMemoSyncJob();
+    /** @brief 执行屏保待办提醒同步任务。 */
+    void ExecutePendingReminderSyncJob();
     /** @brief 执行天气屏保同步任务。 */
     void ExecuteWeatherSyncJob();
     /** @brief 执行天气城市设置任务并释放任务上下文。 */
@@ -610,19 +549,6 @@ private:
     void ClearDynamicTools();
 
     /**
-     * @brief 把一个备忘录语音操作加入常驻后端 Worker。
-     * @param context 包含操作类型、输入参数和最终结果回调的任务上下文。
-     * @details 屏保同步和语音操作共用一个任务槽，避免多个备忘录 HTTPS 请求同时占用内存。
-     */
-    void StartMemoToolTask(MemoToolTaskContext* context);
-
-    /**
-     * @brief 根据任务操作调用创建、列表、修改、删除或统计接口，并生成中文结果。
-     * @param context 已完成固件边界校验的语音工具任务上下文。
-     */
-    void RunMemoToolTask(MemoToolTaskContext& context);
-
-    /**
      * @brief 把一个自定义提醒语音操作加入常驻后端 Worker。
      * @param context 包含操作类型、输入参数和最终结果回调的任务上下文。
      */
@@ -635,27 +561,27 @@ private:
     void RunCustomReminderToolTask(CustomReminderToolTaskContext& context);
 
     /**
-     * @brief 在满足屏保、网络、凭据和缓存条件时把备忘录同步加入常驻后端 Worker。
+     * @brief 在满足屏保、网络、凭据和缓存条件时把待办提醒同步加入常驻后端 Worker。
      * @param force_refresh true 忽略最近成功时间；false 遵守本地缓存新鲜周期。
      */
-    void StartMemoSync(bool force_refresh);
+    void StartPendingReminderSync(bool force_refresh);
 
     /**
-     * @brief 使用设备 Token 获取前 5 条未完成备忘录并更新运行内存快照。
+     * @brief 使用设备 Token 获取当前用户未到期且当日到期的自定义提醒并更新运行内存快照。
      */
-    void RunMemoSync();
+    void RunPendingReminderSync();
 
     /**
-     * @brief 把有效备忘录快照写入当前 LCD 表盘。
-     * @param snapshot 已完成条数和正文长度校验的备忘录快照。
+     * @brief 把有效待办提醒快照写入当前 LCD 表盘。
+     * @param snapshot 已完成条数和正文长度校验的待办提醒快照。
      */
-    void ShowMemoSnapshot(const MemoSnapshot& snapshot);
+    void ShowPendingReminderSnapshot(const PendingReminderSnapshot& snapshot);
 
     /**
-     * @brief 仅在没有成功备忘录缓存时显示同步状态，避免短暂失败覆盖旧内容。
-     * @param message 备忘录区域需要显示的简短状态文本。
+     * @brief 仅在没有成功待办提醒缓存时显示同步状态，避免短暂失败覆盖旧内容。
+     * @param message 待办提醒区域需要显示的简短状态文本。
      */
-    void ShowMemoStatusIfUnavailable(const std::string& message);
+    void ShowPendingReminderStatusIfUnavailable(const std::string& message);
 
     /**
      * @brief 在满足屏保、网络、凭据和缓存条件时把天气同步加入常驻后端 Worker。
@@ -671,26 +597,26 @@ private:
     static void WeatherTimerCallback(void* context);
 
     /**
-     * @brief 备忘录兜底同步定时器回调，只负责尝试启动备忘录任务。
+     * @brief 待办提醒兜底同步定时器回调，只负责尝试启动待办提醒任务。
      * @param context 指向当前 BackendService 单例。
      */
-    static void MemoTimerCallback(void* context);
+    static void PendingReminderTimerCallback(void* context);
 
     /**
-     * @brief 备忘录退避重试定时器回调。
+     * @brief 待办提醒退避重试定时器回调。
      * @param context 指向当前 BackendService 单例。
      */
-    static void MemoRetryTimerCallback(void* context);
+    static void PendingReminderRetryTimerCallback(void* context);
 
     /**
-     * @brief 按 1、2、5、10、20、30 分钟退避序列安排下一次备忘录同步。
+     * @brief 按 1、2、5、10、20、30 分钟退避序列安排下一次待办提醒同步。
      */
-    void ScheduleMemoRetry();
+    void SchedulePendingReminderRetry();
 
     /**
-     * @brief 同步成功后清除备忘录重试状态并停止一次性重试定时器。
+     * @brief 同步成功后清除待办提醒重试状态并停止一次性重试定时器。
      */
-    void ResetMemoRetry();
+    void ResetPendingReminderRetry();
 
     /**
      * @brief 使用设备 Token 获取、校验并缓存一组屏保天气数据。
@@ -986,45 +912,45 @@ private:
     std::atomic<bool> weather_refresh_requested_{false};
 
     /**
-     * @brief 串行保护备忘录任务句柄、最近快照和成功时间戳。
+     * @brief 串行保护待办提醒任务句柄、最近快照和成功时间戳。
      */
-    std::mutex memo_mutex_;
+    std::mutex pending_reminder_mutex_;
     /**
-     * @brief 周期检查备忘录缓存是否需要兜底更新的 esp_timer 句柄。
+     * @brief 周期检查待办提醒缓存是否需要兜底更新的 esp_timer 句柄。
      */
-    esp_timer_handle_t memo_timer_ = nullptr;
+    esp_timer_handle_t pending_reminder_timer_ = nullptr;
     /**
-     * @brief 备忘录同步失败后使用的一次性退避重试定时器。
+     * @brief 待办提醒同步失败后使用的一次性退避重试定时器。
      */
-    esp_timer_handle_t memo_retry_timer_ = nullptr;
+    esp_timer_handle_t pending_reminder_retry_timer_ = nullptr;
     /**
-     * @brief 当前备忘录操作占用标记；非空表示同步或语音操作已排队/正在执行。
+     * @brief 当前待办提醒同步占用标记；非空表示同步已排队或正在执行。
      */
-    TaskHandle_t memo_task_handle_ = nullptr;
+    TaskHandle_t pending_reminder_task_handle_ = nullptr;
     /**
-     * @brief 最近一次成功屏保备忘录数据的运行内存副本。
+     * @brief 最近一次成功屏保待办提醒数据的运行内存副本。
      */
-    MemoSnapshot memo_snapshot_;
+    PendingReminderSnapshot pending_reminder_snapshot_;
     /**
-     * @brief 最近一次成功同步备忘录的单调时钟时间，单位为微秒。
+     * @brief 最近一次成功同步待办提醒的单调时钟时间，单位为微秒。
      */
-    int64_t memo_last_success_us_ = 0;
+    int64_t pending_reminder_last_success_us_ = 0;
     /**
-     * @brief true 表示收到后端备忘录变更提示，需要忽略缓存并补做一次同步。
+     * @brief true 表示收到后端自定义提醒变更提示，需要忽略缓存并补做一次同步。
      */
-    std::atomic<bool> memo_refresh_requested_{false};
+    std::atomic<bool> pending_reminder_refresh_requested_{false};
     /**
-     * @brief true 表示已经安排一次备忘录退避重试且尚未开始执行。
+     * @brief true 表示已经安排一次待办提醒退避重试且尚未开始执行。
      */
-    std::atomic<bool> memo_retry_pending_{false};
+    std::atomic<bool> pending_reminder_retry_pending_{false};
     /**
-     * @brief true 表示备忘录退避时间已经到达，应在前置条件恢复后立即执行。
+     * @brief true 表示待办提醒退避时间已经到达，应在前置条件恢复后立即执行。
      */
-    std::atomic<bool> memo_retry_due_{false};
+    std::atomic<bool> pending_reminder_retry_due_{false};
     /**
-     * @brief 下一次失败需要使用的备忘录重试间隔序号。
+     * @brief 下一次失败需要使用的待办提醒重试间隔序号。
      */
-    size_t memo_retry_index_ = 0;
+    size_t pending_reminder_retry_index_ = 0;
 
     /** @brief 串行保护自定义提醒语音操作的占用标记。 */
     std::mutex custom_reminder_mutex_;

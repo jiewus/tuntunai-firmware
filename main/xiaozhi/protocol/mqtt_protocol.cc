@@ -7,6 +7,7 @@
 #include "board.h"
 #include "app/application.h"
 #include "system/settings.h"
+#include "system/input_validation.h"
 
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -130,7 +131,8 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     mqtt_->OnMessage([this](const std::string& topic, const std::string& payload) {
         cJSON* root = cJSON_Parse(payload.c_str());
         if (root == nullptr) {
-            ESP_LOGE(TAG, "解析小智 MQTT JSON 消息失败，内容=%s", payload.c_str());
+            ESP_LOGE(TAG, "解析小智 MQTT JSON 消息失败，字节数=%u",
+                     static_cast<unsigned>(payload.size()));
             return;
         }
         cJSON* type = cJSON_GetObjectItem(root, "type");
@@ -161,16 +163,17 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
         last_incoming_time_ = std::chrono::steady_clock::now();
     });
 
-    ESP_LOGI(TAG, "正在连接小智 MQTT 服务，地址=%s", endpoint.c_str());
     std::string broker_address;
     int broker_port = 8883;
-    size_t pos = endpoint.find(':');
-    if (pos != std::string::npos) {
-        broker_address = endpoint.substr(0, pos);
-        broker_port = std::stoi(endpoint.substr(pos + 1));
-    } else {
-        broker_address = endpoint;
+    if (!input_validation::ParseMqttEndpoint(endpoint, broker_port,
+                                             broker_address, broker_port)) {
+        ESP_LOGE(TAG, "小智 MQTT 服务地址格式无效");
+        if (report_error) {
+            SetError(Lang::Strings::SERVER_NOT_FOUND);
+        }
+        return false;
     }
+    ESP_LOGI(TAG, "正在连接小智 MQTT 服务，端口=%d", broker_port);
     if (!mqtt_->Connect(broker_address, broker_port, client_id, username, password)) {
         ESP_LOGE(TAG, "连接小智 MQTT 服务失败，错误码=%d", mqtt_->GetLastError());
         SetError(Lang::Strings::SERVER_NOT_CONNECTED);
@@ -192,7 +195,8 @@ bool MqttProtocol::SendText(const std::string& text) {
         return false;
     }
     if (!mqtt_->Publish(publish_topic_, text)) {
-        ESP_LOGE(TAG, "发布小智 MQTT 消息失败，内容=%s", text.c_str());
+        ESP_LOGE(TAG, "发布小智 MQTT 消息失败，字节数=%u",
+                 static_cast<unsigned>(text.size()));
         SetError(Lang::Strings::SERVER_ERROR);
         return false;
     }

@@ -102,7 +102,7 @@ void BackendService::StartCustomReminderToolTask(CustomReminderToolTaskContext *
         || context->operation == CustomReminderToolOperation::Delete
         || context->operation == CustomReminderToolOperation::Enable
         || context->operation == CustomReminderToolOperation::Disable;
-    if (requires_id && !IsSafeMemoId(context->reminder_id))
+    if (requires_id && !IsSafeResourceId(context->reminder_id))
     {
         FinishToolRequest(context->completion, "自定义提醒编号无效，请先查询目标提醒。", true);
         delete context;
@@ -494,4 +494,389 @@ void BackendService::RunCustomReminderToolTask(CustomReminderToolTaskContext &co
         "自定义提醒已" + std::string(operation_text) + "，ID：" + saved.id
             + "，内容：" + TruncateUtf8(saved.content, kCustomReminderQueryItemMaxBytes) + "。",
         false);
+}
+
+/**
+ * @brief 在屏保待办提醒缓存需要更新时把请求加入常驻后端 Worker。
+ * @param force_refresh true 忽略最近成功时间；false 遵守 30 分钟本地新鲜周期。
+ */
+void BackendService::StartPendingReminderSync(bool force_refresh)
+{
+    if (notification_playback_active_.load())
+    {
+        if (force_refresh || pending_reminder_retry_due_.load()
+            || pending_reminder_refresh_requested_.load())
+        {
+            pending_reminder_refresh_requested_.store(true);
+        }
+        return;
+    }
+    if (!screensaver_active_.load() || !network_connected_.load())
+    {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        if (device_access_token_.empty())
+        {
+            return;
+        }
+    }
+    bool refresh_requested = false;
+    {
+        std::lock_guard<std::mutex> lock(pending_reminder_mutex_);
+        if (pending_reminder_task_handle_ != nullptr)
+        {
+            return;
+        }
+        refresh_requested = pending_reminder_refresh_requested_.exchange(false);
+        const bool retry_due = pending_reminder_retry_due_.load();
+        if (!force_refresh && pending_reminder_retry_pending_.load() && !retry_due
+            && !refresh_requested)
+        {
+            return;
+        }
+        force_refresh = force_refresh || refresh_requested || retry_due;
+        const int64_t now_us = esp_timer_get_time();
+        if (!force_refresh && pending_reminder_snapshot_.valid
+            && pending_reminder_last_success_us_ > 0
+            && now_us - pending_reminder_last_success_us_ < kPendingReminderRefreshIntervalUs)
+        {
+            return;
+        }
+        pending_reminder_task_handle_ = backend_worker_task_handle_;
+        pending_reminder_retry_pending_.store(false);
+        pending_reminder_retry_due_.store(false);
+        if (pending_reminder_retry_timer_ != nullptr)
+        {
+            esp_timer_stop(pending_reminder_retry_timer_);
+        }
+    }
+
+    if (!EnqueueBackendJob(BackendJobType::PendingReminderSync))
+    {
+        {
+            std::lock_guard<std::mutex> lock(pending_reminder_mutex_);
+            pending_reminder_task_handle_ = nullptr;
+            if (refresh_requested)
+            {
+                pending_reminder_refresh_requested_.store(true);
+            }
+        }
+        ESP_LOGE(kTag, "后端 Worker 队列已满，无法安排待办提醒同步");
+        ShowPendingReminderStatusIfUnavailable("提醒任务启动失败");
+        SchedulePendingReminderRetry();
+    }
+}
+
+/**
+ * @brief 获取当前用户未到期且当日到期的自定义提醒并更新运行内存缓存。
+ * @details 复用自定义提醒列表接口，只保留 status==1（已启用）且 next_run_at（缺省时用
+ * first_run_at）落在北京时间“今天”的提醒，最多渲染前 3 条。
+ */
+void BackendService::RunPendingReminderSync()
+{
+    if (notification_playback_active_.load())
+    {
+        pending_reminder_refresh_requested_.store(true);
+        return;
+    }
+    if (!screensaver_active_.load() || !network_connected_.load())
+    {
+        return;
+    }
+    std::string access_token;
+    {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        access_token = device_access_token_;
+    }
+    if (access_token.empty())
+    {
+        ShowPendingReminderStatusIfUnavailable(kUnboundPendingReminderPrompt);
+        return;
+    }
+
+    const std::string path = std::string(kCustomRemindersPath)
+        + "?page_index=1&page_size=" + std::to_string(kMaximumScreensaverPendingReminderCount);
+    const HttpResponse response = SendJsonRequest(
+        "GET", path.c_str(), access_token, "", kCustomReminderResponseMaxBytes);
+    cJSON *root = nullptr;
+    cJSON *data = nullptr;
+    std::string response_message;
+    bool parsed = response.transport_succeeded
+        && response.status_code == 200
+        && ParseSuccessData(response.body, &root, &data, response_message);
+    PendingReminderSnapshot snapshot;
+    cJSON *records = nullptr;
+    if (parsed)
+    {
+        records = cJSON_GetObjectItemCaseSensitive(data, "records");
+        parsed = cJSON_IsArray(records)
+            && cJSON_GetArraySize(records) <= static_cast<int>(kMaximumScreensaverPendingReminderCount);
+    }
+    if (parsed)
+    {
+        const int record_count = cJSON_GetArraySize(records);
+        snapshot.contents.reserve(static_cast<size_t>(record_count));
+        int visible_count = 0;
+        for (int index = 0; index < record_count
+             && visible_count < static_cast<int>(kMaximumScreensaverPendingReminderCount); ++index)
+        {
+            cJSON *record = cJSON_GetArrayItem(records, index);
+            CustomReminderDetail detail;
+            if (!ParseCustomReminderDetail(record, detail) || detail.status != 1)
+            {
+                continue;
+            }
+
+            // 判定"即将到来"：优先 next_run_at，为空时退回 first_run_at；
+            // 只要不是已过期（今天或未来）就纳入屏保轮播。
+            std::string run_at;
+            if (!ReadBoundedString(record, "next_run_at", kCustomReminderTimeMaxBytes, run_at)
+                && !ReadBoundedString(
+                    record, "first_run_at", kCustomReminderTimeMaxBytes, run_at))
+            {
+                run_at = detail.first_run_at;
+            }
+            if (run_at.empty() || !IsReminderUpcomingBeijing(run_at))
+            {
+                continue;
+            }
+
+            std::string reminder_line;
+            if (!FormatReminderTimeLine(run_at, reminder_line))
+            {
+                reminder_line = "提醒";
+            }
+            snapshot.contents.push_back(
+                detail.content + "\n[" + reminder_line + "]");
+            ++visible_count;
+        }
+    }
+    cJSON_Delete(root);
+
+    if (!parsed)
+    {
+        ESP_LOGW(kTag, "待办提醒同步失败，HTTP 状态码=%d", response.status_code);
+        ShowPendingReminderStatusIfUnavailable(
+            response.status_code == 401 || response.status_code == 403
+                ? "设备认证已失效"
+                : "提醒同步失败");
+        SchedulePendingReminderRetry();
+        return;
+    }
+
+    snapshot.valid = true;
+    {
+        std::lock_guard<std::mutex> lock(pending_reminder_mutex_);
+        pending_reminder_snapshot_ = snapshot;
+        pending_reminder_last_success_us_ = esp_timer_get_time();
+    }
+    ResetPendingReminderRetry();
+    if (screensaver_active_.load())
+    {
+        ShowPendingReminderSnapshot(snapshot);
+    }
+    ESP_LOGI(kTag, "待办提醒同步成功，显示数量=%u",
+             static_cast<unsigned>(snapshot.contents.size()));
+}
+
+/**
+ * @brief 把有效待办提醒快照写入当前 LCD 表盘。
+ * @param snapshot 已完成字段和数量校验的运行内存快照。
+ */
+void BackendService::ShowPendingReminderSnapshot(const PendingReminderSnapshot &snapshot)
+{
+    if (!screensaver_active_.load() || !snapshot.valid)
+    {
+        return;
+    }
+    Display *display = Board::GetInstance().GetDisplay();
+    if (display != nullptr)
+    {
+        display->SetScreensaverPendingReminders(snapshot.contents);
+    }
+}
+
+/**
+ * @brief 没有历史待办提醒可保留时，向屏保待办区域写入固定状态文本。
+ * @param message 加载、网络、认证或错误状态。
+ */
+void BackendService::ShowPendingReminderStatusIfUnavailable(const std::string &message)
+{
+    if (!screensaver_active_.load())
+    {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(pending_reminder_mutex_);
+        if (pending_reminder_snapshot_.valid)
+        {
+            return;
+        }
+    }
+    Display *display = Board::GetInstance().GetDisplay();
+    if (display != nullptr)
+    {
+        display->SetScreensaverPendingReminders({message});
+    }
+}
+
+/**
+ * @brief 在屏保显示期间使用最近缓存并按需同步天气和待办提醒。
+ * @param active true 表示屏保可见；false 表示屏保已经退出。
+ */
+void BackendService::OnScreensaverChanged(bool active)
+{
+    screensaver_active_.store(active);
+    if (!active)
+    {
+        return;
+    }
+
+    Display *display = Board::GetInstance().GetDisplay();
+    if (display == nullptr)
+    {
+        return;
+    }
+    PendingReminderSnapshot reminder_snapshot;
+    {
+        std::lock_guard<std::mutex> lock(pending_reminder_mutex_);
+        reminder_snapshot = pending_reminder_snapshot_;
+    }
+    if (reminder_snapshot.valid)
+    {
+        ShowPendingReminderSnapshot(reminder_snapshot);
+    }
+    else
+    {
+        bool has_device_credential = false;
+        {
+            std::lock_guard<std::mutex> lock(binding_mutex_);
+            has_device_credential = !device_access_token_.empty();
+        }
+        if (!has_device_credential)
+        {
+            ShowPendingReminderStatusIfUnavailable(kUnboundPendingReminderPrompt);
+        }
+        else if (!network_connected_.load())
+        {
+            ShowPendingReminderStatusIfUnavailable("等待网络连接");
+        }
+        else
+        {
+            ShowPendingReminderStatusIfUnavailable("提醒加载中");
+        }
+    }
+
+    WeatherSnapshot snapshot;
+    {
+        std::lock_guard<std::mutex> lock(weather_mutex_);
+        snapshot = weather_snapshot_;
+    }
+    if (snapshot.valid)
+    {
+        ShowWeatherSnapshot(snapshot);
+    }
+    else
+    {
+        bool has_device_credential = false;
+        {
+            std::lock_guard<std::mutex> lock(binding_mutex_);
+            has_device_credential = !device_access_token_.empty();
+        }
+        if (!has_device_credential)
+        {
+            ShowWeatherStatusIfUnavailable("");
+        }
+        else if (!network_connected_.load())
+        {
+            ShowWeatherStatusIfUnavailable("等待网络连接");
+        }
+        else
+        {
+            ShowWeatherStatusIfUnavailable("天气加载中");
+        }
+    }
+    StartWeatherSync(false);
+    StartPendingReminderSync(false);
+}
+
+/**
+ * @brief esp_timer 周期回调，每 30 分钟为屏保待办提醒执行一次兜底同步检查。
+ * @param context 指向 BackendService 单例。
+ */
+void BackendService::PendingReminderTimerCallback(void *context)
+{
+    auto *service = static_cast<BackendService *>(context);
+    service->StartPendingReminderSync(false);
+}
+
+/**
+ * @brief 待办提醒退避重试定时器回调，标记到期后尝试强制刷新一次。
+ * @param context 指向 BackendService 单例。
+ */
+void BackendService::PendingReminderRetryTimerCallback(void *context)
+{
+    auto *service = static_cast<BackendService *>(context);
+    service->pending_reminder_retry_due_.store(true);
+    service->StartPendingReminderSync(true);
+}
+
+/**
+ * @brief 按固定退避序列安排下一次待办提醒刷新，达到 30 分钟后保持该间隔。
+ */
+void BackendService::SchedulePendingReminderRetry()
+{
+    uint32_t delay_minutes = 0;
+    esp_err_t timer_error = ESP_ERR_INVALID_STATE;
+    {
+        std::lock_guard<std::mutex> lock(pending_reminder_mutex_);
+        if (pending_reminder_retry_timer_ == nullptr)
+        {
+            return;
+        }
+        const size_t interval_index = std::min(
+            pending_reminder_retry_index_, kPendingReminderRetryIntervalsMinutes.size() - 1);
+        delay_minutes = kPendingReminderRetryIntervalsMinutes[interval_index];
+        if (pending_reminder_retry_index_ + 1 < kPendingReminderRetryIntervalsMinutes.size())
+        {
+            ++pending_reminder_retry_index_;
+        }
+        esp_timer_stop(pending_reminder_retry_timer_);
+        pending_reminder_retry_pending_.store(true);
+        pending_reminder_retry_due_.store(false);
+        timer_error = esp_timer_start_once(
+            pending_reminder_retry_timer_,
+            static_cast<uint64_t>(delay_minutes) * 60ULL * 1000ULL * 1000ULL);
+        if (timer_error != ESP_OK)
+        {
+            pending_reminder_retry_pending_.store(false);
+        }
+    }
+    if (timer_error == ESP_OK)
+    {
+        ESP_LOGW(kTag, "待办提醒将在%u分钟后重试同步",
+                 static_cast<unsigned>(delay_minutes));
+    }
+    else
+    {
+        ESP_LOGE(kTag, "待办提醒重试定时器启动失败，原因=%s",
+                 esp_err_to_name(timer_error));
+    }
+}
+
+/**
+ * @brief 待办提醒同步成功后停止退避定时器，并让下一轮失败重新从 1 分钟开始。
+ */
+void BackendService::ResetPendingReminderRetry()
+{
+    std::lock_guard<std::mutex> lock(pending_reminder_mutex_);
+    pending_reminder_retry_index_ = 0;
+    pending_reminder_retry_pending_.store(false);
+    pending_reminder_retry_due_.store(false);
+    if (pending_reminder_retry_timer_ != nullptr)
+    {
+        esp_timer_stop(pending_reminder_retry_timer_);
+    }
 }

@@ -488,12 +488,12 @@ void LcdDisplay::SetupUI() {
  */
 void LcdDisplay::SetChatMessage(const char* role, const char* content) {
     if (!setup_ui_called_) {
-        ESP_LOGW(TAG, "SetupUI() 尚未完成，聊天消息将无法显示，角色=%s，内容=%s", role, content);
+        ESP_LOGW(TAG, "SetupUI() 尚未完成，聊天消息将无法显示，角色=%s", role);
     }
     DisplayLockGuard lock(this);
     if (content_ == nullptr) {
         if (setup_ui_called_) {
-            ESP_LOGW(TAG, "聊天消息显示失败，内容容器为空，角色=%s，内容=%s", role, content);
+            ESP_LOGW(TAG, "聊天消息显示失败，内容容器为空，角色=%s", role);
         }
         return;
     }
@@ -1053,12 +1053,12 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
  */
 void LcdDisplay::SetChatMessage(const char* role, const char* content) {
     if (!setup_ui_called_) {
-        ESP_LOGW(TAG, "SetupUI() 尚未完成，聊天消息将无法显示，角色=%s，内容=%s", role, content);
+        ESP_LOGW(TAG, "SetupUI() 尚未完成，聊天消息将无法显示，角色=%s", role);
     }
     DisplayLockGuard lock(this);
     if (chat_message_label_ == nullptr) {
         if (setup_ui_called_) {
-            ESP_LOGW(TAG, "聊天消息显示失败，消息标签为空，角色=%s，内容=%s", role, content);
+            ESP_LOGW(TAG, "聊天消息显示失败，消息标签为空，角色=%s", role);
         }
         return;
     }

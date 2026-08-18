@@ -134,7 +134,7 @@ python scripts/release.py movecall-moji2-esp32c5
 
 ## 5.1 给"自己的设备"直接烧录 merge-bin（不走 OTA）
 
-如果你要更新的是**你自己手上的设备**（或你想跳过 OTA、直接整机重写），可以不走 OTA，直接用 merge-bin **完整镜像**烧录。merge-bin 是 `idf.py merge-bin` 把 bootloader + 分区表 + ota_0/ota_1 + assets 等**按各自偏移合并成一份镜像**，从地址 `0x0` 开始烧，一次覆盖整片 Flash。
+如果你要更新的是**你自己手上的设备**（或你想跳过 OTA、直接重写主要分区），可以不走 OTA，直接用 merge-bin **完整镜像**烧录。merge-bin 是 `idf.py merge-bin` 把 bootloader + 分区表 + app + assets 等**按各自偏移合并成一份镜像**，并用 `0xFF` 填充分区之间的空隙。从地址 `0x0` 烧录时，镜像覆盖范围内的 NVS 也会被清空。
 
 ### 步骤
 
@@ -162,11 +162,14 @@ idf.py -B build/movecall-moji2-esp32c5/debug \
 
 ```bash
 ls /dev/cu.usbmodem*          # macOS 端口
-python scripts/build.py movecall-moji2-esp32c5 \
-  flash -p /dev/cu.usbmodem83101
+python -m esptool --chip esp32c5 -p /dev/cu.usbmodem83101 -b 460800 \
+  --before default-reset --after hard-reset write-flash \
+  0x0 build/movecall-moji2-esp32c5/release/tuntun-binary.bin
 ```
 
-> merge-bin 从 `0x0` 开始烧，会重写 bootloader、分区表、固件和资源分区。烧录会**清空原有 NVS 配置**（Wi-Fi、绑定、音量等），烧完需重新配网/重新绑定。请务必确认该设备就是你要更新的那台，避免误刷线上设备。
+> merge-bin 从 `0x0` 开始烧，会重写 bootloader、分区表、固件和资源分区，并以镜像中的 `0xFF` 填充值**清空原有 NVS 配置**（Wi-Fi、绑定、音量等）。烧完需重新配网、重新绑定。请务必确认该设备就是你要更新的那台，避免误刷线上设备。
+
+> `python scripts/build.py movecall-moji2-esp32c5 flash -p <串口>` 采用分区式烧录，不写入 `0x11000` 的 NVS 分区，因此会保留已有配置；它与从 `0x0` 烧录 merge-bin 的行为不同。
 
 ### 可选：只烧 App（保留配置，介于 OTA 和 merge-bin 之间）
 

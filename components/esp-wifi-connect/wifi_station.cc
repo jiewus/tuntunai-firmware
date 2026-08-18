@@ -183,10 +183,7 @@ void WifiStation::HandleScanResult() {
             return strcmp((char *)ap_record.ssid, item.ssid.c_str()) == 0;
         });
         if (it != ssid_list.end()) {
-            ESP_LOGI(TAG, "发现候选接入点，SSID=%s，BSSID=%02x:%02x:%02x:%02x:%02x:%02x，信号=%d，信道=%d，认证模式=%d",
-                (char *)ap_record.ssid,
-                ap_record.bssid[0], ap_record.bssid[1], ap_record.bssid[2],
-                ap_record.bssid[3], ap_record.bssid[4], ap_record.bssid[5],
+            ESP_LOGD(TAG, "发现候选接入点，信号=%d，信道=%d，认证模式=%d",
                 ap_record.rssi, ap_record.primary, ap_record.authmode);
             WifiApRecord record = {
                 .ssid = it->ssid,
@@ -335,7 +332,7 @@ void WifiStation::WifiEventHandler(void* arg, esp_event_base_t event_base, int32
         if (this_->reconnect_count_ < MAX_RECONNECT_COUNT) {
             esp_wifi_connect();
             this_->reconnect_count_++;
-            ESP_LOGI(TAG, "正在重连 Wi-Fi，SSID=%s，第%d/%d次", this_->ssid_.c_str(), this_->reconnect_count_, MAX_RECONNECT_COUNT);
+            ESP_LOGI(TAG, "正在重连 Wi-Fi，第%d/%d次", this_->reconnect_count_, MAX_RECONNECT_COUNT);
             return;
         }
 

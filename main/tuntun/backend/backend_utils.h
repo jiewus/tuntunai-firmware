@@ -136,14 +136,6 @@ namespace tuntun::backend_internal
     constexpr const char *kWeatherPath = "/api/device/weather";
     constexpr const char *kWeatherSettingsPath = "/api/device/weather/settings";
 
-    /**
-     * @brief 使用设备访问 Token 创建、查询和统计备忘录的固定接口路径。
-     */
-    constexpr const char *kMemosPath = "/api/device/memos";
-    constexpr const char *kMemoStatisticsPath = "/api/device/memos/statistics";
-    constexpr const char *kMemoScreensaverPath =
-        "/api/device/memos?page_index=1&page_size=5&screen_only=true";
-
     /** @brief 使用设备访问 Token 管理自定义提醒的固定接口路径。 */
     constexpr const char *kCustomRemindersPath = "/api/device/custom-reminders";
 
@@ -176,13 +168,13 @@ namespace tuntun::backend_internal
     constexpr int64_t kWeatherCheckIntervalUs = 10LL * 60LL * 1000LL * 1000LL;
 
     /**
-     * @brief 屏保备忘录缓存周期和后台检查周期。
+     * @brief 屏保待办区域缓存周期和后台检查周期。
      * @details 屏保持续显示时每 30 分钟兜底刷新一次；后端增删改会通过 MQTT 提示设备立即刷新，
      * 请求统一排入常驻 BackendService Worker。
      */
-    constexpr int64_t kMemoRefreshIntervalUs = 30LL * 60LL * 1000LL * 1000LL;
-    constexpr int64_t kMemoCheckIntervalUs = 30LL * 60LL * 1000LL * 1000LL;
-    constexpr std::array<uint32_t, 8> kMemoRetryIntervalsMinutes = {
+    constexpr int64_t kPendingReminderRefreshIntervalUs = 30LL * 60LL * 1000LL * 1000LL;
+    constexpr int64_t kPendingReminderCheckIntervalUs = 30LL * 60LL * 1000LL * 1000LL;
+    constexpr std::array<uint32_t, 8> kPendingReminderRetryIntervalsMinutes = {
         1, 2, 5, 10, 20, 30, 30, 30};
 
     /**
@@ -271,7 +263,6 @@ namespace tuntun::backend_internal
     constexpr int kNotificationModeConfirm = 2;
     constexpr int kNotificationSourceScheduledMcp = 1;
     constexpr int kNotificationSourceWeather = 2;
-    constexpr int kNotificationSourceMemo = 3;
     constexpr int kNotificationSourceCustomReminder = 4;
     constexpr int kNotificationAckReceived = 1;
     constexpr int kNotificationAckDeferred = 2;
@@ -314,18 +305,18 @@ namespace tuntun::backend_internal
      */
     constexpr size_t kMaxApiResponseBytes = 4096;
     constexpr size_t kMcpManifestResponseMaxBytes = 12288;
-    constexpr size_t kMemoResponseMaxBytes = 12288;
     constexpr size_t kHttpReadChunkBytes = 512;
 
     /**
-     * @brief 备忘录正文、提醒时间和语音查询结果的固件边界。
+     * @brief 自定义提醒内容的固件边界。
      * @details 后端正文上限为 500 个 Unicode 字符，按中文 UTF-8 最坏情况预留 1500 字节。
      */
-    constexpr size_t kMemoContentMaxBytes = 1500;
-    constexpr size_t kMemoReminderTimeMaxBytes = 48;
-    constexpr size_t kMemoQueryItemMaxBytes = 360;
-    constexpr size_t kMemoQueryResultMaxBytes = 3000;
-    constexpr size_t kMaximumScreensaverMemoCount = 5;
+    constexpr size_t kPendingReminderTextMaxBytes = 1500;
+    constexpr size_t kPendingReminderTimeMaxBytes = 48;
+    constexpr size_t kPendingReminderQueryItemMaxBytes = 360;
+    constexpr size_t kPendingReminderQueryResultMaxBytes = 3000;
+    constexpr size_t kMaximumScreensaverPendingReminderCount = 10;
+    constexpr size_t kMaximumScreensaverPendingReminderLines = 3;
 
     /** @brief 自定义提醒请求、响应和语音查询结果的固件安全边界。 */
     constexpr size_t kCustomReminderResponseMaxBytes = 12288;
@@ -366,8 +357,8 @@ namespace tuntun::backend_internal
     constexpr const char *kWeatherTemperaturePlaceholder = "--℃";
     constexpr const char *kWeatherDescriptionPlaceholder = "--";
     constexpr const char *kWeatherRangePlaceholder = "--/--";
-    /** @brief 屏保备忘录区域在设备未绑定时显示的操作引导。 */
-    constexpr const char *kUnboundMemoPrompt =
+    /** @brief 屏保待办区域在设备未绑定时显示的操作引导。 */
+    constexpr const char *kUnboundPendingReminderPrompt =
         "请先绑定囤囤AI\n唤醒我，和我说：“绑定设备”吧";
 
     /**
@@ -685,73 +676,8 @@ namespace tuntun::backend_internal
         return hour <= 23 && minute <= 59 && second <= 59;
     }
 
-    /**
-     * @brief 构建语音创建备忘录使用的固定强类型 JSON。
-     * @param content 用户口述的备忘录正文。
-     * @param remind_at RFC 3339 提醒时间；空字符串表示不设置提醒时间。
-     * @return 包含 content 和 remind_at 的紧凑 JSON；内存不足时返回空字符串。
-     */
-    inline std::string BuildMemoCreateRequestJson(
-        const std::string &content,
-        const std::string &remind_at)
-    {
-        cJSON *root = cJSON_CreateObject();
-        if (root == nullptr)
-        {
-            return {};
-        }
-        cJSON_AddStringToObject(root, "content", content.c_str());
-        if (remind_at.empty())
-        {
-            cJSON_AddNullToObject(root, "remind_at");
-        }
-        else
-        {
-            cJSON_AddStringToObject(root, "remind_at", remind_at.c_str());
-        }
-        char *json_text = cJSON_PrintUnformatted(root);
-        std::string result = json_text == nullptr ? std::string() : std::string(json_text);
-        cJSON_free(json_text);
-        cJSON_Delete(root);
-        return result;
-    }
-
-    /**
-     * @brief 构建完整修改备忘录使用的固定强类型 JSON。
-     * @param content 修改后的完整正文。
-     * @param remind_at 修改后的 RFC 3339 提醒时间；空字符串表示取消提醒时间。
-     * @param status 修改后的状态，1 和 2 分别表示未完成和已完成。
-     * @return 包含 content、remind_at 和 status 的紧凑 JSON；内存不足时返回空字符串。
-     */
-    inline std::string BuildMemoUpdateRequestJson(
-        const std::string &content,
-        const std::string &remind_at,
-        int status)
-    {
-        cJSON *root = cJSON_CreateObject();
-        if (root == nullptr)
-        {
-            return {};
-        }
-        cJSON_AddStringToObject(root, "content", content.c_str());
-        if (remind_at.empty())
-        {
-            cJSON_AddNullToObject(root, "remind_at");
-        }
-        else
-        {
-            cJSON_AddStringToObject(root, "remind_at", remind_at.c_str());
-        }
-        cJSON_AddNumberToObject(root, "status", status);
-        char *json_text = cJSON_PrintUnformatted(root);
-        std::string result = json_text == nullptr ? std::string() : std::string(json_text);
-        cJSON_free(json_text);
-        cJSON_Delete(root);
-        return result;
-    }
-
     /** @brief 前置声明后续定义的安全资源编号校验函数。 */
-    inline bool IsSafeMemoId(const std::string &memo_id);
+    inline bool IsSafeResourceId(const std::string &resource_id);
     /** @brief 前置声明后续定义的无符号整数读取函数。 */
     inline bool ReadUnsignedInteger(cJSON *item, bool allow_zero, uint32_t &value);
 
@@ -956,7 +882,7 @@ namespace tuntun::backend_internal
         uint32_t status = 0;
         if (!cJSON_IsObject(data)
             || !ReadBoundedString(data, "id", 50, detail.id)
-            || !IsSafeMemoId(detail.id)
+            || !IsSafeResourceId(detail.id)
             || !ReadBoundedString(
                 data, "content", kCustomReminderContentMaxBytes, detail.content)
             || !ReadBoundedString(
@@ -1063,17 +989,17 @@ namespace tuntun::backend_internal
     }
 
     /**
-     * @brief 校验后端备忘录 ID 可安全拼接到固定 API 路径。
-     * @param memo_id 查询工具返回的后端唯一编号。
+     * @brief 校验后端资源编号可安全拼接到固定 API 路径。
+     * @param resource_id 查询工具返回的后端唯一编号。
      * @return 长度为 1 至 50 且只包含 ASCII 字母、数字或连字符时返回 true。
      */
-    inline bool IsSafeMemoId(const std::string &memo_id)
+    inline bool IsSafeResourceId(const std::string &resource_id)
     {
-        if (memo_id.empty() || memo_id.size() > 50)
+        if (resource_id.empty() || resource_id.size() > 50)
         {
             return false;
         }
-        return std::all_of(memo_id.begin(), memo_id.end(), [](char character)
+        return std::all_of(resource_id.begin(), resource_id.end(), [](char character)
         {
             return (character >= 'a' && character <= 'z')
                 || (character >= 'A' && character <= 'Z')
@@ -1114,14 +1040,14 @@ namespace tuntun::backend_internal
     }
 
     /**
-     * @brief 按当前本地日期格式化屏保备忘录的提醒时间行。
+     * @brief 按当前本地日期格式化屏保提醒行的提醒时间。
      * @param remind_at 后端返回的带 +08:00 偏移 RFC 3339 时间。
      * @param result 成功时接收 HH:mm、MM-dd 或 yyyy-MM-dd。
      * @return 时间结构和字段范围有效时返回 true。
      * @details 今天只显示时间；其他日期只显示日期，其中今年省略年份、非今年保留年份。
      * 系统时间尚未校准时无法判断“今天”和“今年”，此时保守显示完整日期。
      */
-    inline bool FormatMemoReminderLine(
+    inline bool FormatReminderTimeLine(
         const std::string &remind_at,
         std::string &result)
     {
@@ -1178,7 +1104,44 @@ namespace tuntun::backend_internal
     }
 
     /**
-     * @brief 检查 cJSON 数值是否能无损转换为 uint32_t。
+     * @brief 判断一条带 +08:00 偏移的提醒时间是否尚未过期（今天或未来）。
+     * @param run_at 带时区偏移的 RFC 3339 首次执行时间或下次执行时间。
+     * @return 时间可解析且日期不早于北京时间今天时返回 true；已过期或格式无效返回 false。
+     * @details 设备已按中国时区校准，本地 today 边界即 +08:00；按本地日历日比较即可。
+     * 系统时间尚未校准时无法判断"今天"，保守返回 true 以保证提醒仍能显示。
+     */
+    inline bool IsReminderUpcomingBeijing(const std::string &run_at)
+    {
+        if (run_at.size() < 10 || run_at[4] != '-' || run_at[7] != '-')
+        {
+            return false;
+        }
+        int year = 0;
+        int month = 0;
+        int day = 0;
+        if (!ParseFixedDecimal(run_at, 0, 4, year)
+            || !ParseFixedDecimal(run_at, 5, 2, month)
+            || !ParseFixedDecimal(run_at, 8, 2, day)
+            || year < 2000 || year > 9999
+            || month < 1 || month > 12
+            || day < 1 || day > 31)
+        {
+            return false;
+        }
+        const time_t now = time(nullptr);
+        struct tm local_time = {};
+        if (now < 1609459200 || localtime_r(&now, &local_time) == nullptr)
+        {
+            return true;
+        }
+        const int today = (local_time.tm_year + 1900) * 10000
+            + (local_time.tm_mon + 1) * 100 + local_time.tm_mday;
+        const int remind_day = year * 10000 + month * 100 + day;
+        return remind_day >= today;
+    }
+
+    /**
+     * @brief 检查 JSON 数值节点是否为有限非负整数且未超过 uint32_t 上限。
      * @param item 需要检查的 JSON 节点。
      * @param allow_zero true 允许0；false 要求至少为1。
      * @param value 校验成功时接收转换后的整数。

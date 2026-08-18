@@ -5,6 +5,7 @@
 #include "xiaozhi/provisioning/ota.h"
 #include "system/system_info.h"
 #include "system/settings.h"
+#include "system/input_validation.h"
 #include "assets/lang_config.h"
 
 #include <freertos/FreeRTOS.h>
@@ -24,7 +25,6 @@
 
 #include <cstring>
 #include <vector>
-#include <sstream>
 #include <algorithm>
 
 #define TAG "Ota"
@@ -87,7 +87,7 @@ std::unique_ptr<Http> Ota::SetupHttp() {
     http->SetHeader("Client-Id", board.GetUuid());
     if (has_serial_number_) {
         http->SetHeader("Serial-Number", serial_number_.c_str());
-        ESP_LOGI(TAG, "OTA HTTP 已配置，用户代理=%s，设备序列号=%s", user_agent.c_str(), serial_number_.c_str());
+        ESP_LOGD(TAG, "OTA HTTP 已配置序列号请求头");
     }
     http->SetHeader("User-Agent", user_agent);
     http->SetHeader("Accept-Language", Lang::CODE);
@@ -305,7 +305,7 @@ void Ota::MarkCurrentVersionValid() {
  * 任一读取、写入或校验步骤失败都会释放缓冲区并中止 OTA 句柄。
  */
 bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progress, size_t speed)> callback) {
-    ESP_LOGI(TAG, "正在从指定地址升级固件，地址=%s", firmware_url.c_str());
+    ESP_LOGI(TAG, "正在从指定地址升级固件");
     esp_ota_handle_t update_handle = 0;
     auto update_partition = esp_ota_get_next_update_partition(NULL);
     if (update_partition == NULL) {
@@ -438,24 +438,6 @@ bool Ota::StartUpgrade(std::function<void(int progress, size_t speed)> callback)
 
 
 /**
- * @brief 把点分版本号转换为整数序列。
- * @param version 例如 2.2.6。
- * @return 按顺序保存每个数字段的整数数组，例如 2.2.6 转换为 {2, 2, 6}。
- * @details 输入段由 std::stoi() 解析，因此调用者应提供只包含数字和点号的合法版本字符串。
- */
-std::vector<int> Ota::ParseVersion(const std::string& version) {
-    std::vector<int> versionNumbers;
-    std::stringstream ss(version);
-    std::string segment;
-    
-    while (std::getline(ss, segment, '.')) {
-        versionNumbers.push_back(std::stoi(segment));
-    }
-    
-    return versionNumbers;
-}
-
-/**
  * @brief 按数字段比较版本。
  * @param currentVersion 当前运行版本。
  * @param newVersion 服务端提供的候选版本。
@@ -464,8 +446,13 @@ std::vector<int> Ota::ParseVersion(const std::string& version) {
  * 字段更多的候选版本被视为更新版本。
  */
 bool Ota::IsNewVersionAvailable(const std::string& currentVersion, const std::string& newVersion) {
-    std::vector<int> current = ParseVersion(currentVersion);
-    std::vector<int> newer = ParseVersion(newVersion);
+    std::vector<int> current;
+    std::vector<int> newer;
+    if (!input_validation::ParseDottedVersion(currentVersion, current)
+        || !input_validation::ParseDottedVersion(newVersion, newer)) {
+        ESP_LOGW(TAG, "固件版本号格式无效，已忽略本次升级信息");
+        return false;
+    }
     
     for (size_t i = 0; i < std::min(current.size(), newer.size()); ++i) {
         if (newer[i] > current[i]) {
@@ -517,7 +504,7 @@ std::string Ota::GetActivationPayload() {
     cJSON_free(json_str);
     cJSON_Delete(payload);
 
-    ESP_LOGI(TAG, "设备激活请求内容=%s", json.c_str());
+    ESP_LOGD(TAG, "设备激活请求已生成，字节数=%u", static_cast<unsigned>(json.size()));
     return json;
 }
 

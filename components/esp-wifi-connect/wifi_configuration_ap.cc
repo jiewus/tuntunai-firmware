@@ -1,6 +1,7 @@
 #include "wifi_configuration_ap.h"
 #include <cstdio>
 #include <memory>
+#include <new>
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
 #include <esp_err.h>
@@ -26,6 +27,44 @@
 
 extern const char index_html_start[] asm("_binary_wifi_configuration_html_start");
 extern const char done_html_start[] asm("_binary_wifi_configuration_done_html_start");
+
+namespace {
+
+constexpr size_t kMaximumConfigurationBodyBytes = 1024;
+
+esp_err_t ReceiveRequestBody(httpd_req_t* req, std::string& body) {
+    if (req->content_len <= 0
+        || static_cast<size_t>(req->content_len) > kMaximumConfigurationBodyBytes) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            req->content_len <= 0 ? "请求内容为空" : "请求内容过大");
+        return ESP_FAIL;
+    }
+
+    try {
+        body.resize(static_cast<size_t>(req->content_len));
+    } catch (const std::bad_alloc&) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "设备内存不足");
+        return ESP_FAIL;
+    }
+    size_t received = 0;
+    while (received < body.size()) {
+        const int result = httpd_req_recv(
+            req, body.data() + received, body.size() - received);
+        if (result <= 0) {
+            if (result == HTTPD_SOCK_ERR_TIMEOUT) {
+                httpd_resp_send_408(req);
+            } else {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "请求接收失败");
+            }
+            body.clear();
+            return ESP_FAIL;
+        }
+        received += static_cast<size_t>(result);
+    }
+    return ESP_OK;
+}
+
+}  // namespace
 
 WifiConfigurationAp::WifiConfigurationAp()
 {
@@ -175,7 +214,7 @@ void WifiConfigurationAp::StartAccessPoint()
     ESP_ERROR_CHECK(esp_wifi_set_band_mode(WIFI_BAND_MODE_2G_ONLY));
 #endif
 
-    ESP_LOGI(TAG, "配网热点已启动，SSID=%s", ssid.c_str());
+    ESP_LOGI(TAG, "配网热点已启动");
 
     // 加载高级配置
     nvs_handle_t nvs;
@@ -334,8 +373,8 @@ void WifiConfigurationAp::StartWebServer()
             httpd_resp_sendstr_chunk(req, support_5g ? "true" : "false");
             httpd_resp_sendstr_chunk(req, ",\"aps\":[");
             for (int i = 0; i < this_->ap_records_.size(); i++) {
-                ESP_LOGI(TAG, "扫描到 Wi-Fi，SSID=%s，信号=%d，认证模式=%d",
-                    (char *)this_->ap_records_[i].ssid, this_->ap_records_[i].rssi, this_->ap_records_[i].authmode);
+                ESP_LOGD(TAG, "扫描到 Wi-Fi，信号=%d，认证模式=%d",
+                    this_->ap_records_[i].rssi, this_->ap_records_[i].authmode);
                 char buf[128];
                 snprintf(buf, sizeof(buf), "{\"ssid\":\"%s\",\"rssi\":%d,\"authmode\":%d}",
                     (char *)this_->ap_records_[i].ssid, this_->ap_records_[i].rssi, this_->ap_records_[i].authmode);
@@ -357,34 +396,13 @@ void WifiConfigurationAp::StartWebServer()
         .uri = "/submit",
         .method = HTTP_POST,
         .handler = [](httpd_req_t *req) -> esp_err_t {
-            char *buf;
-            size_t buf_len = req->content_len;
-            if (buf_len > 1024) { // 限制最大请求体大小
-                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "请求内容过大");
+            std::string body;
+            if (ReceiveRequestBody(req, body) != ESP_OK) {
                 return ESP_FAIL;
             }
-
-            buf = (char *)malloc(buf_len + 1);
-            if (!buf) {
-                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "设备内存不足");
-                return ESP_FAIL;
-            }
-
-            int ret = httpd_req_recv(req, buf, buf_len);
-            if (ret <= 0) {
-                free(buf);
-                if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-                    httpd_resp_send_408(req);
-                } else {
-                    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "请求接收失败");
-                }
-                return ESP_FAIL;
-            }
-            buf[ret] = '\0';
 
             // 解析 JSON 数据
-            cJSON *json = cJSON_Parse(buf);
-            free(buf);
+            cJSON *json = cJSON_ParseWithLength(body.data(), body.size());
             if (!json) {
                 httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "请求格式无效");
                 return ESP_FAIL;
@@ -554,34 +572,13 @@ void WifiConfigurationAp::StartWebServer()
         .uri = "/advanced/submit",
         .method = HTTP_POST,
         .handler = [](httpd_req_t *req) -> esp_err_t {
-            char *buf;
-            size_t buf_len = req->content_len;
-            if (buf_len > 1024) {
-                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "请求内容过大");
+            std::string body;
+            if (ReceiveRequestBody(req, body) != ESP_OK) {
                 return ESP_FAIL;
             }
-
-            buf = (char *)malloc(buf_len + 1);
-            if (!buf) {
-                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "设备内存不足");
-                return ESP_FAIL;
-            }
-
-            int ret = httpd_req_recv(req, buf, buf_len);
-            if (ret <= 0) {
-                free(buf);
-                if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-                    httpd_resp_send_408(req);
-                } else {
-                    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "请求接收失败");
-                }
-                return ESP_FAIL;
-            }
-            buf[ret] = '\0';
 
             // 解析JSON数据
-            cJSON *json = cJSON_Parse(buf);
-            free(buf);
+            cJSON *json = cJSON_ParseWithLength(body.data(), body.size());
             if (!json) {
                 httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "请求格式无效");
                 return ESP_FAIL;
@@ -616,6 +613,8 @@ void WifiConfigurationAp::StartWebServer()
                 err = esp_wifi_set_max_tx_power(this_->max_tx_power_);
                 if (err != ESP_OK) {
                     ESP_LOGE(TAG, "设置 Wi-Fi 发射功率失败，错误码=%d", err);
+                    nvs_close(nvs);
+                    cJSON_Delete(json);
                     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Wi-Fi 发射功率设置失败");
                     return ESP_FAIL;
                 }
@@ -660,8 +659,8 @@ void WifiConfigurationAp::StartWebServer()
             httpd_resp_set_hdr(req, "Connection", "close");
             httpd_resp_send(req, "{\"success\":true}", HTTPD_RESP_USE_STRLEN);
 
-            ESP_LOGI(TAG, "高级设置已保存，OTA地址=%s，发射功率=%d，记忆BSSID=%d，省电模式=%d",
-                this_->ota_url_.c_str(), this_->max_tx_power_, this_->remember_bssid_, this_->sleep_mode_);
+            ESP_LOGI(TAG, "高级设置已保存，发射功率=%d，记忆BSSID=%d，省电模式=%d",
+                this_->max_tx_power_, this_->remember_bssid_, this_->sleep_mode_);
             return ESP_OK;
         },
         .user_ctx = this
@@ -746,8 +745,7 @@ bool WifiConfigurationAp::ConnectToWifi(const std::string &ssid, const std::stri
                 ret, attempt, kMaxAttempts);
             continue;
         }
-        ESP_LOGI(TAG, "正在连接 Wi-Fi，SSID=%s，第%d/%d次",
-            ssid.c_str(), attempt, kMaxAttempts);
+        ESP_LOGI(TAG, "正在连接 Wi-Fi，第%d/%d次", attempt, kMaxAttempts);
 
         // Wait for the connection to complete for 10 or 25 seconds.
         EventBits_t bits = xEventGroupWaitBits(
@@ -787,7 +785,7 @@ bool WifiConfigurationAp::ConnectToWifi(const std::string &ssid, const std::stri
     is_connecting_ = false;
 
     if (connected) {
-        ESP_LOGI(TAG, "Wi-Fi 连接成功，SSID=%s", ssid.c_str());
+        ESP_LOGI(TAG, "Wi-Fi 连接成功");
         esp_wifi_disconnect();
         return true;
     } else {
@@ -800,8 +798,8 @@ bool WifiConfigurationAp::ConnectToWifi(const std::string &ssid, const std::stri
 
 void WifiConfigurationAp::Save(const std::string &ssid, const std::string &password)
 {
-    ESP_LOGI(TAG, "正在保存 Wi-Fi，SSID=%s，名称字节数=%u",
-        ssid.c_str(), static_cast<unsigned>(ssid.length()));
+    ESP_LOGI(TAG, "正在保存 Wi-Fi，名称字节数=%u",
+        static_cast<unsigned>(ssid.length()));
     SsidManager::GetInstance().AddSsid(ssid, password);
 }
 
@@ -883,7 +881,7 @@ void WifiConfigurationAp::SmartConfigEventHandler(void *arg, esp_event_base_t ev
             char ssid[32], password[64];
             memcpy(ssid, evt->ssid, sizeof(evt->ssid));
             memcpy(password, evt->password, sizeof(evt->password));
-            ESP_LOGI(TAG, "SmartConfig 已收到 Wi-Fi 名称，SSID=%s", ssid);
+            ESP_LOGI(TAG, "SmartConfig 已接收并保存 Wi-Fi 名称");
             // 尝试连接WiFi会失败，故不连接
             self->Save(ssid, password);
             // 延迟退出配网模式

@@ -26,7 +26,7 @@ Board::Board() {
         uuid_ = GenerateUuid();
         settings.SetString("uuid", uuid_);
     }
-    ESP_LOGI(TAG, "UUID=%s SKU=%s", uuid_.c_str(), BOARD_NAME);
+    ESP_LOGI(TAG, "设备标识已初始化，SKU=%s", BOARD_NAME);
 }
 
 /**

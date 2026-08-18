@@ -153,7 +153,6 @@ bool BackendService::IsConversationBackendJob(BackendJobType type)
     switch (type)
     {
     case BackendJobType::DynamicTool:
-    case BackendJobType::MemoTool:
     case BackendJobType::CustomReminderTool:
     case BackendJobType::WeatherLocation:
     case BackendJobType::WeatherAnnouncement:
@@ -274,42 +273,6 @@ void BackendService::ExecuteDynamicToolJob(DynamicToolTaskContext* context)
 }
 
 /**
- * @brief 执行备忘录语音操作并释放任务上下文。
- * @param context 备忘录语音操作上下文。
- */
-void BackendService::ExecuteMemoToolJob(MemoToolTaskContext* context)
-{
-    std::unique_ptr<MemoToolTaskContext> task_context(context);
-    try
-    {
-        RunMemoToolTask(*task_context);
-    }
-    catch (const std::exception &exception)
-    {
-        ESP_LOGE(kTag, "备忘录语音任务异常，原因=%s", exception.what());
-        FinishToolRequest(task_context->completion, "备忘录操作失败，请稍后重试。", true);
-    }
-    catch (...)
-    {
-        ESP_LOGE(kTag, "备忘录语音任务发生未知异常");
-        FinishToolRequest(task_context->completion, "备忘录操作失败，请稍后重试。", true);
-    }
-    if (task_context->completion)
-    {
-        FinishToolRequest(task_context->completion, "备忘录操作未能完成，请稍后重试。", true);
-    }
-    {
-        std::lock_guard<std::mutex> lock(memo_mutex_);
-        memo_task_handle_ = nullptr;
-    }
-    if ((memo_refresh_requested_.load() || memo_retry_due_.load())
-        && screensaver_active_.load())
-    {
-        StartMemoSync(true);
-    }
-}
-
-/**
  * @brief 执行自定义提醒语音操作并释放任务上下文。
  * @param context 自定义提醒语音操作上下文。
  */
@@ -342,35 +305,36 @@ void BackendService::ExecuteCustomReminderToolJob(CustomReminderToolTaskContext*
 }
 
 /**
- * @brief 执行备忘录屏保同步任务。
+ * @brief 执行屏保待办提醒同步任务。
  */
-void BackendService::ExecuteMemoSyncJob()
+void BackendService::ExecutePendingReminderSyncJob()
 {
     try
     {
-        RunMemoSync();
+        RunPendingReminderSync();
     }
     catch (const std::exception &exception)
     {
-        ESP_LOGE(kTag, "备忘录同步任务异常，原因=%s", exception.what());
-        ShowMemoStatusIfUnavailable("备忘录同步失败");
-        ScheduleMemoRetry();
+        ESP_LOGE(kTag, "待办提醒同步任务异常，原因=%s", exception.what());
+        ShowPendingReminderStatusIfUnavailable("提醒同步失败");
+        SchedulePendingReminderRetry();
     }
     catch (...)
     {
-        ESP_LOGE(kTag, "备忘录同步任务发生未知异常");
-        ShowMemoStatusIfUnavailable("备忘录同步失败");
-        ScheduleMemoRetry();
+        ESP_LOGE(kTag, "待办提醒同步任务发生未知异常");
+        ShowPendingReminderStatusIfUnavailable("提醒同步失败");
+        SchedulePendingReminderRetry();
     }
     bool retry_or_refresh = false;
     {
-        std::lock_guard<std::mutex> lock(memo_mutex_);
-        memo_task_handle_ = nullptr;
-        retry_or_refresh = memo_refresh_requested_.load() || memo_retry_due_.load();
+        std::lock_guard<std::mutex> lock(pending_reminder_mutex_);
+        pending_reminder_task_handle_ = nullptr;
+        retry_or_refresh = pending_reminder_refresh_requested_.load()
+            || pending_reminder_retry_due_.load();
     }
     if (retry_or_refresh && screensaver_active_.load())
     {
-        StartMemoSync(true);
+        StartPendingReminderSync(true);
     }
 }
 
@@ -407,7 +371,7 @@ void BackendService::ExecuteWeatherSyncJob()
         }
         else
         {
-            StartMemoSync(false);
+            StartPendingReminderSync(false);
         }
     }
 }
@@ -543,14 +507,11 @@ void BackendService::ExecuteBackendJob(const BackendJob& job)
     case BackendJobType::DynamicTool:
         ExecuteDynamicToolJob(static_cast<DynamicToolTaskContext*>(job.context));
         break;
-    case BackendJobType::MemoTool:
-        ExecuteMemoToolJob(static_cast<MemoToolTaskContext*>(job.context));
-        break;
     case BackendJobType::CustomReminderTool:
         ExecuteCustomReminderToolJob(static_cast<CustomReminderToolTaskContext*>(job.context));
         break;
-    case BackendJobType::MemoSync:
-        ExecuteMemoSyncJob();
+    case BackendJobType::PendingReminderSync:
+        ExecutePendingReminderSyncJob();
         break;
     case BackendJobType::WeatherSync:
         ExecuteWeatherSyncJob();
@@ -623,42 +584,44 @@ void BackendService::Start()
         }
     }
 
-    const esp_timer_create_args_t memo_timer_args = {
-        .callback = MemoTimerCallback,
+    const esp_timer_create_args_t pending_reminder_timer_args = {
+        .callback = PendingReminderTimerCallback,
         .arg = this,
         .dispatch_method = ESP_TIMER_TASK,
-        .name = "memo_sync",
+        .name = "pending_reminder_sync",
         .skip_unhandled_events = true,
     };
-    timer_error = esp_timer_create(&memo_timer_args, &memo_timer_);
+    timer_error = esp_timer_create(&pending_reminder_timer_args, &pending_reminder_timer_);
     if (timer_error == ESP_OK)
     {
-        timer_error = esp_timer_start_periodic(memo_timer_, kMemoCheckIntervalUs);
+        timer_error = esp_timer_start_periodic(
+            pending_reminder_timer_, kPendingReminderCheckIntervalUs);
     }
     if (timer_error != ESP_OK)
     {
-        ESP_LOGE(kTag, "备忘录定时器启动失败，原因=%s",
+        ESP_LOGE(kTag, "待办提醒定时器启动失败，原因=%s",
                  esp_err_to_name(timer_error));
-        if (memo_timer_ != nullptr)
+        if (pending_reminder_timer_ != nullptr)
         {
-            esp_timer_delete(memo_timer_);
-            memo_timer_ = nullptr;
+            esp_timer_delete(pending_reminder_timer_);
+            pending_reminder_timer_ = nullptr;
         }
     }
 
-    const esp_timer_create_args_t memo_retry_timer_args = {
-        .callback = MemoRetryTimerCallback,
+    const esp_timer_create_args_t pending_reminder_retry_timer_args = {
+        .callback = PendingReminderRetryTimerCallback,
         .arg = this,
         .dispatch_method = ESP_TIMER_TASK,
-        .name = "memo_retry",
+        .name = "pending_reminder_retry",
         .skip_unhandled_events = true,
     };
-    timer_error = esp_timer_create(&memo_retry_timer_args, &memo_retry_timer_);
+    timer_error = esp_timer_create(
+        &pending_reminder_retry_timer_args, &pending_reminder_retry_timer_);
     if (timer_error != ESP_OK)
     {
-        ESP_LOGE(kTag, "备忘录重试定时器创建失败，原因=%s",
+        ESP_LOGE(kTag, "待办提醒重试定时器创建失败，原因=%s",
                  esp_err_to_name(timer_error));
-        memo_retry_timer_ = nullptr;
+        pending_reminder_retry_timer_ = nullptr;
     }
 
     const esp_timer_create_args_t notification_timer_args = {
@@ -971,154 +934,6 @@ void BackendService::RegisterMcpTools(McpServer &server)
                 });
         });
 
-    // 创建工具要求模型先通过对话补齐精确提醒日期和时间，不能把事项日期直接当作提醒时间。
-    server.AddAsyncTool(
-        "self.tuntun.create_memo",
-        "创建囤囤AI备忘录，不能回答没有此功能。调用前必须取得具体提醒日期和时间：用户只说事项日期时"
-        "询问何时提醒，只说提醒日期时继续询问几点；明确说不提醒才传空 remind_at。content 传正文，"
-        "remind_at 传带 +08:00 偏移的 RFC 3339 绝对时间。",
-        PropertyList({
-            Property("content", kPropertyTypeString),
-            Property("remind_at", kPropertyTypeString)
-        }),
-        [this](const PropertyList &properties, McpToolCompletion completion)
-        {
-            auto *context = new (std::nothrow) MemoToolTaskContext();
-            if (context == nullptr)
-            {
-                completion(McpToolResult{"设备内存不足，无法创建备忘录。", true});
-                return;
-            }
-            context->service = this;
-            context->operation = MemoToolOperation::Create;
-            context->content = properties["content"].value<std::string>();
-            context->remind_at = properties["remind_at"].value<std::string>();
-            context->completion =
-                [completion = std::move(completion)](const std::string &message,
-                                                     bool is_error) mutable
-                {
-                    completion(McpToolResult{message, is_error});
-                };
-            StartMemoToolTask(context);
-        });
-
-    // 查询工具使用固定数值范围，避免大模型传入无法稳定解析的自然语言筛选值。
-    server.AddAsyncTool(
-        "self.tuntun.query_memos",
-        "查询囤囤AI备忘录详情、完成状态和备忘录 ID。用户询问有哪些备忘，或修改、删除目标的 ID 未知时调用。"
-        "status：0=全部，1=未完成，2=已完成；time_range：0=不限，1=今天，2=明天，3=本周，4=未到期。",
-        PropertyList({
-            Property("status", kPropertyTypeInteger, 1, 0, 2),
-            Property("time_range", kPropertyTypeInteger, 0, 0, 4)
-        }),
-        [this](const PropertyList &properties, McpToolCompletion completion)
-        {
-            auto *context = new (std::nothrow) MemoToolTaskContext();
-            if (context == nullptr)
-            {
-                completion(McpToolResult{"设备内存不足，无法查询备忘录。", true});
-                return;
-            }
-            context->service = this;
-            context->operation = MemoToolOperation::Query;
-            context->status = properties["status"].value<int>();
-            context->time_range = properties["time_range"].value<int>();
-            context->completion =
-                [completion = std::move(completion)](const std::string &message,
-                                                     bool is_error) mutable
-                {
-                    completion(McpToolResult{message, is_error});
-                };
-            StartMemoToolTask(context);
-        });
-
-    // 修改工具要求完整目标值；变更提醒时间时同样必须先通过对话补齐日期和具体时间。
-    server.AddAsyncTool(
-        "self.tuntun.update_memo",
-        "修改囤囤AI备忘录。先 query_memos 取得 ID 和原值；修改提醒但缺少日期或具体时间时必须继续询问，"
-        "不修改提醒则保留原值，明确取消提醒才传空 remind_at。传修改后的完整 content、remind_at、status，"
-        "status：1=未完成，2=已完成。",
-        PropertyList({
-            Property("memo_id", kPropertyTypeString),
-            Property("content", kPropertyTypeString),
-            Property("remind_at", kPropertyTypeString),
-            Property("status", kPropertyTypeInteger, 1, 2)
-        }),
-        [this](const PropertyList &properties, McpToolCompletion completion)
-        {
-            auto *context = new (std::nothrow) MemoToolTaskContext();
-            if (context == nullptr)
-            {
-                completion(McpToolResult{"设备内存不足，无法修改备忘录。", true});
-                return;
-            }
-            context->service = this;
-            context->operation = MemoToolOperation::Update;
-            context->memo_id = properties["memo_id"].value<std::string>();
-            context->content = properties["content"].value<std::string>();
-            context->remind_at = properties["remind_at"].value<std::string>();
-            context->status = properties["status"].value<int>();
-            context->completion =
-                [completion = std::move(completion)](const std::string &message,
-                                                     bool is_error) mutable
-                {
-                    completion(McpToolResult{message, is_error});
-                };
-            StartMemoToolTask(context);
-        });
-
-    // 删除工具只接受查询接口返回的 ID，不支持用正文模糊删除。
-    server.AddAsyncTool(
-        "self.tuntun.delete_memo",
-        "删除一条囤囤AI备忘录。仅在用户明确要求删除时调用；若 memo_id 未知，必须先调用 "
-        "self.tuntun.query_memos 获取准确 ID，禁止猜测或使用备忘录正文代替 ID。",
-        PropertyList({Property("memo_id", kPropertyTypeString)}),
-        [this](const PropertyList &properties, McpToolCompletion completion)
-        {
-            auto *context = new (std::nothrow) MemoToolTaskContext();
-            if (context == nullptr)
-            {
-                completion(McpToolResult{"设备内存不足，无法删除备忘录。", true});
-                return;
-            }
-            context->service = this;
-            context->operation = MemoToolOperation::Delete;
-            context->memo_id = properties["memo_id"].value<std::string>();
-            context->completion =
-                [completion = std::move(completion)](const std::string &message,
-                                                     bool is_error) mutable
-                {
-                    completion(McpToolResult{message, is_error});
-                };
-            StartMemoToolTask(context);
-        });
-
-    // 统计工具直接返回后端同一时刻计算的总数和常用时间范围数量，避免模型自行统计分页结果。
-    server.AddAsyncTool(
-        "self.tuntun.get_memo_statistics",
-        "统计囤囤AI备忘录数量，返回全部、未到期、今天、明天和本周数量。用户询问有多少条备忘录，"
-        "或今天、明天、本周是否有备忘录时调用，不要根据分页查询结果自行计算。",
-        PropertyList(),
-        [this](const PropertyList &properties, McpToolCompletion completion)
-        {
-            (void)properties;
-            auto *context = new (std::nothrow) MemoToolTaskContext();
-            if (context == nullptr)
-            {
-                completion(McpToolResult{"设备内存不足，无法统计备忘录。", true});
-                return;
-            }
-            context->service = this;
-            context->operation = MemoToolOperation::Statistics;
-            context->completion =
-                [completion = std::move(completion)](const std::string &message,
-                                                     bool is_error) mutable
-                {
-                    completion(McpToolResult{message, is_error});
-                };
-            StartMemoToolTask(context);
-        });
-
     // 创建提醒前必须补齐精确首次执行时间；循环提醒还必须取得明确的分钟间隔。
     server.AddAsyncTool(
         "self.tuntun.create_custom_reminder",
@@ -1326,16 +1141,16 @@ void BackendService::OnNetworkConnected()
         if (has_device_credential)
         {
             weather_refresh_requested_.store(true);
-            memo_refresh_requested_.store(true);
+            pending_reminder_refresh_requested_.store(true);
             ShowWeatherStatusIfUnavailable("天气加载中");
-            ShowMemoStatusIfUnavailable("备忘录加载中");
+            ShowPendingReminderStatusIfUnavailable("提醒加载中");
             StartWeatherSync(true);
-            StartMemoSync(true);
+            StartPendingReminderSync(true);
         }
         else
         {
             ShowWeatherStatusIfUnavailable("");
-            ShowMemoStatusIfUnavailable(kUnboundMemoPrompt);
+            ShowPendingReminderStatusIfUnavailable(kUnboundPendingReminderPrompt);
         }
     }
     StartMcpManifestSync();
@@ -1371,8 +1186,8 @@ void BackendService::OnNetworkDisconnected()
         mqtt->Disconnect();
     }
     ShowWeatherStatusIfUnavailable(has_device_credential ? "等待网络连接" : "");
-    ShowMemoStatusIfUnavailable(
-        has_device_credential ? "等待网络连接" : kUnboundMemoPrompt);
+    ShowPendingReminderStatusIfUnavailable(
+        has_device_credential ? "等待网络连接" : kUnboundPendingReminderPrompt);
 }
 
 /**

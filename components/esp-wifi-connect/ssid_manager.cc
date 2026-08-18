@@ -85,9 +85,8 @@ void SsidManager::SaveToNvs() {
 
 void SsidManager::AddSsid(const std::string& ssid, const std::string& password) {
     for (auto& item : ssid_list_) {
-        ESP_LOGI(TAG, "正在比较已保存 Wi-Fi，已有=%s，新值=%s", item.ssid.c_str(), ssid.c_str());
         if (item.ssid == ssid) {
-            ESP_LOGW(TAG, "Wi-Fi 已存在，将覆盖原凭据，SSID=%s", ssid.c_str());
+            ESP_LOGI(TAG, "Wi-Fi 已存在，将覆盖原凭据");
             item.password = password;
             SaveToNvs();
             return;

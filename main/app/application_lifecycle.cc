@@ -58,7 +58,7 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
         ESP_LOGI(TAG, "固件升级前正在关闭音频通道");
         xiaozhi_client_->CloseAudioChannel();
     }
-    ESP_LOGI(TAG, "开始从指定地址升级固件，地址=%s", upgrade_url.c_str());
+    ESP_LOGI(TAG, "开始从指定地址升级固件");
 
     Alert(Lang::Strings::OTA_UPGRADE, Lang::Strings::UPGRADING, "download", Lang::Sounds::OGG_UPGRADE);
     vTaskDelay(pdMS_TO_TICKS(3000));

@@ -58,7 +58,7 @@ python scripts/release.py movecall-moji2-esp32c5
 ```
 
 产物为 `releases/v<版本>_movecall-moji2-esp32c5.zip`（完整合并镜像，从地址 0x0 烧录）。
-发布构建会清空设备原有 NVS 配置，烧录后需重新配网与绑定。
+从地址 `0x0` 烧录该合并镜像会用填充值覆盖 NVS 分区，烧录后需重新配网与绑定。
 
 也可以通过板型构建脚本配置显示样式、资源和调试选项：
 

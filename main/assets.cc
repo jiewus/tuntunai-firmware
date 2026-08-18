@@ -12,6 +12,8 @@
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
 
+#include <utility>
+
 
 #define TAG "Assets"
 #define PARTITION_LABEL "assets"
@@ -154,8 +156,9 @@ bool Assets::LoadSrmodelsFromIndex(Assets* assets, cJSON* root) {
  */
 uint32_t Assets::MmapStrategy::CalculateChecksum(const char* data, uint32_t length) {
     uint32_t checksum = 0;
+    const auto* bytes = reinterpret_cast<const uint8_t*>(data);
     for (uint32_t i = 0; i < length; i++) {
-        checksum += data[i];
+        checksum += bytes[i];
     }
     return checksum & 0xFFFF;
 }
@@ -165,10 +168,14 @@ uint32_t Assets::MmapStrategy::CalculateChecksum(const char* data, uint32_t leng
  * @details 本实现完成实际资源操作和状态同步；失败路径会保留可恢复状态并输出诊断日志。
  */
 bool Assets::MmapStrategy::InitializePartition(Assets* assets) {
-    assets->partition_valid_ = false;
-    assets_.clear();
+    constexpr size_t kHeaderSize = 12;
+    UnApplyPartition(assets);
 
     if (!Assets::FindPartition(assets)) {
+        return false;
+    }
+    if (assets->partition_->size < kHeaderSize) {
+        ESP_LOGE(TAG, "Assets partition is smaller than the header");
         return false;
     }
 
@@ -187,38 +194,75 @@ bool Assets::MmapStrategy::InitializePartition(Assets* assets) {
         return false;
     }
 
-    assets->partition_valid_ = true;
-
-    uint32_t stored_files = *(uint32_t*)(mmap_root_ + 0);
-    uint32_t stored_chksum = *(uint32_t*)(mmap_root_ + 4);
-    uint32_t stored_len = *(uint32_t*)(mmap_root_ + 8);
-
-    if (stored_len > assets->partition_->size - 12) {
-        ESP_LOGD(TAG, "The stored_len (0x%lx) is greater than the partition size (0x%lx) - 12", stored_len, assets->partition_->size);
+    const auto fail_validation = [this, assets]() {
+        UnApplyPartition(assets);
         return false;
+    };
+
+    uint32_t stored_files = 0;
+    uint32_t stored_chksum = 0;
+    uint32_t stored_len = 0;
+    memcpy(&stored_files, mmap_root_, sizeof(stored_files));
+    memcpy(&stored_chksum, mmap_root_ + 4, sizeof(stored_chksum));
+    memcpy(&stored_len, mmap_root_ + 8, sizeof(stored_len));
+
+    if (stored_len > assets->partition_->size - kHeaderSize) {
+        ESP_LOGE(TAG, "The stored length exceeds the assets partition");
+        return fail_validation();
+    }
+    if (stored_files > stored_len / sizeof(mmap_assets_table)) {
+        ESP_LOGE(TAG, "The assets file table exceeds the stored data length");
+        return fail_validation();
     }
 
+    const size_t table_size = static_cast<size_t>(stored_files) * sizeof(mmap_assets_table);
+    const size_t data_offset = kHeaderSize + table_size;
+    const size_t data_size = stored_len - table_size;
+
     auto start_time = esp_timer_get_time();
-    uint32_t calculated_checksum = CalculateChecksum(mmap_root_ + 12, stored_len);
+    uint32_t calculated_checksum = CalculateChecksum(mmap_root_ + kHeaderSize, stored_len);
     auto end_time = esp_timer_get_time();
     ESP_LOGI(TAG, "The checksum calculation time is %d ms", int((end_time - start_time) / 1000));
 
     if (calculated_checksum != stored_chksum) {
         ESP_LOGE(TAG, "The calculated checksum (0x%lx) does not match the stored checksum (0x%lx)", calculated_checksum, stored_chksum);
-        return false;
+        return fail_validation();
     }
 
-    checksum_valid_ = true;
-
+    std::map<std::string, Asset> validated_assets;
     for (uint32_t i = 0; i < stored_files; i++) {
-        auto item = (const mmap_assets_table*)(mmap_root_ + 12 + i * sizeof(mmap_assets_table));
+        mmap_assets_table item{};
+        memcpy(&item, mmap_root_ + kHeaderSize + i * sizeof(mmap_assets_table), sizeof(item));
+        const void* name_end = memchr(item.asset_name, '\0', sizeof(item.asset_name));
+        if (name_end == nullptr || item.asset_name[0] == '\0') {
+            ESP_LOGE(TAG, "Asset index %lu has an invalid name", static_cast<unsigned long>(i));
+            return fail_validation();
+        }
+
+        const size_t relative_offset = static_cast<size_t>(item.asset_offset);
+        const size_t asset_size = static_cast<size_t>(item.asset_size);
+        if (relative_offset > data_size || data_size - relative_offset < 2
+            || asset_size > data_size - relative_offset - 2) {
+            ESP_LOGE(TAG, "Asset index %lu exceeds the stored data range",
+                     static_cast<unsigned long>(i));
+            return fail_validation();
+        }
+
+        const std::string name(item.asset_name);
         auto asset = Asset{
-            .size = static_cast<size_t>(item->asset_size),
-            .offset = static_cast<size_t>(12 + sizeof(mmap_assets_table) * stored_files + item->asset_offset)
+            .size = asset_size,
+            .offset = data_offset + relative_offset
         };
-        assets_[item->asset_name] = asset;
+        if (!validated_assets.emplace(name, asset).second) {
+            ESP_LOGE(TAG, "Duplicate asset name: %s", name.c_str());
+            return fail_validation();
+        }
     }
-    return checksum_valid_;
+
+    assets_ = std::move(validated_assets);
+    checksum_valid_ = true;
+    assets->partition_valid_ = true;
+    return true;
 }
 
 /**
@@ -233,7 +277,7 @@ void Assets::MmapStrategy::UnApplyPartition(Assets* assets) {
     }
     checksum_valid_ = false;
     assets_.clear();
-    (void)assets; // Unused parameter
+    assets->partition_valid_ = false;
 }
 
 /**
@@ -243,8 +287,19 @@ void Assets::MmapStrategy::UnApplyPartition(Assets* assets) {
  * @details 本实现完成实际资源操作和状态同步；失败路径会保留可恢复状态并输出诊断日志。
  */
 bool Assets::MmapStrategy::GetAssetData(Assets* assets, const std::string& name, void*& ptr, size_t& size) {
+    ptr = nullptr;
+    size = 0;
+    if (!assets->partition_valid_ || !checksum_valid_ || mmap_root_ == nullptr) {
+        return false;
+    }
     auto asset = assets_.find(name);
     if (asset == assets_.end()) {
+        return false;
+    }
+    if (asset->second.offset > assets->partition_->size
+        || assets->partition_->size - asset->second.offset < 2
+        || asset->second.size > assets->partition_->size - asset->second.offset - 2) {
+        ESP_LOGE(TAG, "The asset %s exceeds the mapped partition", name.c_str());
         return false;
     }
     auto data = (const char*)(mmap_root_ + asset->second.offset);
@@ -298,7 +353,7 @@ bool Assets::MmapStrategy::Apply(Assets* assets, bool refresh_display_theme) {
  * @details 本实现完成实际资源操作和状态同步；失败路径会保留可恢复状态并输出诊断日志。
  */
 bool Assets::Download(std::string url, std::function<void(int progress, size_t speed)> progress_callback) {
-    ESP_LOGI(TAG, "Downloading new version of assets from %s", url.c_str());
+    ESP_LOGI(TAG, "Downloading new version of assets");
 
     auto network = Board::GetInstance().GetNetwork();
     auto http = network->CreateHttp(0);

@@ -89,11 +89,6 @@ private:
 
     std::function<void(int progress, size_t speed)> upgrade_callback_;
     /**
-     * @brief 把点分版本号转换为整数序列。
-     * @param version 例如 2.2.6。
-     */
-    std::vector<int> ParseVersion(const std::string& version);
-    /**
      * @brief 按数字段比较版本。
      * @return newVersion 更新时返回 true。
      */

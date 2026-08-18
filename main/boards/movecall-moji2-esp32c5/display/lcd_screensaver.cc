@@ -570,7 +570,7 @@ void LcdDisplay::CreateScreensaverUI() {
         lv_obj_set_style_text_align(memo_label, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_line_space(memo_label, kScreensaverMemoLineSpacing, 0);
         lv_label_set_long_mode(memo_label, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(memo_label, "暂无待办");
+        lv_label_set_text(memo_label, "暂无提醒");
         lv_obj_align(memo_label, LV_ALIGN_TOP_MID, 0,
                      -row * kScreensaverMemoRowHeight);
 
@@ -962,17 +962,17 @@ void LcdDisplay::SetScreensaverWeatherText(
 }
 
 /**
- * @brief 替换屏保备忘录数组并立即从第一条重新展示。
- * @param memos 后端按提醒时间排序的备忘录正文，最多采用前 5 条。
+ * @brief 替换屏保待办提醒数组并立即从第一条重新展示。
+ * @param reminders 后端按提醒时间排序的提醒文本，最多采用前 10 条。
  */
-void LcdDisplay::SetScreensaverMemos(const std::vector<std::string>& memos) {
+void LcdDisplay::SetScreensaverPendingReminders(const std::vector<std::string>& reminders) {
     DisplayLockGuard lock(this);
-    const size_t count = std::min<size_t>(memos.size(), 5);
+    const size_t count = std::min<size_t>(reminders.size(), 10);
     if (screensaver_memos_.size() == count
-        && std::equal(screensaver_memos_.begin(), screensaver_memos_.end(), memos.begin())) {
+        && std::equal(screensaver_memos_.begin(), screensaver_memos_.end(), reminders.begin())) {
         return;
     }
-    screensaver_memos_.assign(memos.begin(), memos.begin() + count);
+    screensaver_memos_.assign(reminders.begin(), reminders.begin() + count);
     screensaver_memo_index_ = 0;
     UpdateScreensaverMemo();
     if (screensaver_memo_timer_ != nullptr) {
@@ -1013,7 +1013,7 @@ void LcdDisplay::UpdateScreensaverMemo() {
             ApplyScreensaverTextFont(theme->text_font()->font());
         }
     }
-    const char* visible_text = "暂无待办";
+    const char* visible_text = "暂无提醒";
     if (screensaver_memos_.empty()) {
         screensaver_memo_index_ = 0;
     } else {

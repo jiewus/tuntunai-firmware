@@ -210,7 +210,7 @@ void BackendService::BindingTaskEntry(void *context)
             if (service->screensaver_active_.load())
             {
                 service->StartWeatherSync(true);
-                service->StartMemoSync(true);
+                service->StartPendingReminderSync(true);
             }
         });
     }

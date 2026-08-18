@@ -402,10 +402,11 @@ def pack_assets_simple(target_path, include_path, out_file, assets_path, max_nam
 
     mmap_table = bytearray()
     for file_name, offset, file_size, width, height in file_info_list:
-        if len(file_name) > max_name_len:
-            print(f'Warning: "{file_name}" exceeds {max_name_len} bytes and will be truncated.')
-        fixed_name = file_name.ljust(max_name_len, '\0')[:max_name_len]
-        mmap_table.extend(fixed_name.encode('utf-8'))
+        encoded_name = file_name.encode('utf-8')
+        if len(encoded_name) >= max_name_len:
+            raise ValueError(
+                f'Asset name "{file_name}" must be shorter than {max_name_len} UTF-8 bytes')
+        mmap_table.extend(encoded_name.ljust(max_name_len, b'\0'))
         mmap_table.extend(file_size.to_bytes(4, byteorder='little'))
         mmap_table.extend(offset.to_bytes(4, byteorder='little'))
         mmap_table.extend(width.to_bytes(2, byteorder='little'))

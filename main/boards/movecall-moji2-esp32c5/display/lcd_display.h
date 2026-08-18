@@ -447,9 +447,9 @@ public:
                                            const std::string& weather,
                                            const std::string& temperature_range) override;
     /**
-     * @brief 线程安全地替换备忘录缓存，并从第一条重新开始轮播。
+     * @brief 线程安全地替换待办提醒缓存，并从第一条重新开始轮播。
      */
-    virtual void SetScreensaverMemos(const std::vector<std::string>& memos) override;
+    virtual void SetScreensaverPendingReminders(const std::vector<std::string>& reminders) override;
     /**
      * @brief 显示只保留表盘外圈的自定义 MCP 工具清单页面。
      * @param title 固定显示在顶部的清单标题。

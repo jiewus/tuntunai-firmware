@@ -140,13 +140,13 @@ public:
         (void)temperature_range;
     }
     /**
-     * @brief 替换屏保循环展示的备忘录数组。
-     * @param memos 已按后端优先级排序的屏保文本数组，最多使用前 5 条。
-     * @details 每条结构化文本使用“时间换行正文”格式。默认实现为空操作，具体 LCD 实现负责
+     * @brief 替换屏保循环展示的待办提醒数组。
+     * @param reminders 已按后端优先级排序的屏保文本数组，最多使用前 5 条。
+     * @details 每条结构化文本使用“正文换行时间”格式。默认实现为空操作，具体 LCD 实现负责
      * 复制文本、限制三行并重置轮播位置。
      */
-    virtual void SetScreensaverMemos(const std::vector<std::string>& memos) {
-        (void)memos;
+    virtual void SetScreensaverPendingReminders(const std::vector<std::string>& reminders) {
+        (void)reminders;
     }
     /**
      * @brief 显示自定义 MCP 工具清单专用表盘。

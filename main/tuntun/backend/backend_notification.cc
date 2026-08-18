@@ -220,10 +220,6 @@ void BackendService::RunNotificationSync()
         {
             notification.source_title = "天气播报";
         }
-        else if (source_type->valueint == kNotificationSourceMemo)
-        {
-            notification.source_title = "备忘录提醒";
-        }
         else
         {
             notification.source_title = "自定义提醒";
@@ -393,18 +389,18 @@ bool BackendService::ConnectNotificationMqtt()
         cJSON *revision = message_root == nullptr
             ? nullptr
             : cJSON_GetObjectItemCaseSensitive(message_root, "revision");
-        const bool memo_changed = cJSON_IsString(type)
-            && std::strcmp(type->valuestring, "memo.changed") == 0
+        const bool reminder_changed = cJSON_IsString(type)
+            && std::strcmp(type->valuestring, "custom-reminder.changed") == 0
             && cJSON_IsNumber(revision)
             && revision->valueint == 1;
-        if (memo_changed)
+        if (reminder_changed)
         {
             cJSON_Delete(message_root);
-            memo_refresh_requested_.store(true);
-            ESP_LOGI(kTag, "收到备忘录变更提示，准备刷新屏保备忘录");
+            pending_reminder_refresh_requested_.store(true);
+            ESP_LOGI(kTag, "收到自定义提醒变更提示，准备刷新屏保待办提醒");
             Application::GetInstance().Schedule([this]()
             {
-                StartMemoSync(true);
+                StartPendingReminderSync(true);
             });
             return;
         }
@@ -711,9 +707,10 @@ void BackendService::NotificationPlaybackTaskEntry(void *context)
     {
         service->StartWeatherSync(true);
     }
-    if (service->memo_refresh_requested_.load() || service->memo_retry_due_.load())
+    if (service->pending_reminder_refresh_requested_.load()
+        || service->pending_reminder_retry_due_.load())
     {
-        service->StartMemoSync(true);
+        service->StartPendingReminderSync(true);
     }
     DeleteCurrentPsramTask();
 }

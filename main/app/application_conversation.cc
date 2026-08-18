@@ -126,7 +126,7 @@ void Application::InitializeXiaozhiClient() {
     callbacks.on_tts_sentence = [this, display](const std::string& text) {
         ESP_LOGI(TAG, "<< %s", text.c_str());
         if (IsInternalToolCallText(text.c_str())) {
-            ESP_LOGD(TAG, "已过滤内部工具调用字幕，内容=%s", text.c_str());
+            ESP_LOGD(TAG, "已过滤内部工具调用字幕");
             return;
         }
         Schedule([this, display, text]() {
@@ -168,7 +168,8 @@ void Application::InitializeXiaozhiClient() {
     };
 #if CONFIG_RECEIVE_CUSTOM_MESSAGE
     callbacks.on_custom_message = [this, display](const std::string& payload) {
-        ESP_LOGI(TAG, "收到自定义消息，负载=%s", payload.c_str());
+        ESP_LOGD(TAG, "收到自定义消息，负载字节数=%u",
+                 static_cast<unsigned>(payload.size()));
         Schedule([display, payload]() {
             display->SetChatMessage("system", payload.c_str());
         });
@@ -223,7 +224,7 @@ void Application::ShowActivationCode(const std::string& code, const std::string&
  * @details 同步更新状态栏、表情和系统消息；sound 非空时把提示音交给音频服务异步解码播放。
  */
 void Application::Alert(const char* status, const char* message, const char* emotion, const std::string_view& sound) {
-    ESP_LOGW(TAG, "设备告警，表情=%s，状态=%s，内容=%s", emotion, status, message);
+    ESP_LOGW(TAG, "设备告警，表情=%s，状态=%s", emotion, status);
     auto& board = Board::GetInstance();
     board.WakeUpScreen();
     auto display = board.GetDisplay();

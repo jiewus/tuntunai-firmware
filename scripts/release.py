@@ -19,6 +19,11 @@ from board_config import BOARD_ROOT, load_board
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BOARD = "movecall-moji2-esp32c5"
+REQUIRED_DISABLED_OPTIONS = (
+    "CONFIG_SECURE_BOOT",
+    "CONFIG_SECURE_FLASH_ENC_ENABLED",
+    "CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK",
+)
 
 
 def find_idf_py() -> str:
@@ -78,6 +83,36 @@ def available_boards() -> list[str]:
     return boards
 
 
+def reset_release_sdkconfig(build_dir: Path) -> None:
+    """Remove generated configuration files so defaults are applied from scratch."""
+    for filename in ("sdkconfig", "sdkconfig.old"):
+        path = build_dir / filename
+        if path.exists():
+            path.unlink()
+
+
+def validate_non_secure_sdkconfig(sdkconfig: Path) -> None:
+    """Fail unless the generated release configuration keeps security eFuse features off."""
+    if not sdkconfig.is_file():
+        raise RuntimeError(f"Generated sdkconfig not found: {sdkconfig}")
+
+    values: dict[str, str] = {}
+    for raw_line in sdkconfig.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if line.startswith("CONFIG_") and "=" in line:
+            name, value = line.split("=", 1)
+            values[name] = value
+        elif line.startswith("# CONFIG_") and line.endswith(" is not set"):
+            values[line[2:-11]] = "n"
+
+    invalid = [option for option in REQUIRED_DISABLED_OPTIONS if values.get(option) != "n"]
+    if invalid:
+        raise RuntimeError(
+            "Non-secure release configuration check failed; expected disabled: "
+            + ", ".join(invalid)
+        )
+
+
 def package_firmware(board: str, build_dir: Path) -> Path:
     """Compress the board's merged image without mixing artifacts from other targets."""
     merged = build_dir / "tuntun-binary.bin"
@@ -114,7 +149,11 @@ def build(board: str) -> Path:
         f"-DSDKCONFIG={build_dir / 'sdkconfig'}",
         f"-DSDKCONFIG_DEFAULTS={sdkconfig_defaults}",
     )
+    reset_release_sdkconfig(build_dir)
+    run(*common_args, "reconfigure")
+    validate_non_secure_sdkconfig(build_dir / "sdkconfig")
     run(*common_args, "build")
+    validate_non_secure_sdkconfig(build_dir / "sdkconfig")
     run(*common_args, "merge-bin", "-o", str(build_dir / "tuntun-binary.bin"))
     return package_firmware(board, build_dir)
 

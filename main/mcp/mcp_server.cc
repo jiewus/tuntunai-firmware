@@ -181,7 +181,7 @@ void McpServer::AddUserOnlyTools() {
         }),
         [this](const PropertyList& properties) -> ReturnValue {
             auto url = properties["url"].value<std::string>();
-            ESP_LOGI(TAG, "用户请求从指定地址升级固件，地址=%s", url.c_str());
+            ESP_LOGI(TAG, "用户请求从指定地址升级固件");
             
             auto& app = Application::GetInstance();
             app.Schedule([url, &app]() {
@@ -221,7 +221,8 @@ void McpServer::AddUserOnlyTools() {
                     throw std::runtime_error("Failed to snapshot screen");
                 }
 
-                ESP_LOGI(TAG, "正在上传屏幕截图，字节数=%u，地址=%s", jpeg_data.size(), url.c_str());
+                ESP_LOGI(TAG, "正在上传屏幕截图，字节数=%u",
+                         static_cast<unsigned>(jpeg_data.size()));
                 
                 // 构造 multipart/form-data 请求体。
                 std::string boundary = "----ESP32_SCREEN_SNAPSHOT_BOUNDARY";
@@ -257,7 +258,8 @@ void McpServer::AddUserOnlyTools() {
                 }
                 std::string result = http->ReadAll();
                 http->Close();
-                ESP_LOGI(TAG, "屏幕截图上传结果=%s", result.c_str());
+                ESP_LOGI(TAG, "屏幕截图上传完成，响应字节数=%u",
+                         static_cast<unsigned>(result.size()));
                 return true;
             });
         
@@ -266,6 +268,9 @@ void McpServer::AddUserOnlyTools() {
                 Property("url", kPropertyTypeString)
             }),
             [display](const PropertyList& properties) -> ReturnValue {
+                constexpr size_t kMaximumPreviewImageBytes = 2 * 1024 * 1024;
+                using BufferPtr = std::unique_ptr<void, decltype(&heap_caps_free)>;
+
                 auto url = properties["url"].value<std::string>();
                 auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
 
@@ -278,15 +283,21 @@ void McpServer::AddUserOnlyTools() {
                 }
 
                 size_t content_length = http->GetBodyLength();
-                char* data = (char*)heap_caps_malloc(content_length, MALLOC_CAP_8BIT);
-                if (data == nullptr) {
+                if (content_length == 0 || content_length > kMaximumPreviewImageBytes) {
+                    http->Close();
+                    throw std::runtime_error("Image size is invalid or exceeds 2 MiB");
+                }
+
+                BufferPtr data(heap_caps_malloc(content_length, MALLOC_CAP_8BIT), &heap_caps_free);
+                if (!data) {
                     throw std::runtime_error("Failed to allocate memory for image: " + url);
                 }
                 size_t total_read = 0;
                 while (total_read < content_length) {
-                    int ret = http->Read(data + total_read, content_length - total_read);
+                    auto* bytes = static_cast<char*>(data.get());
+                    int ret = http->Read(bytes + total_read, content_length - total_read);
                     if (ret < 0) {
-                        heap_caps_free(data);
+                        http->Close();
                         throw std::runtime_error("Failed to download image: " + url);
                     }
                     if (ret == 0) {
@@ -296,7 +307,12 @@ void McpServer::AddUserOnlyTools() {
                 }
                 http->Close();
 
-                if (!display->SetPreviewImageData(data, content_length)) {
+                if (total_read != content_length) {
+                    throw std::runtime_error("Image download ended before Content-Length");
+                }
+
+                void* image_data = data.release();
+                if (!display->SetPreviewImageData(image_data, total_read)) {
                     throw std::runtime_error("Failed to preview image: " + url);
                 }
                 return true;
@@ -558,15 +574,32 @@ void McpServer::ReplyResult(int id, const std::string& result) {
  * @brief 回复 JSON-RPC error。
  * @param id 请求编号。
  * @param message 可诊断错误说明。
- * @details 将错误文本放入 error.message 后通过当前云端协议发送。调用者应避免在 message 中传入
- * 未转义的引号等 JSON 特殊字符。
+ * @details 使用 cJSON 序列化错误文本，确保引号、反斜杠和控制字符得到正确转义。
  */
 void McpServer::ReplyError(int id, const std::string& message) {
-    std::string payload = "{\"jsonrpc\":\"2.0\",\"id\":";
-    payload += std::to_string(id);
-    payload += ",\"error\":{\"message\":\"";
-    payload += message;
-    payload += "\"}}";
+    cJSON* root = cJSON_CreateObject();
+    cJSON* error = cJSON_CreateObject();
+    std::string payload;
+    if (root != nullptr && error != nullptr) {
+        cJSON_AddStringToObject(root, "jsonrpc", "2.0");
+        cJSON_AddNumberToObject(root, "id", id);
+        cJSON_AddStringToObject(error, "message", message.c_str());
+        cJSON_AddItemToObject(root, "error", error);
+        error = nullptr;
+
+        char* serialized = cJSON_PrintUnformatted(root);
+        if (serialized != nullptr) {
+            payload = serialized;
+            cJSON_free(serialized);
+        }
+    }
+    cJSON_Delete(error);
+    cJSON_Delete(root);
+
+    if (payload.empty()) {
+        payload = "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id)
+            + ",\"error\":{\"message\":\"Failed to serialize error response\"}}";
+    }
     Application::GetInstance().SendMcpMessage(payload);
 }
 
