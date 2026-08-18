@@ -85,7 +85,7 @@ python scripts/build.py movecall-moji2-esp32c5 flash-monitor -p /dev/cu.usbmodem
 
 ### 绑定流程
 
-唤醒设备并说“绑定囤囤AI平台”或“绑定设备”，屏幕会显示一次性绑定码；在囤囤AI网页(https://web.tuntun.life)端设备页面输入该绑定码即可完成绑定。
+唤醒设备并说“绑定囤囤AI平台”或“绑定设备”，屏幕会显示一次性绑定码；在囤囤AI网页 (https://web.tuntun.life) 端设备页面输入该绑定码即可完成绑定。
 已绑定的设备再次绑定会提示“设备已绑定”；解绑需登录囤囤AI后台操作。
 
 ### 绑定后的能力
