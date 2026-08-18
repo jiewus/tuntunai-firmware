@@ -1,25 +1,23 @@
-# Board Porting Contract
+# 板型移植契约
 
-Each directory directly below `main/boards/` is a self-contained hardware
-adapter. Adding a board must not require changes to the project root, shared
-`main` sources, or build/release scripts.
+`main/boards/` 下每个子目录都是一个自包含的硬件适配层。新增板型时，**不需要**修改项目根、公共
+`main` 源码或构建/发布脚本。
 
-## Required files
+## 必需文件
 
     main/boards/<board>/
     ├── CMakeLists.txt
     ├── config.json
-    ├── dependencies.lock       generated after the first configure
+    ├── dependencies.lock       首次 configure 后生成
     ├── idf_component.yml
     ├── sdkconfig.defaults
     ├── config.h
-    ├── assets/                  files added to the default assets partition
-    └── <board implementation>.cc
+    ├── assets/                  加入默认资源分区的文件
+    └── <board 实现>.cc
 
-The directory name uses lowercase letters, digits, and hyphens. It is also the
-value passed to `BOARD_TYPE`.
+目录名使用小写字母、数字和连字符，同时也是传给 `BOARD_TYPE` 的值。
 
-`config.json` is the single metadata source used by CMake and Python tooling:
+`config.json` 是 CMake 与 Python 工具链使用的唯一元数据来源：
 
     {
       "target": "esp32s3",
@@ -32,65 +30,49 @@ value passed to `BOARD_TYPE`.
       "partition_table": "partitions/v2/16m.csv"
     }
 
-- `target`: ESP-IDF chip target.
-- `name`: user-visible board/SKU name.
-- `component`: must equal the board directory name.
-- `device_model`: positive backend device model number.
-- `builtin_text_font`, `builtin_icon_font`, and `emoji_collection`: resources
-  selected by this board.
-- `partition_table`: optional project-relative partition table checked by the
-  board metadata validator. Select it in the board's `sdkconfig.defaults`.
+- `target`：ESP-IDF 芯片目标。
+- `name`：对用户可见的板型/SKU 名称。
+- `component`：必须等于板型目录名。
+- `device_model`：正整数形式的后端设备型号编号。
+- `builtin_text_font`、`builtin_icon_font`、`emoji_collection`：该板型选用的资源。
+- `partition_table`：可选的、相对项目根的分区表路径，由板型元数据校验器检查。
 
-`CMakeLists.txt` registers all board implementation sources. Put LCD, Codec,
-battery, touch, camera, or other hardware-specific sources here rather than in
-the shared `main/CMakeLists.txt`. Register the component with
-`WHOLE_ARCHIVE` so the board's `DECLARE_BOARD` factory is retained.
-Files placed in `assets/` are included in that board's generated default
-`assets.bin`; display artwork and compiled fonts should stay inside the board
-directory.
+`CMakeLists.txt` 注册该板型的所有实现源码。LCD、Codec、电池、触摸、摄像头等硬件相关源码应放在
+这里，而不是公共的 `main/CMakeLists.txt`。组件注册时使用 `WHOLE_ARCHIVE`，以确保板型的
+`DECLARE_BOARD` 工厂被保留。放在 `assets/` 下的文件会进入该板型生成的默认 `assets.bin`；
+显示素材和编译后的字体应保留在板型目录内。
 
-`idf_component.yml` owns dependencies used only by that board. A board that
-changes LCD or audio Codec can therefore replace those dependencies without
-editing the shared component manifest. Shared interfaces exported by `main`
-provide network, display, audio, backlight, and LED contracts. Concrete
-LCD/LVGL, Codec, button, battery, backlight, and LED dependencies belong to the
-board manifest.
-The Component Manager writes `dependencies.lock` beside the manifest after the
-first successful configure. Commit it so every target keeps its own resolved
-dependency graph; it does not need to exist before the first configure.
+`idf_component.yml` 只负责该板型专用的依赖。需要更换 LCD 或音频 Codec 的板型因此可以直接
+替换这些依赖，而无需修改公共组件清单。`main` 导出的公共接口提供网络、显示、音频、背光和 LED
+契约；具体的 LCD/LVGL、Codec、按键、电池、背光和 LED 依赖归属板型清单。
+首次 configure 成功后，Component Manager 会在清单旁生成 `dependencies.lock`。请提交该文件，
+让每个目标都保留各自解析完成的依赖图；它无需在首次 configure 前存在。
 
-`sdkconfig.defaults` owns chip, Flash, PSRAM, partition, wake-word, and
-board-resource limits. Shared protocol/UI defaults remain in the project-level
-`sdkconfig.defaults`.
+`sdkconfig.defaults` 负责芯片、Flash、PSRAM、分区、唤醒词和板级资源限制。公共的协议/UI 默认值
+仍保留在项目级 `sdkconfig.defaults`。
 
-The board implementation must derive from `Board` or `WifiBoard` and
-register exactly one concrete type using `DECLARE_BOARD`.
+板型实现必须继承自 `Board` 或 `WifiBoard`，并使用 `DECLARE_BOARD` 注册**恰好一个**具体类型。
 
-## Commands
+## 常用命令
 
-List discovered boards:
+列出已发现的板型：
 
     python scripts/build.py --list-boards
 
-Build a board in an isolated directory:
+在隔离目录中构建某个板型：
 
     python scripts/build.py <board> build
 
-Direct ESP-IDF commands are also supported:
+也支持直接使用 ESP-IDF 命令：
 
     idf.py -B build/<board>/debug -DBOARD_TYPE=<board> build
 
-The target is read from `config.json`; do not run `idf.py set-target`
-when using these per-board build directories.
+目标芯片从 `config.json` 读取；使用这些按板型隔离的构建目录时，**不要**执行 `idf.py set-target`。
 
-## Adding a board
+## 新增板型
 
-1. Copy an existing board directory with similar peripherals.
-2. Replace `config.json`, GPIO definitions, component dependencies, and
-   `sdkconfig.defaults`.
-3. Implement the board factory and hardware initialization inside the new
-   directory.
-4. Register the new `device_model` in the backend if it is a distinct
-   commercial model. This is a server-side model registration, not a firmware
-   build-system change.
-5. Run `python scripts/board_config.py list`, then build the new board.
+1. 复制一个外设相近的现有板型目录。
+2. 替换 `config.json`、GPIO 定义、组件依赖与 `sdkconfig.defaults`。
+3. 在新目录内实现板型工厂与硬件初始化。
+4. 如果是独立商用型号，在后端注册新的 `device_model`。这是服务端的型号注册，不是固件构建系统改动。
+5. 运行 `python scripts/board_config.py list`，然后构建新板型。
