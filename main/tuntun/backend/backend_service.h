@@ -180,11 +180,11 @@ private:
     };
 
     /**
-     * @brief 判断任务是否直接服务于当前语音对话。
+     * @brief 判断任务是否需要绕过普通后台任务延后逻辑。
      * @param type 后端 Worker 任务类型。
-     * @return MCP 对话操作返回 true，后台同步和心跳返回 false。
+     * @return MCP 对话操作和设备心跳返回 true，普通后台同步返回 false。
      */
-    static bool IsConversationBackendJob(BackendJobType type);
+    static bool IsPriorityBackendJob(BackendJobType type);
     /**
      * @brief 判断任务是否用于准备主动通知音频播放。
      * @param type 后端 Worker 任务类型。
@@ -686,7 +686,7 @@ private:
     void ScheduleNotificationMqttReconnect();
 
     /**
-     * @brief 启动两分钟心跳周期并立即安排一次心跳。
+     * @brief 启动三十秒心跳周期并立即安排一次心跳。
      */
     void StartHeartbeatPublishing();
 
@@ -771,7 +771,7 @@ private:
     static void NotificationReconnectTimerCallback(void* context);
 
     /**
-     * @brief 两分钟设备心跳定时器回调，只负责安排发布任务。
+     * @brief 三十秒设备心跳定时器回调，只负责安排发布任务。
      * @param context 指向当前 BackendService 单例。
      */
     static void HeartbeatTimerCallback(void* context);
@@ -1052,7 +1052,7 @@ private:
      */
     esp_timer_handle_t notification_reconnect_timer_ = nullptr;
     /**
-     * @brief 每两分钟安排一次业务 EMQX 心跳的周期定时器。
+     * @brief 每三十秒安排一次业务 EMQX 心跳的周期定时器。
      */
     esp_timer_handle_t heartbeat_timer_ = nullptr;
     /**

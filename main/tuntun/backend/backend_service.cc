@@ -74,16 +74,16 @@ void BackendService::BackendWorkerTaskEntry(void *context)
                 }
 
                 size_t selected_offset = 0;
-                bool conversation_job_found = false;
+                bool priority_job_found = false;
                 bool playback_job_found = false;
                 for (size_t offset = 0; offset < service->backend_job_count_; ++offset)
                 {
                     const size_t index =
                         (service->backend_job_head_ + offset) % kBackendWorkerQueueCapacity;
-                    if (IsConversationBackendJob(service->backend_jobs_[index].type))
+                    if (IsPriorityBackendJob(service->backend_jobs_[index].type))
                     {
                         selected_offset = offset;
-                        conversation_job_found = true;
+                        priority_job_found = true;
                         break;
                     }
                     if (!playback_job_found
@@ -94,7 +94,7 @@ void BackendService::BackendWorkerTaskEntry(void *context)
                     }
                 }
 
-                defer_normal_job = !conversation_job_found
+                defer_normal_job = !priority_job_found
                     && normal_job_should_defer;
                 if (!defer_normal_job)
                 {
@@ -144,11 +144,11 @@ void BackendService::BackendWorkerTaskEntry(void *context)
 }
 
 /**
- * @brief 判断任务是否直接服务于当前语音对话。
+ * @brief 判断任务是否需要绕过普通后台任务延后逻辑。
  * @param type 后端 Worker 任务类型。
- * @return MCP 对话操作返回 true，后台同步和心跳返回 false。
+ * @return MCP 对话操作和设备心跳返回 true，普通后台同步返回 false。
  */
-bool BackendService::IsConversationBackendJob(BackendJobType type)
+bool BackendService::IsPriorityBackendJob(BackendJobType type)
 {
     switch (type)
     {
@@ -156,6 +156,7 @@ bool BackendService::IsConversationBackendJob(BackendJobType type)
     case BackendJobType::CustomReminderTool:
     case BackendJobType::WeatherLocation:
     case BackendJobType::WeatherAnnouncement:
+    case BackendJobType::Heartbeat:
         return true;
     default:
         return false;
@@ -471,12 +472,14 @@ void BackendService::ExecuteNotificationSyncJob()
  */
 void BackendService::ExecuteHeartbeatJob()
 {
+    bool connected = false;
     bool published = false;
     {
         std::lock_guard<std::mutex> lock(notification_mutex_);
-        if (notification_mqtt_ != nullptr
+        connected = notification_mqtt_ != nullptr
             && notification_mqtt_->IsConnected()
-            && !heartbeat_topic_.empty())
+            && !heartbeat_topic_.empty();
+        if (connected)
         {
             published = notification_mqtt_->Publish(
                 heartbeat_topic_, "{\"type\":\"device.heartbeat\",\"revision\":1}", 0);
@@ -486,7 +489,7 @@ void BackendService::ExecuteHeartbeatJob()
     {
         ESP_LOGD(kTag, "设备 MQTT 心跳已发送");
     }
-    else if (network_connected_.load())
+    else if (connected)
     {
         ESP_LOGW(kTag, "设备 MQTT 心跳发送失败，等待下一周期重试");
     }
@@ -1163,7 +1166,6 @@ void BackendService::OnNetworkConnected()
 void BackendService::OnNetworkDisconnected()
 {
     network_connected_.store(false);
-    StopHeartbeatPublishing();
     bool has_device_credential = false;
     {
         std::lock_guard<std::mutex> lock(binding_mutex_);

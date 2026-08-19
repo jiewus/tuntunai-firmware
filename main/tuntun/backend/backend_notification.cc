@@ -514,7 +514,6 @@ bool BackendService::ConnectNotificationMqtt()
         {
             return;
         }
-        StopHeartbeatPublishing();
         ESP_LOGW(kTag, "业务EMQX连接已断开，准备指数退避重连");
         ScheduleNotificationMqttReconnect();
     });
@@ -1066,7 +1065,7 @@ void BackendService::NotificationReconnectTimerCallback(void *context)
 }
 
 /**
- * @brief 启动两分钟心跳周期并立即安排一次心跳。
+ * @brief 启动三十秒心跳周期并立即安排一次心跳。
  */
 void BackendService::StartHeartbeatPublishing()
 {
@@ -1113,7 +1112,7 @@ void BackendService::EnqueueHeartbeat()
 }
 
 /**
- * @brief 两分钟设备心跳定时器回调，只负责安排发布任务。
+ * @brief 三十秒设备心跳定时器回调，只负责安排发布任务。
  * @param context 指向当前 BackendService 单例。
  */
 void BackendService::HeartbeatTimerCallback(void *context)

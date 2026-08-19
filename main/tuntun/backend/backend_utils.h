@@ -187,8 +187,8 @@ namespace tuntun::backend_internal
      * @brief 主动通知 HTTPS 补偿、音频下载和任务资源限制。
      */
     constexpr int64_t kNotificationCheckIntervalUs = 5LL * 60LL * 1000LL * 1000LL;
-    /** @brief 设备业务 EMQX 心跳周期，固定为两分钟。 */
-    constexpr int64_t kHeartbeatIntervalUs = 2LL * 60LL * 1000LL * 1000LL;
+    /** @brief 设备业务 EMQX 心跳周期，固定为三十秒。 */
+    constexpr int64_t kHeartbeatIntervalUs = 30LL * 1000LL * 1000LL;
     /**
      * @brief 通知确认任务的专用栈大小，单位为字节；通知同步本身使用常驻 Worker。
      */
