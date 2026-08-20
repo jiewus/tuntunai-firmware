@@ -6,7 +6,6 @@
 支持通过独立板型目录扩展其他 ESP32 芯片和硬件。
 
 ![Moji2.0 产品图](docs/images/moji2-product.jpg)
-[![观看演示视频](docs/images/image.png)]([https://www.bilibili.com/video/BV1B78c6yE56])
 
 ## 项目起源与致谢
 
