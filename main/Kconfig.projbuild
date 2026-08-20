@@ -3,9 +3,8 @@ menu "TuntunLife Assistant"
 
 config OTA_URL
     string "Default OTA URL"
-    # 设备启动时向该服务查询协议参数、激活状态和新固件地址。
-    # 这是开放的 OTA 服务，默认对所有外部硬件开放；可通过 menuconfig 改成你自己的服务地址。
-    default "https://api.tenclass.net/xiaozhi/ota/"
+    # 设备启动时向 TuntunLife 自有服务检查新固件并获取协议配置。
+    default "https://api.tuntun.life/api/ota/moji2"
 
 config TUNTUN_API_URL
     string "TuntunLife API URL"

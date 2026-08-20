@@ -175,22 +175,20 @@ void McpServer::AddUserOnlyTools() {
         });
 
     // 固件升级实际在 Application 主任务中执行，避免阻塞 MCP 网络接收线程。
-    AddUserOnlyTool("self.upgrade_firmware", "Upgrade firmware from a specific URL. This will download and install the firmware, then reboot the device.",
+    AddUserOnlyTool("self.upgrade_firmware",
+        "Upgrade firmware from a specific URL. This will download and install the firmware, then reboot the device.",
         PropertyList({
             Property("url", kPropertyTypeString, "The URL of the firmware binary file to download and install")
         }),
         [this](const PropertyList& properties) -> ReturnValue {
             auto url = properties["url"].value<std::string>();
             ESP_LOGI(TAG, "用户请求从指定地址升级固件");
-            
             auto& app = Application::GetInstance();
             app.Schedule([url, &app]() {
-                bool success = app.UpgradeFirmware(url);
-                if (!success) {
+                if (!app.UpgradeFirmware(url)) {
                     ESP_LOGE(TAG, "固件升级失败");
                 }
             });
-            
             return true;
         });
 

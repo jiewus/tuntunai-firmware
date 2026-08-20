@@ -1,6 +1,6 @@
 /**
  * @file application_lifecycle.cc
- * @brief 固件升级、重启、休眠和 MCP 外部入口实现。
+ * @brief 重启、休眠和 MCP 外部入口实现。
  */
 #include "app/application.h"
 #include "board.h"
@@ -43,36 +43,32 @@ void Application::Reboot() {
  * @param url 固件二进制的 HTTP/HTTPS 地址。
  * @param version 用于界面显示的目标版本号，可为空。
  * @return 升级流程启动并完成成功时返回 true。
- * @details 关闭云端音频、播放升级提示、切换高性能模式并停止音频任务，再调用 Ota::Upgrade()。
- * 失败时恢复音频与低功耗；成功时显示结果并立即重启到新分区。
+ * @details 手动升级显示进度和结果；启动阶段的自动 OTA 使用 CheckNewVersion() 的静默路径。
  */
 bool Application::UpgradeFirmware(const std::string& url, const std::string& version) {
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
+    const std::string version_info = version.empty() ? "(Manual upgrade)" : version;
 
-    std::string upgrade_url = url;
-    std::string version_info = version.empty() ? "(Manual upgrade)" : version;
-
-    // 写入固件前关闭云端音频，避免升级期间仍有网络和 Codec 活动。
     if (xiaozhi_client_ && xiaozhi_client_->IsAudioChannelOpened()) {
         ESP_LOGI(TAG, "固件升级前正在关闭音频通道");
         xiaozhi_client_->CloseAudioChannel();
     }
     ESP_LOGI(TAG, "开始从指定地址升级固件");
 
-    Alert(Lang::Strings::OTA_UPGRADE, Lang::Strings::UPGRADING, "download", Lang::Sounds::OGG_UPGRADE);
+    Alert(Lang::Strings::OTA_UPGRADE, Lang::Strings::UPGRADING,
+        "download", Lang::Sounds::OGG_UPGRADE);
     vTaskDelay(pdMS_TO_TICKS(3000));
 
     SetDeviceState(kDeviceStateUpgrading);
-
-    std::string message = std::string(Lang::Strings::NEW_VERSION) + version_info;
+    const std::string message = std::string(Lang::Strings::NEW_VERSION) + version_info;
     display->SetChatMessage("system", message.c_str());
 
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
     audio_service_.Stop();
     vTaskDelay(pdMS_TO_TICKS(1000));
 
-    bool upgrade_success = Ota::Upgrade(upgrade_url, [this, display](int progress, size_t speed) {
+    const bool upgrade_success = Ota::Upgrade(url, [this, display](int progress, size_t speed) {
         char buffer[32];
         snprintf(buffer, sizeof(buffer), "%d%% %uKB/s", progress, speed / 1024);
         Schedule([display, message = std::string(buffer)]() {
@@ -81,22 +77,23 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
     });
 
     if (!upgrade_success) {
-        // 升级失败时恢复音频服务和低功耗，继续运行当前固件。
         ESP_LOGE(TAG, "固件升级失败，正在恢复音频服务并继续运行");
-        audio_service_.Start(); // 重新创建并启动音频后台任务。
-        board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER); // 恢复设备空闲时的功耗策略。
-        Alert(Lang::Strings::ERROR, Lang::Strings::UPGRADE_FAILED, "circle_xmark", Lang::Sounds::OGG_EXCLAMATION);
+        audio_service_.Start();
+        board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+        Alert(Lang::Strings::ERROR, Lang::Strings::UPGRADE_FAILED,
+            "circle_xmark", Lang::Sounds::OGG_EXCLAMATION);
         vTaskDelay(pdMS_TO_TICKS(3000));
+        SetDeviceState(kDeviceStateIdle);
         return false;
-    } else {
-        // 新镜像已校验并设置为启动分区，立即重启完成切换。
-        ESP_LOGI(TAG, "固件升级成功，设备即将重启");
-        display->SetChatMessage("system", "Upgrade successful, rebooting...");
-        vTaskDelay(pdMS_TO_TICKS(1000)); // 短暂停留，让用户看到升级成功提示。
-        Reboot();
-        return true;
     }
+
+    ESP_LOGI(TAG, "固件升级成功，设备即将重启");
+    display->SetChatMessage("system", "Upgrade successful, rebooting...");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    Reboot();
+    return true;
 }
+
 
 /**
  * @brief 处理本地唤醒词触发。
@@ -196,7 +193,7 @@ void Application::PlaySound(const std::string_view& sound) {
 }
 
 /**
- * @brief 线程安全地释放协议和 OTA 资源。
+ * @brief 线程安全地释放语音协议资源。
  *
  * 会关闭音频通道并销毁联网后创建的对象。可从任意任务调用，但真正的资源
  * 生命周期变更会与主任务同步，防止断网回调与协议收包同时访问悬空对象。

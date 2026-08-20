@@ -624,11 +624,6 @@
                     <form id="advancedForm">
                         <div id="advancedError" class="error" role="alert"></div>
                         <div class="field">
-                            <label class="field-label" for="otaUrl">自定义 OTA 地址</label>
-                            <input id="otaUrl" name="ota_url" type="url" maxlength="512"
-                                   placeholder="不设置请留空">
-                        </div>
-                        <div class="field">
                             <label class="field-label" for="maxTxPower">Wi-Fi 发射功率</label>
                             <select id="maxTxPower" name="max_tx_power">
                                 <option value="8">2 dBm</option>
@@ -930,7 +925,6 @@
                 fetch('/advanced/config', { cache: 'no-store' })
                     .then(function (response) { return response.json(); })
                     .then(function (data) {
-                        document.getElementById('otaUrl').value = data.ota_url || '';
                         if (data.max_tx_power != null) {
                             document.getElementById('maxTxPower').value = String(data.max_tx_power);
                         }
@@ -952,7 +946,6 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        ota_url: document.getElementById('otaUrl').value.trim(),
                         max_tx_power: Number(document.getElementById('maxTxPower').value),
                         remember_bssid: document.getElementById('rememberBssid').checked,
                         sleep_mode: document.getElementById('sleepMode').checked

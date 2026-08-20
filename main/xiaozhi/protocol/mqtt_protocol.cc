@@ -72,7 +72,7 @@ MqttProtocol::~MqttProtocol() {
 }
 
 /**
- * @brief 根据 OTA 配置连接 MQTT 并订阅下行主题。
+ * @brief 根据已保存的配置连接 MQTT 并订阅下行主题。
  * @return MQTT 客户端连接成功时返回 true，否则返回 false。
  * @details 初次启动不向应用层弹出错误，后续打开音频通道时会按需重连并上报失败。
  */

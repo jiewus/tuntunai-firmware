@@ -14,6 +14,8 @@
 #include "system/settings.h"
 
 #include <cctype>
+#include <algorithm>
+#include <array>
 #include <esp_log.h>
 #include <driver/gpio.h>
 #include <arpa/inet.h>
@@ -56,8 +58,9 @@ bool IsInternalToolCallText(const char* text) {
 }  // 匿名命名空间
 
 /**
- * @brief 根据 OTA 配置创建并配置云端通信协议。
- * @details 优先使用服务器下发的 MQTT 或 WebSocket 配置，未指定时回退到 MQTT。随后注册连接、
+ * @brief 根据 OTA 下发或已保存的配置创建并配置云端通信协议。
+ * @details 优先使用 OTA 服务下发的 MQTT 或 WebSocket 配置；OTA 检查失败时使用 NVS 中已有配置。
+ * 随后注册连接、
  * 错误、音频、JSON 控制消息和 MCP 广播回调，使协议线程只产生事件或调度主线程任务，
  * 避免直接跨线程修改显示与设备状态。
  */
@@ -176,14 +179,21 @@ void Application::InitializeXiaozhiClient() {
     };
 #endif
     xiaozhi_client_->SetCallbacks(std::move(callbacks));
-    xiaozhi_client_->Start(
-        ota_->HasMqttConfig(),
-        ota_->HasWebsocketConfig());
+    if (ota_ != nullptr) {
+        xiaozhi_client_->Start(ota_->HasMqttConfig(), ota_->HasWebsocketConfig());
+    } else {
+        Settings mqtt_settings("mqtt", false);
+        Settings websocket_settings("websocket", false);
+        xiaozhi_client_->Start(
+            !mqtt_settings.GetString("endpoint").empty(),
+            !websocket_settings.GetString("url").empty());
+    }
 }
 
 /**
- * @brief 执行 ShowActivationCode 对应的模块内部流程。
- * @details 实现会维护 Application 的内部一致性；发生错误时记录日志，并避免向后续流程传播无效资源。
+ * @brief 播报服务端提供的设备激活码。
+ * @param code 激活码，仅播报数字字符。
+ * @param message 服务端提示文本。
  */
 void Application::ShowActivationCode(const std::string& code, const std::string& message) {
     struct digit_sound {
@@ -203,12 +213,10 @@ void Application::ShowActivationCode(const std::string& code, const std::string&
         digit_sound{'9', Lang::Sounds::OGG_9}
     }};
 
-    // 数字播报单句约占用 9 KiB SRAM，因此逐个等待前一段音频处理完成。
     Alert(Lang::Strings::ACTIVATION, message.c_str(), "link", Lang::Sounds::OGG_ACTIVATION);
-
     for (const auto& digit : code) {
         auto it = std::find_if(digit_sounds.begin(), digit_sounds.end(),
-            [digit](const digit_sound& ds) { return ds.digit == digit; });
+            [digit](const digit_sound& item) { return item.digit == digit; });
         if (it != digit_sounds.end()) {
             audio_service_.PlaySound(it->sound);
         }

@@ -48,7 +48,7 @@ public:
     ~MqttProtocol();
 
     /**
-     * @brief 根据 OTA 配置连接 MQTT 并订阅下行主题。
+     * @brief 根据已保存的配置连接 MQTT 并订阅下行主题。
      */
     bool Start() override;
     /**

@@ -41,7 +41,7 @@ WebsocketProtocol::~WebsocketProtocol() {
 }
 
 /**
- * @brief 读取 OTA 下发配置并建立 WebSocket。
+ * @brief 读取已保存的配置并建立 WebSocket。
  * @return 始终返回 true，实际连接会延迟到 OpenAudioChannel() 调用时执行。
  * @details WebSocket 仅在需要语音会话时连接，避免设备空闲期间长期占用 TLS 连接和内存。
  */

@@ -4,7 +4,8 @@ CONFIG_COMPILER_CXX_EXCEPTIONS=y
 CONFIG_COMPILER_CXX_EXCEPTIONS_EMG_POOL_SIZE=1024
 CONFIG_COMPILER_CXX_RTTI=y
 
-# 启用双 OTA 回滚；新固件确认正常启动后由 Ota::MarkCurrentVersionValid() 标记有效。
+# 保留双 OTA 回滚，供 TuntunLife 自有 OTA、手动安全分区烧录和启动失败保护使用；
+# 固件不再连接小智官方 OTA 服务。
 # 开发构建必须保留启动镜像完整性校验；Secure Boot、Flash Encryption 和防降级由
 # sdkconfig.release.defaults 仅在发布构建中启用，避免普通烧录意外写入不可逆 eFuse。
 CONFIG_BOOTLOADER_COMPILER_OPTIMIZATION_PERF=y

@@ -25,7 +25,6 @@ main/
   network/             Wi-Fi配网、TLS、时间同步、重连
   protocol/            云端协议抽象及具体实现
   storage/             NVS、资源分区、配置
-  ota/                 双分区HTTPS OTA
   diagnostics/         日志、堆监控、任务水位和故障记录
 ```
 
@@ -91,7 +90,6 @@ SPEAKING
   -> IDLE               按键中断
 
 任意可恢复状态
-  -> OTA                 固件升级
   -> ERROR               不可继续的模块错误
 ```
 

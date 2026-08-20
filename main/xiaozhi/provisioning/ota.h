@@ -54,7 +54,10 @@ public:
      * @param callback 下载进度和速度回调。
      * @return 写入并设置新启动分区成功时返回 true。
      */
-    static bool Upgrade(const std::string& firmware_url, std::function<void(int progress, size_t speed)> callback);
+    static bool Upgrade(const std::string& firmware_url,
+                        std::function<void(int progress, size_t speed)> callback,
+                        size_t expected_size = 0,
+                        const std::string& expected_sha256 = "");
     /**
      * @brief 将当前运行镜像标记为有效，取消 bootloader 回滚。
      */
@@ -85,6 +88,8 @@ private:
     std::string firmware_url_;
     std::string activation_challenge_;
     std::string serial_number_;
+    size_t expected_firmware_size_ = 0;
+    std::string expected_firmware_sha256_;
     int activation_timeout_ms_ = 30000;
 
     std::function<void(int progress, size_t speed)> upgrade_callback_;

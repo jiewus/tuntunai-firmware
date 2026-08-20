@@ -220,14 +220,6 @@ void WifiConfigurationAp::StartAccessPoint()
     nvs_handle_t nvs;
     esp_err_t err = nvs_open("wifi", NVS_READONLY, &nvs);
     if (err == ESP_OK) {
-        // 读取OTA URL
-        char ota_url[256] = {0};
-        size_t ota_url_size = sizeof(ota_url);
-        err = nvs_get_str(nvs, "ota_url", ota_url, &ota_url_size);
-        if (err == ESP_OK) {
-            ota_url_ = ota_url;
-        }
-
         // 读取WiFi功率
         err = nvs_get_i8(nvs, "max_tx_power", &max_tx_power_);
         if (err == ESP_OK) {
@@ -542,9 +534,6 @@ void WifiConfigurationAp::StartWebServer()
             }
 
             // 添加配置项到JSON
-            if (!this_->ota_url_.empty()) {
-                cJSON_AddStringToObject(json, "ota_url", this_->ota_url_.c_str());
-            }
             cJSON_AddNumberToObject(json, "max_tx_power", this_->max_tx_power_);
             cJSON_AddBoolToObject(json, "remember_bssid", this_->remember_bssid_);
             cJSON_AddBoolToObject(json, "sleep_mode", this_->sleep_mode_);
@@ -594,16 +583,6 @@ void WifiConfigurationAp::StartWebServer()
                 cJSON_Delete(json);
                 httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "设备配置存储打开失败");
                 return ESP_FAIL;
-            }
-
-            // 保存OTA URL
-            cJSON *ota_url = cJSON_GetObjectItem(json, "ota_url");
-            if (cJSON_IsString(ota_url) && ota_url->valuestring) {
-                this_->ota_url_ = ota_url->valuestring;
-                err = nvs_set_str(nvs, "ota_url", this_->ota_url_.c_str());
-                if (err != ESP_OK) {
-                    ESP_LOGE(TAG, "保存 OTA 地址失败，错误码=%d", err);
-                }
             }
 
             // 保存WiFi功率

@@ -24,6 +24,7 @@
 #endif
 
 #include <cstring>
+#include <cctype>
 #include <vector>
 #include <algorithm>
 
@@ -36,6 +37,17 @@
  * 版本检查和激活请求会使用新版激活协议并携带 Serial-Number 请求头。
  */
 Ota::Ota() {
+    const auto* app_desc = esp_app_get_description();
+    if (app_desc != nullptr) {
+        current_version_ = app_desc->version;
+    }
+
+    // OTA 检查失败或响应未包含某项配置时，继续使用已有 NVS 配置。
+    Settings mqtt_settings("mqtt", false);
+    Settings websocket_settings("websocket", false);
+    has_mqtt_config_ = !mqtt_settings.GetString("endpoint").empty();
+    has_websocket_config_ = !websocket_settings.GetString("url").empty();
+
 #ifdef ESP_EFUSE_BLOCK_USR_DATA
     // 从 eFuse 用户数据区读取出厂烧录的设备序列号，内容为空时按无序列号设备处理。
     uint8_t serial_number[33] = {0};
@@ -59,16 +71,11 @@ Ota::~Ota() {
 
 /**
  * @brief 根据板型和配置生成版本检查服务 URL。
- * @return NVS 中配置的 ota_url；未配置时返回编译期 CONFIG_OTA_URL。
- * @details 运行时配置优先，便于测试环境或私有部署切换版本服务而无需重新编译固件。
+ * @return 编译期配置的 TuntunLife 自有 OTA 地址。
+ * @details 固件不读取历史 wifi/ota_url 覆盖值，避免旧设备继续访问小智官方 OTA 服务。
  */
 std::string Ota::GetCheckVersionUrl() {
-    Settings settings("wifi", false);
-    std::string url = settings.GetString("ota_url");
-    if (url.empty()) {
-        url = CONFIG_OTA_URL;
-    }
-    return url;
+    return CONFIG_OTA_URL;
 }
 
 /**
@@ -111,7 +118,7 @@ esp_err_t Ota::CheckVersion() {
     ESP_LOGI(TAG, "当前固件版本=%s", current_version_.c_str());
 
     std::string url = GetCheckVersionUrl();
-    if (url.length() < 10) {
+    if (url.rfind("https://", 0) != 0 || url.length() < 10) {
         ESP_LOGE(TAG, "版本检查地址配置无效");
         return ESP_ERR_INVALID_ARG;
     }
@@ -131,6 +138,7 @@ esp_err_t Ota::CheckVersion() {
     auto status_code = http->GetStatusCode();
     if (status_code != 200) {
         ESP_LOGE(TAG, "检查固件版本失败，HTTP 状态码=%d", status_code);
+        http->Close();
         return status_code;
     }
 
@@ -169,7 +177,6 @@ esp_err_t Ota::CheckVersion() {
         }
     }
 
-    has_mqtt_config_ = false;
     cJSON *mqtt = cJSON_GetObjectItem(root, "mqtt");
     if (cJSON_IsObject(mqtt)) {
         Settings settings("mqtt", true);
@@ -190,7 +197,6 @@ esp_err_t Ota::CheckVersion() {
         ESP_LOGI(TAG, "版本响应中未包含 MQTT 配置");
     }
 
-    has_websocket_config_ = false;
     cJSON *websocket = cJSON_GetObjectItem(root, "websocket");
     if (cJSON_IsObject(websocket)) {
         Settings settings("websocket", true);
@@ -237,6 +243,10 @@ esp_err_t Ota::CheckVersion() {
     }
 
     has_new_version_ = false;
+    firmware_version_.clear();
+    firmware_url_.clear();
+    expected_firmware_size_ = 0;
+    expected_firmware_sha256_.clear();
     cJSON *firmware = cJSON_GetObjectItem(root, "firmware");
     if (cJSON_IsObject(firmware)) {
         cJSON *version = cJSON_GetObjectItem(firmware, "version");
@@ -244,11 +254,23 @@ esp_err_t Ota::CheckVersion() {
             firmware_version_ = version->valuestring;
         }
         cJSON *url = cJSON_GetObjectItem(firmware, "url");
-        if (cJSON_IsString(url)) {
+        if (cJSON_IsString(url) && strncmp(url->valuestring, "https://", 8) == 0) {
             firmware_url_ = url->valuestring;
         }
+        cJSON *size = cJSON_GetObjectItem(firmware, "size");
+        if (cJSON_IsNumber(size) && size->valuedouble > 0 &&
+            size->valuedouble <= static_cast<double>(SIZE_MAX)) {
+            expected_firmware_size_ = static_cast<size_t>(size->valuedouble);
+        }
+        cJSON *sha256 = cJSON_GetObjectItem(firmware, "sha256");
+        if (cJSON_IsString(sha256) && strlen(sha256->valuestring) == 64) {
+            expected_firmware_sha256_ = sha256->valuestring;
+            std::transform(expected_firmware_sha256_.begin(), expected_firmware_sha256_.end(),
+                           expected_firmware_sha256_.begin(),
+                           [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+        }
 
-        if (cJSON_IsString(version) && cJSON_IsString(url)) {
+        if (cJSON_IsString(version) && !firmware_url_.empty()) {
             // 按数字段比较版本，例如 0.1.0 高于 0.0.1。
             has_new_version_ = IsNewVersionAvailable(current_version_, firmware_version_);
             if (has_new_version_) {
@@ -263,7 +285,7 @@ esp_err_t Ota::CheckVersion() {
             }
         }
     } else {
-        ESP_LOGW(TAG, "版本响应中未包含固件信息");
+        ESP_LOGI(TAG, "自有 OTA 响应无可用固件，继续启动");
     }
 
     cJSON_Delete(root);
@@ -304,9 +326,18 @@ void Ota::MarkCurrentVersionValid() {
  * 下载百分比和速度；结束后由 ESP-IDF 校验镜像，并仅在校验成功时切换下次启动分区。
  * 任一读取、写入或校验步骤失败都会释放缓冲区并中止 OTA 句柄。
  */
-bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progress, size_t speed)> callback) {
+bool Ota::Upgrade(const std::string& firmware_url,
+                  std::function<void(int progress, size_t speed)> callback,
+                  size_t expected_size,
+                  const std::string& expected_sha256) {
+    if (firmware_url.rfind("https://", 0) != 0) {
+        ESP_LOGE(TAG, "固件下载地址不是 HTTPS，已拒绝升级");
+        return false;
+    }
+
     ESP_LOGI(TAG, "正在从指定地址升级固件");
     esp_ota_handle_t update_handle = 0;
+    bool ota_started = false;
     auto update_partition = esp_ota_get_next_update_partition(NULL);
     if (update_partition == NULL) {
         ESP_LOGE(TAG, "获取 OTA 更新分区失败");
@@ -326,12 +357,14 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
 
     if (http->GetStatusCode() != 200) {
         ESP_LOGE(TAG, "下载固件失败，HTTP 状态码=%d", http->GetStatusCode());
+        http->Close();
         return false;
     }
 
     size_t content_length = http->GetBodyLength();
     if (content_length == 0) {
         ESP_LOGE(TAG, "获取固件内容长度失败");
+        http->Close();
         return false;
     }
 
@@ -339,6 +372,7 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
     char* buffer = (char*)heap_caps_malloc(PAGE_SIZE, MALLOC_CAP_INTERNAL);
     if (buffer == nullptr) {
         ESP_LOGE(TAG, "分配固件下载缓冲区失败");
+        http->Close();
         return false;
     }
 
@@ -349,6 +383,10 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
         int ret = http->Read(buffer + buffer_offset, PAGE_SIZE - buffer_offset);
         if (ret < 0) {
             ESP_LOGE(TAG, "读取固件 HTTP 数据失败，错误=%s", esp_err_to_name(ret));
+            http->Close();
+            if (ota_started) {
+                esp_ota_abort(update_handle);
+            }
             heap_caps_free(buffer);
             return false;
         }
@@ -375,11 +413,13 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
 
                 if (esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle)) {
                     esp_ota_abort(update_handle);
+                    http->Close();
                     ESP_LOGE(TAG, "启动 OTA 写入失败");
                     heap_caps_free(buffer);
                     return false;
                 }
 
+                ota_started = true;
                 image_header_checked = true;
                 std::string().swap(image_header);
             }
@@ -387,11 +427,18 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
 
         // 缓冲区满 4 KiB 或收到最后一块数据时再写 Flash，减少零碎写入。
         bool is_last_chunk = (ret == 0);
+        if (is_last_chunk && !image_header_checked) {
+            ESP_LOGE(TAG, "固件内容不足以包含有效镜像头");
+            http->Close();
+            heap_caps_free(buffer);
+            return false;
+        }
         if (buffer_offset == PAGE_SIZE || (is_last_chunk && buffer_offset > 0)) {
             auto err = esp_ota_write(update_handle, buffer, buffer_offset);
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "写入 OTA 数据失败，错误=%s", esp_err_to_name(err));
                 esp_ota_abort(update_handle);
+                http->Close();
                 heap_caps_free(buffer);
                 return false;
             }
@@ -406,6 +453,18 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
     http->Close();
     heap_caps_free(buffer);
 
+    if (total_read != content_length) {
+        ESP_LOGE(TAG, "固件下载长度不匹配，声明=%u，实际=%u", content_length, total_read);
+        esp_ota_abort(update_handle);
+        return false;
+    }
+
+    if (expected_size != 0 && total_read != expected_size) {
+        ESP_LOGE(TAG, "固件大小校验失败，期望=%u，实际=%u", expected_size, total_read);
+        esp_ota_abort(update_handle);
+        return false;
+    }
+
     esp_err_t err = esp_ota_end(update_handle);
     if (err != ESP_OK) {
         if (err == ESP_ERR_OTA_VALIDATE_FAILED) {
@@ -414,6 +473,25 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
             ESP_LOGE(TAG, "结束 OTA 写入失败，错误=%s", esp_err_to_name(err));
         }
         return false;
+    }
+
+    if (!expected_sha256.empty()) {
+        uint8_t digest[32] = {0};
+        if (esp_partition_get_sha256(update_partition, digest) != ESP_OK) {
+            ESP_LOGE(TAG, "读取固件 SHA-256 失败");
+            return false;
+        }
+        char actual_sha256[65] = {0};
+        for (size_t i = 0; i < sizeof(digest); ++i) {
+            snprintf(actual_sha256 + i * 2, sizeof(actual_sha256) - i * 2, "%02x", digest[i]);
+        }
+        std::string expected = expected_sha256;
+        std::transform(expected.begin(), expected.end(), expected.begin(),
+                       [](unsigned char value) { return static_cast<char>(value >= 'A' && value <= 'F' ? value + ('a' - 'A') : value); });
+        if (expected != actual_sha256) {
+            ESP_LOGE(TAG, "固件 SHA-256 校验失败");
+            return false;
+        }
     }
 
     err = esp_ota_set_boot_partition(update_partition);
@@ -433,7 +511,7 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
  * @details 本方法不重新检查版本，只使用最近一次 CheckVersion() 保存的 firmware_url_。
  */
 bool Ota::StartUpgrade(std::function<void(int progress, size_t speed)> callback) {
-    return Upgrade(firmware_url_, callback);
+    return Upgrade(firmware_url_, callback, expected_firmware_size_, expected_firmware_sha256_);
 }
 
 

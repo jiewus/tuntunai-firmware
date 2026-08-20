@@ -30,7 +30,7 @@ public:
     ~WebsocketProtocol();
 
     /**
-     * @brief 读取 OTA 下发配置并建立 WebSocket。
+     * @brief 读取已保存的配置并建立 WebSocket。
      */
     bool Start() override;
     /**

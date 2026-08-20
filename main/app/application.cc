@@ -365,14 +365,14 @@ void Application::HandleActivationDoneEvent() {
     SystemInfo::PrintHeapStats();
     SetDeviceState(kDeviceStateIdle);
 
-    has_server_time_ = ota_->HasServerTime();
+    has_server_time_ = ota_ != nullptr && ota_->HasServerTime();
 
     auto display = Board::GetInstance().GetDisplay();
-    std::string message = std::string(Lang::Strings::VERSION) + ota_->GetCurrentVersion();
+    std::string message = std::string(Lang::Strings::VERSION) +
+        (ota_ != nullptr ? ota_->GetCurrentVersion() : SystemInfo::GetUserAgent());
     display->ShowNotification(message.c_str());
     display->SetChatMessage("system", "");
 
-    // 激活和版本检查完成后释放 OTA 临时状态，降低常驻内存占用。
     ota_.reset();
     auto& board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
@@ -383,28 +383,27 @@ void Application::HandleActivationDoneEvent() {
     });
 
     /*
-     * 此处代表开机版本检查、资源应用、设备激活和协议初始化均已完成。直接进入表盘可以
+     * 此处代表资源应用和协议初始化均已完成。直接进入表盘可以
      * 跳过普通待机的 30 秒等待；板级实现仍会检查用户是否已经关闭屏保功能。
      */
     board.EnterScreensaver();
 }
 
 /**
- * @brief 后台执行设备激活，完成后设置 MAIN_EVENT_ACTIVATION_DONE。
- * @details 该任务按顺序检查资源包、检查固件和激活状态、创建云端协议对象。所有耗时网络操作
+ * @brief 后台执行启动初始化，完成后设置 MAIN_EVENT_ACTIVATION_DONE。
+ * @details 该任务按顺序检查固件、资源包并创建云端协议对象。所有耗时网络操作
  * 均在后台任务中执行，完成后只通过事件位通知主循环更新设备状态。
  */
 void Application::ActivationTask() {
-    // OTA 对象同时负责版本检查、设备激活和云端协议配置获取。
     ota_ = std::make_unique<Ota>();
+
+    // 自有 OTA 检查失败只记录日志并继续启动，不阻塞语音协议初始化。
+    CheckNewVersion();
 
     // 优先更新界面资源，确保后续状态页面使用与固件匹配的资源版本。
     CheckAssetsVersion();
 
-    // 检查固件和设备激活状态；必要时执行升级或等待用户完成激活。
-    CheckNewVersion();
-
-    // 根据版本服务返回的配置选择 MQTT 或 WebSocket 协议。
+    // 根据 OTA 下发或 NVS 中已保存的配置启动语音协议。
     InitializeXiaozhiClient();
 
     // 通过事件组回到主循环收尾，避免后台任务直接修改前台状态。
@@ -475,81 +474,63 @@ void Application::CheckAssetsVersion() {
 }
 
 /**
- * @brief 检查固件版本、云端连接配置和设备激活状态。
- * @details 版本请求失败时最多重试十次并采用指数退避。返回新固件时直接进入 OTA 升级；
- * 没有新版本时确认当前分区有效，并根据服务器返回的激活码或挑战数据循环执行激活。
+ * @brief 检查自有 OTA 版本、协议配置和设备激活状态。
+ * @details 每次启动最多请求一次自有 OTA 服务。请求失败时只记录警告并跳过，不提示用户、不重试，
+ * 继续使用 NVS 中已有配置启动语音协议。发现新版本时执行静默升级，失败后继续运行当前固件。
  */
 void Application::CheckNewVersion() {
-    const int MAX_RETRY = 10;
-    int retry_count = 0;
-    int retry_delay = 10; // 首次重试等待 10 秒，后续失败时按指数退避增加。
+    if (ota_ == nullptr) {
+        ESP_LOGW(TAG, "OTA 管理器未初始化，跳过自有 OTA 检查");
+        return;
+    }
 
-    auto& board = Board::GetInstance();
-    while (true) {
-        auto display = board.GetDisplay();
-        display->SetStatus(Lang::Strings::CHECKING_NEW_VERSION);
+    const esp_err_t check_error = ota_->CheckVersion();
+    if (check_error != ESP_OK) {
+        ESP_LOGW(TAG, "自有 OTA 版本检查跳过，错误码=%d", static_cast<int>(check_error));
+        return;
+    }
 
-        esp_err_t err = ota_->CheckVersion();
-        if (err != ESP_OK) {
-            retry_count++;
-            if (retry_count >= MAX_RETRY) {
-                ESP_LOGE(TAG, "版本检查重试次数已达上限，停止检查");
-                return;
-            }
+    if (ota_->HasNewVersion()) {
+        auto& board = Board::GetInstance();
+        ESP_LOGI(TAG, "发现自有 OTA 新版本=%s，开始静默升级", ota_->GetFirmwareVersion().c_str());
+        SetDeviceState(kDeviceStateUpgrading);
+        board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+        audio_service_.Stop();
 
-            char error_message[128];
-            snprintf(error_message, sizeof(error_message), "code=%d, url=%s", err, ota_->GetCheckVersionUrl().c_str());
-            char buffer[256];
-            snprintf(buffer, sizeof(buffer), Lang::Strings::CHECK_NEW_VERSION_FAILED, retry_delay, error_message);
-            Alert(Lang::Strings::ERROR, buffer, "cloud_slash", Lang::Sounds::OGG_EXCLAMATION);
-
-            ESP_LOGW(TAG, "检查新版本失败，将在 %d 秒后重试（%d/%d）", retry_delay, retry_count, MAX_RETRY);
-            for (int i = 0; i < retry_delay; i++) {
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                if (GetDeviceState() == kDeviceStateIdle) {
-                    break;
-                }
-            }
-            retry_delay *= 2; // 每次失败后将等待时间加倍，降低服务异常时的请求压力。
-            continue;
-        }
-        retry_count = 0;
-        retry_delay = 10; // 一次请求成功后恢复初始重试间隔。
-
-        if (ota_->HasNewVersion()) {
-            if (UpgradeFirmware(ota_->GetFirmwareUrl(), ota_->GetFirmwareVersion())) {
-                return; // 正常升级会重启设备，因此通常不会执行到这里。
-            }
-            // 升级失败时不阻塞设备启动，继续使用当前固件进入正常流程。
+        const bool success = ota_->StartUpgrade(nullptr);
+        if (success) {
+            ESP_LOGI(TAG, "自有 OTA 升级成功，设备即将重启");
+            Reboot();
+            return;
         }
 
-        // 当前固件能够运行到此处，可将待确认 OTA 分区标记为有效，防止下次启动回滚。
-        ota_->MarkCurrentVersionValid();
-        if (!ota_->HasActivationCode() && !ota_->HasActivationChallenge()) {
-            // 无激活任务时版本检查流程已经完成。
+        ESP_LOGW(TAG, "自有 OTA 下载或写入失败，保留当前固件并继续启动");
+        audio_service_.Start();
+        board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+        SetDeviceState(kDeviceStateActivating);
+    }
+
+    ota_->MarkCurrentVersionValid();
+    if (!ota_->HasActivationCode() && !ota_->HasActivationChallenge()) {
+        return;
+    }
+
+    auto display = Board::GetInstance().GetDisplay();
+    display->SetStatus(Lang::Strings::ACTIVATION);
+    if (ota_->HasActivationCode()) {
+        ShowActivationCode(ota_->GetActivationCode(), ota_->GetActivationMessage());
+    }
+
+    for (int i = 0; i < 10; ++i) {
+        ESP_LOGI(TAG, "正在激活设备（%d/%d）", i + 1, 10);
+        const esp_err_t activate_error = ota_->Activate();
+        if (activate_error == ESP_OK) {
             break;
         }
 
-        display->SetStatus(Lang::Strings::ACTIVATION);
-        // 有激活码时显示给用户，由用户在管理端完成设备绑定。
-        if (ota_->HasActivationCode()) {
-            ShowActivationCode(ota_->GetActivationCode(), ota_->GetActivationMessage());
-        }
-
-        // 轮询激活接口，直到成功、设备状态被用户中止或本轮尝试结束。
-        for (int i = 0; i < 10; ++i) {
-            ESP_LOGI(TAG, "正在激活设备（%d/%d）", i + 1, 10);
-            esp_err_t err = ota_->Activate();
-            if (err == ESP_OK) {
-                break;
-            } else if (err == ESP_ERR_TIMEOUT) {
-                vTaskDelay(pdMS_TO_TICKS(3000));
-            } else {
-                vTaskDelay(pdMS_TO_TICKS(10000));
-            }
-            if (GetDeviceState() == kDeviceStateIdle) {
-                break;
-            }
+        vTaskDelay(pdMS_TO_TICKS(activate_error == ESP_ERR_TIMEOUT ? 3000 : 10000));
+        if (GetDeviceState() == kDeviceStateIdle) {
+            break;
         }
     }
 }

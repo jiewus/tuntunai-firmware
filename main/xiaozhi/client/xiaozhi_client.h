@@ -56,8 +56,8 @@ public:
 
     /**
      * @brief 根据配置创建并启动 MQTT 或 WebSocket 协议。
-     * @param has_mqtt_config OTA 响应是否包含 MQTT 配置。
-     * @param has_websocket_config OTA 响应是否包含 WebSocket 配置。
+     * @param has_mqtt_config NVS 是否包含 MQTT 配置。
+     * @param has_websocket_config NVS 是否包含 WebSocket 配置。
      * @return 底层协议启动成功时返回 true，否则返回 false。
      */
     bool Start(bool has_mqtt_config, bool has_websocket_config);
