@@ -15,8 +15,8 @@
 #include "system/settings.h"
 #include "tuntun/backend/backend_service.h"
 
-#include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 
 #include <driver/gpio.h>
@@ -32,6 +32,38 @@
 #include <freertos/task.h>
 
 #define TAG "EchoEar"
+
+namespace {
+
+// EchoEar 电量计当前提供电压和电流，未发现可读取的 SOC 寄存器。
+// 依据单节锂电池的典型放电曲线进行分段插值，避免 3.3-4.2V 线性换算造成中段偏差。
+int EstimateBatteryLevel(int voltage_mv) {
+    struct VoltageLevel {
+        int voltage_mv;
+        int level;
+    };
+    constexpr VoltageLevel kCurve[] = {
+        {3300, 0}, {3500, 5}, {3600, 15}, {3700, 30}, {3800, 50},
+        {3900, 70}, {4000, 85}, {4100, 95}, {4200, 100},
+    };
+    constexpr size_t kCurveSize = sizeof(kCurve) / sizeof(kCurve[0]);
+
+    if (voltage_mv <= kCurve[0].voltage_mv) {
+        return kCurve[0].level;
+    }
+    for (size_t i = 1; i < kCurveSize; ++i) {
+        if (voltage_mv <= kCurve[i].voltage_mv) {
+            const auto& lower = kCurve[i - 1];
+            const auto& upper = kCurve[i];
+            return lower.level +
+                   (voltage_mv - lower.voltage_mv) * (upper.level - lower.level) /
+                       (upper.voltage_mv - lower.voltage_mv);
+        }
+    }
+    return kCurve[kCurveSize - 1].level;
+}
+
+}  // namespace
 
 class EchoEarBoard : public WifiBoard {
 public:
@@ -168,7 +200,7 @@ public:
         const int voltage_mv = voltage_data[0] | (voltage_data[1] << 8);
         const int16_t current_ma = static_cast<int16_t>(
             current_data[0] | (current_data[1] << 8));
-        level = std::clamp((voltage_mv - 3300) * 100 / 900, 0, 100);
+        level = EstimateBatteryLevel(voltage_mv);
         charging = current_ma < -20;
         discharging = current_ma > 20;
         return true;

@@ -7,6 +7,7 @@
 #include <string>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <font_awesome.h>
 
 #include "lvgl_display.h"
@@ -198,6 +199,7 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
     bool charging, discharging;
     const char* icon = nullptr;
     if (board.GetBatteryLevel(battery_level, charging, discharging)) {
+        battery_level = std::clamp(battery_level, 0, 100);
         if (charging) {
             icon = FONT_AWESOME_BATTERY_BOLT;
         } else {
@@ -217,11 +219,10 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
             lv_label_set_text(battery_label_, battery_icon_);
             visible_status_changed = true;
         }
-
         // Check low battery popup only when clock tick event is triggered
         // Because when initializing, the battery level is not ready yet.
         if (low_battery_popup_ != nullptr && !update_all) {
-            if (strcmp(icon, FONT_AWESOME_BATTERY_EMPTY) == 0 && discharging) {
+            if (battery_level < 20 && discharging) {
                 if (lv_obj_has_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN)) { // Show if low battery popup is hidden
                     lv_obj_remove_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
                     visible_status_changed = true;

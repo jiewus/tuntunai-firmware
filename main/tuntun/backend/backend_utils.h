@@ -194,7 +194,11 @@ namespace tuntun::backend_internal
      */
     constexpr uint32_t kNotificationTaskStackSize = 10240;
     constexpr UBaseType_t kNotificationTaskPriority = 2;
+#if CONFIG_IDF_TARGET_ESP32S3
+    constexpr uint32_t kNotificationPlaybackTaskStackSize = 32768;
+#else
     constexpr uint32_t kNotificationPlaybackTaskStackSize = 16384;
+#endif
     constexpr size_t kNotificationResponseMaxBytes = 12288;
     constexpr size_t kNotificationAudioMaxBytes = 512 * 1024;
     /** @brief 通知 Ogg 流的单次网络读取大小，减少短读和解封装调用次数。 */

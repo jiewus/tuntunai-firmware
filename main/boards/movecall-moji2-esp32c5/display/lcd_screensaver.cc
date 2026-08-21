@@ -724,7 +724,7 @@ void LcdDisplay::UpdateScreensaverContent() {
     const bool battery_available =
         Board::GetInstance().GetBatteryLevel(battery_level, charging, discharging);
     if (battery_available) {
-        (void)discharging;
+        battery_level = std::clamp(battery_level, 0, 100);
         if (charging) {
             battery_icon = FONT_AWESOME_BATTERY_BOLT;
         } else if (battery_level >= 80) {
