@@ -224,7 +224,7 @@ private:
     bool screensaver_enabled_ = true;
     std::atomic<bool> screensaver_active_{false};
     bool screen_auto_off_enabled_ = false;
-    bool screen_is_off_ = false;
+    std::atomic<bool> screen_is_off_{false};
     int screen_auto_off_timeout_ = 300;
     uint8_t screen_brightness_before_off_ = 75;
 
@@ -406,6 +406,11 @@ private:
             const bool pressed = (data[0] & 0x0f) != 0;
             const bool was_pressed = board->touch_was_pressed_.exchange(pressed);
             if (!pressed && was_pressed) {
+                if (board->screen_is_off_.load()) {
+                    board->WakeUpScreen();
+                    ESP_LOGI(TAG, "熄屏触摸仅恢复屏幕，不启动对话");
+                    continue;
+                }
                 auto& app = Application::GetInstance();
                 if (BackendService::GetInstance().ExitBindingPage()) {
                     continue;
