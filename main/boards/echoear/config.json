@@ -1,0 +1,10 @@
+{
+  "target": "esp32s3",
+  "name": "EchoEar ESP32-S3 N32R16",
+  "component": "echoear",
+  "device_model": 1,
+  "builtin_text_font": "font_puhui_basic_30_4",
+  "builtin_icon_font": "font_awesome_20_4",
+  "emoji_collection": "twemoji_64",
+  "partition_table": "partitions/v2/16m.csv"
+}

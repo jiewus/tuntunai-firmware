@@ -19,6 +19,9 @@ from board_config import BOARD_ROOT, load_board
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BOARD = "movecall-moji2-esp32c5"
+RELEASE_DIRECTORIES = {
+    "echoear": "EchoEar",
+}
 REQUIRED_DISABLED_OPTIONS = (
     "CONFIG_SECURE_BOOT",
     "CONFIG_SECURE_FLASH_ENC_ENABLED",
@@ -114,13 +117,21 @@ def validate_non_secure_sdkconfig(sdkconfig: Path) -> None:
 
 
 def package_firmware(board: str, build_dir: Path) -> Path:
-    """Compress the board's merged image without mixing artifacts from other targets."""
+    """Publish the merged image without mixing artifacts from other targets."""
     merged = build_dir / "tuntun-binary.bin"
     if not merged.exists():
         raise RuntimeError(f"Merged firmware not found: {merged}")
 
     releases = PROJECT_ROOT / "releases"
     releases.mkdir(exist_ok=True)
+    release_directory = RELEASE_DIRECTORIES.get(board)
+    if release_directory:
+        output_directory = releases / release_directory
+        output_directory.mkdir(parents=True, exist_ok=True)
+        output = output_directory / "tuntun-binary.bin"
+        shutil.copy2(merged, output)
+        return output
+
     output = releases / f"v{project_version()}_{board}.zip"
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(merged, arcname="tuntun-binary.bin")

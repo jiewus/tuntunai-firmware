@@ -15,7 +15,9 @@
 #include "audio_codec.h"
 #include "system/settings.h"
 #include "assets/lang_config.h"
+#ifndef ECHOEAR_DISABLE_JPEG
 #include "jpg/image_to_jpeg.h"
+#endif
 
 #define TAG "Display"
 
@@ -295,6 +297,12 @@ void LvglDisplay::SetPowerSaveMode(bool on) {
  * @details 本实现完成实际资源操作和状态同步；失败路径会保留可恢复状态并输出诊断日志。
  */
 bool LvglDisplay::SnapshotToJpeg(std::string& jpeg_data, int quality) {
+#ifdef ECHOEAR_DISABLE_JPEG
+    (void)jpeg_data;
+    (void)quality;
+    ESP_LOGW(TAG, "JPEG snapshot is not available on EchoEar");
+    return false;
+#else
 #if CONFIG_LV_USE_SNAPSHOT
     DisplayLockGuard lock(this);
 
@@ -333,5 +341,6 @@ bool LvglDisplay::SnapshotToJpeg(std::string& jpeg_data, int quality) {
 #else
     ESP_LOGE(TAG, "LV_USE_SNAPSHOT is not enabled");
     return false;
+#endif
 #endif
 }

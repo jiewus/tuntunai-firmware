@@ -3,8 +3,8 @@ menu "TuntunLife Assistant"
 
 config OTA_URL
     string "Default OTA URL"
-    # 设备启动时向 TuntunLife 自有服务检查新固件并获取协议配置。
-    default "https://api.tuntun.life/api/ota/moji2"
+    # 设备启动时向小智官方服务检查新固件并获取 MQTT/WebSocket 协议配置。
+    default "https://api.tenclass.net/xiaozhi/ota/"
 
 config TUNTUN_API_URL
     string "TuntunLife API URL"

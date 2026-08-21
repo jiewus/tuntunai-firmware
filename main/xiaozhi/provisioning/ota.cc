@@ -47,6 +47,9 @@ Ota::Ota() {
     Settings websocket_settings("websocket", false);
     has_mqtt_config_ = !mqtt_settings.GetString("endpoint").empty();
     has_websocket_config_ = !websocket_settings.GetString("url").empty();
+    ESP_LOGI(TAG, "已缓存小智协议配置：MQTT=%s，WebSocket=%s",
+             has_mqtt_config_ ? "有" : "无",
+             has_websocket_config_ ? "有" : "无");
 
 #ifdef ESP_EFUSE_BLOCK_USR_DATA
     // 从 eFuse 用户数据区读取出厂烧录的设备序列号，内容为空时按无序列号设备处理。
@@ -71,8 +74,8 @@ Ota::~Ota() {
 
 /**
  * @brief 根据板型和配置生成版本检查服务 URL。
- * @return 编译期配置的 TuntunLife 自有 OTA 地址。
- * @details 固件不读取历史 wifi/ota_url 覆盖值，避免旧设备继续访问小智官方 OTA 服务。
+ * @return 编译期配置的小智 OTA 地址。
+ * @details 固件使用项目配置的官方 OTA 地址获取升级和语音协议配置。
  */
 std::string Ota::GetCheckVersionUrl() {
     return CONFIG_OTA_URL;

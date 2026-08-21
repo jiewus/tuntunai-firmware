@@ -180,10 +180,16 @@ void Application::InitializeXiaozhiClient() {
 #endif
     xiaozhi_client_->SetCallbacks(std::move(callbacks));
     if (ota_ != nullptr) {
+        ESP_LOGI(TAG, "小智协议配置来源：OTA/NVS，MQTT=%s，WebSocket=%s",
+                 ota_->HasMqttConfig() ? "有" : "无",
+                 ota_->HasWebsocketConfig() ? "有" : "无");
         xiaozhi_client_->Start(ota_->HasMqttConfig(), ota_->HasWebsocketConfig());
     } else {
         Settings mqtt_settings("mqtt", false);
         Settings websocket_settings("websocket", false);
+        ESP_LOGI(TAG, "小智协议配置来源：NVS，MQTT=%s，WebSocket=%s",
+                 mqtt_settings.GetString("endpoint").empty() ? "无" : "有",
+                 websocket_settings.GetString("url").empty() ? "无" : "有");
         xiaozhi_client_->Start(
             !mqtt_settings.GetString("endpoint").empty(),
             !websocket_settings.GetString("url").empty());

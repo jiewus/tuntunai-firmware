@@ -397,7 +397,7 @@ void Application::HandleActivationDoneEvent() {
 void Application::ActivationTask() {
     ota_ = std::make_unique<Ota>();
 
-    // 自有 OTA 检查失败只记录日志并继续启动，不阻塞语音协议初始化。
+    // OTA 检查失败只记录日志并继续启动，不阻塞语音协议初始化。
     CheckNewVersion();
 
     // 优先更新界面资源，确保后续状态页面使用与固件匹配的资源版本。
